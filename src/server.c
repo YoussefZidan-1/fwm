@@ -606,16 +606,67 @@ void server_camera_settled(FwmServer *server) {
 
 static int physics_tick_cb(void *data) {
     FwmServer *server = data;
-    
+
     // Tick intervals
     double dt = 1.0 / PHYSICS_TICK_RATE;
-    
+
+    /* How much real time the simulation still owes.
+     *
+     * The step itself stays fixed at 1/60 — Box2D wants that, and every
+     * animation below is written against it — but the TIMER cannot deliver it.
+     * wl_event_source_timer_update takes whole milliseconds, so a 60Hz tick is
+     * armed at 16ms and actually fires at 62.5Hz, and a busy moment delays it
+     * further. Simulated time then runs ahead of the clock, in a pattern that
+     * has nothing to do with the display's, and a slow rotation drawn from it
+     * beats against the refresh: smooth for half a second, then a visible skip.
+     *
+     * So take real time in, and spend it in whole steps: usually one, sometimes
+     * none, occasionally two. What is left over is `sim_accum`, which is
+     * exactly how far behind the clock the simulation is — and therefore
+     * exactly what the renderer must extrapolate over (server_render_angle). */
+    struct timespec tick_now;
+    clock_gettime(CLOCK_MONOTONIC, &tick_now);
+    double elapsed = dt;
+    if (server->tick_real_prev.tv_sec || server->tick_real_prev.tv_nsec) {
+        elapsed = (double)(tick_now.tv_sec - server->tick_real_prev.tv_sec)
+                + (double)(tick_now.tv_nsec - server->tick_real_prev.tv_nsec) / 1e9;
+        /* After a real stall (VT switch, a big decode) do not try to catch up
+         * on the whole gap; the steps cap below would clamp it anyway, and
+         * pretending the world moved that far is worse than losing the time. */
+        if (elapsed < 0.0)  elapsed = 0.0;
+        if (elapsed > 0.25) elapsed = dt;
+    }
+    server->tick_real_prev = tick_now;
+    server->sim_accum += elapsed;
+
+    /* Never more than a couple of steps in one go: a machine that cannot keep
+     * up must fall behind in real time rather than spiral, spending ever longer
+     * in the tick trying to catch up with itself. */
+    int steps = (int)(server->sim_accum / dt);
+    if (steps > 2) {
+        /* More owed than we are willing to pay in one go — a stall, or the idle
+         * heartbeat, where the timer deliberately fires seconds apart. Write the
+         * debt off rather than carrying it: an accumulator that only ever grows
+         * would leave the renderer extrapolating over a lag that never shrinks. */
+        steps = 2;
+        server->sim_accum = 0.0;
+    } else {
+        server->sim_accum -= steps * dt;
+        if (server->sim_accum < 0.0) server->sim_accum = 0.0;
+    }
+
     uint32_t drag_win = (server->interactive.action == FWM_ACTION_MOVE && server->interactive.collision_disabled) ? server->interactive.view->id : 0;
     uint32_t dragged_win = (server->interactive.action == FWM_ACTION_MOVE) ? server->interactive.view->id : 0;
     // Freeze the window being resized into a static anchor (skip_b): it must not
     // sink under gravity, get shoved by neighbors, or jitter while its collision
     // box is rebuilt every motion event — the mouse owns it entirely.
-    uint32_t resize_win = (server->interactive.action == FWM_ACTION_RESIZE && server->interactive.view) ? server->interactive.view->id : 0;
+    // A window being turned by hand is frozen the same way and for the same
+    // reason: the hand owns its angle, and a window that slid or fell away
+    // from under the cursor mid-twist would be turning about a centre that is
+    // no longer where the hand is reaching.
+    uint32_t resize_win = ((server->interactive.action == FWM_ACTION_RESIZE ||
+                            server->interactive.action == FWM_ACTION_TWIST) &&
+                           server->interactive.view) ? server->interactive.view->id : 0;
 
     if (resize_win) {
         PhysicsBody *rb = physics_find_body(&server->physics, resize_win);
@@ -722,8 +773,9 @@ static int physics_tick_cb(void *data) {
     /* A spinning window being dragged hangs from the point it was grabbed by.
      * Runs on the tick rather than on pointer motion because a pendulum keeps
      * swinging after the hand stops, and because differentiating the cursor
-     * twice needs a fixed dt. */
-    server_drag_swing(server, dt);
+     * twice needs a fixed dt — which is also why it advances once per STEP,
+     * not once per tick: a tick that paid for no step must not swing it. */
+    for (int i = 0; i < steps; i++) server_drag_swing(server, dt);
 
     // Tab bars follow their window's width (resize/tiling glides).
     group_tick(server);
@@ -731,12 +783,21 @@ static int physics_tick_cb(void *data) {
     // Launcher: tile physics + overlay redraw while open.
     launcher_tick(server->launcher, dt);
 
-    // Physics step
-    physics_step(&server->physics, server->screen_width, server->screen_height,
-                 drag_win, resize_win, dragged_win, dt);
+    /* Physics steps: as many whole 1/60 steps as the real time since the last
+     * tick paid for (see the accumulator at the top). Usually one. */
+    for (int i = 0; i < steps; i++) {
+        physics_step(&server->physics, server->screen_width, server->screen_height,
+                     drag_win, resize_win, dragged_win, dt);
+        /* Impacts are only valid until the NEXT step, so they have to be drained
+         * inside the loop — collecting them after two steps would lose the
+         * first step's landings entirely. */
+        server_consume_impacts(server);
+    }
 
-    /* Impacts are only valid until the next step, so drain them here. */
-    server_consume_impacts(server);
+    /* The instant the simulation's state became current. Rendering measures its
+     * lag from here, plus whatever the accumulator still owes
+     * (server_render_angle). */
+    clock_gettime(CLOCK_MONOTONIC, &server->last_tick);
 
     // Synchronize scene tree nodes to physics coordinates
     FwmView *view;

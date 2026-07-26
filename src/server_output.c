@@ -154,7 +154,7 @@ static void server_animate(FwmServer *server) {
         wl_list_for_each(rv, &server->views, link) {
             PhysicsBody *rb = physics_find_body(&server->physics, rv->id);
             if (rb && rb->spin && server_can_spin(rb) && server->config.effects.spin > 0.0) {
-                view_spin_tick(rv, rb->angle, dt);
+                view_spin_tick(rv, server_render_angle(server, rb), dt);
             } else {
                 /* Also the path that lands a window turned off mid-spin by a
                  * config reload: the body stops rotating and the picture goes
