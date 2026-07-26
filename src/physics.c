@@ -54,6 +54,9 @@ struct BodySlot {
     b2BodyType type;         /* last applied body type */
     int no_collide;          /* last applied collision-filter state */
     int spin;                /* last applied free-rotation state */
+    /* Last applied material, so the per-step resolve below only talks to Box2D
+     * when something actually changed (a reload, a drag onto another desktop). */
+    float density, restitution, friction, gscale, damping;
     double sx, sy, svx, svy; /* shadow of last-written mirror position/velocity */
     double sang, sangvel;    /* ... and of its rotation */
 };
@@ -86,6 +89,71 @@ static void slot_release(struct Engine *eng, int i) {
 
 static double calc_mass(int width, int height, double mass_density) {
     return (double)(width * height) * mass_density;
+}
+
+/* Per-frame friction factor f (applied at PHYSICS_TICK_RATE) maps to Box2D
+ * linear damping d via f^(dt*RATE) ~= 1/(1+d*dt)  =>  d ~= -ln(f)*RATE. */
+static float damping_from_friction(double f) {
+    if (f <= 0.0) f = 0.0001;
+    if (f > 1.0) f = 1.0;
+    return (float)(-log(f) * PHYSICS_TICK_RATE);
+}
+
+/* The physics one window is actually simulated with: its desktop's profile,
+ * with whatever its [[rule]] overrode written over the top. Everything the
+ * engine needs comes out of here, so there is one place that decides what a
+ * window weighs and how hard it bounces. */
+struct Material {
+    float density;      /* Box2D shape density; 1.0 = the world's mass_density */
+    float restitution;
+    float friction;     /* Box2D surface friction, NOT the per-tick retention */
+    float gravity_scale;/* per-body multiplier on the world's gravity vector */
+    float damping;      /* linear damping, derived from per-tick retention */
+};
+
+static struct Material material_for(const PhysicsWorld *world, const PhysicsBody *m) {
+    int d = m->desktop_id;
+    if (d < 0 || d >= FWM_DESKTOPS) d = 0;
+    const PhysicsProfile *p = &world->desktops[d];
+
+    double density_ref = world->mass_density;
+    if (density_ref <= 0.0) density_ref = MASS_DENSITY;
+
+    double mass = p->mass_density / density_ref;
+    if (!isnan(m->rule_mass)) mass *= m->rule_mass;
+
+    double bounce = isnan(m->rule_bounce) ? p->restitution : m->rule_bounce;
+
+    /* Retention is a per-tick factor; Box2D wants a damping rate. The rule's
+     * value replaces the profile's outright rather than multiplying — 0.9 means
+     * "keeps 90% of its speed each tick" wherever it is written. */
+    double retention = isnan(m->rule_friction) ? p->friction : m->rule_friction;
+
+    /* A desktop's gravity is expressed in px/s^2 so it reads like the global
+     * one, but Box2D has a single gravity vector for the world: the difference
+     * is carried per body. The world vector is world->gravity (scaled by the
+     * cycle_gravity master switch), so the ratio is what is left over. */
+    double gscale = (world->gravity != 0.0) ? p->gravity / world->gravity : 0.0;
+    if (!isnan(m->rule_gravity)) gscale *= m->rule_gravity;
+
+    struct Material mat;
+    mat.density = (float)(mass > 0.0 ? mass : 0.0001);
+    mat.restitution = (float)(bounce < 0.0 ? 0.0 : bounce);
+    /* Real-world feel: some Coulomb friction so a window sliding along the
+     * floor actually grinds to a stop instead of gliding like on ice. A window
+     * told to keep less of its speed each tick is a rougher object, so the two
+     * move together — but never to zero, or a stack of windows would slide
+     * apart under its own weight. */
+    mat.friction = (float)(0.4 * (retention < 1.0 ? (1.0 - retention) / 0.015 : 1.0));
+    if (mat.friction < 0.05f) mat.friction = 0.05f;
+    if (mat.friction > 1.0f)  mat.friction = 1.0f;
+    mat.gravity_scale = (float)gscale;
+    /* With gravity on, real objects barely slow down mid-air — they stop via
+     * floor and wall contact friction instead. In zero-g the per-tick retention
+     * is the only brake there is. */
+    mat.damping = (fabs(gscale * world->gravity_scale) > 1e-6)
+                      ? 0.05f : damping_from_friction(retention);
+    return mat;
 }
 
 static void clamp_velocity(double *vx, double *vy, double max_speed) {
@@ -133,6 +201,7 @@ void physics_init(PhysicsWorld *world) {
     world->stop_speed_threshold   = 1.0;
     world->restitution            = 0.3;
     world->gravity                = 981.0;
+    physics_reset_profiles(world);
 
     struct Engine *eng = calloc(1, sizeof(*eng));
     world->engine = eng;
@@ -153,12 +222,16 @@ void physics_init(PhysicsWorld *world) {
     eng->world = b2CreateWorld(&wd);
     eng->walls_built = false;
 
-    // Per-frame friction factor f (applied at PHYSICS_TICK_RATE) maps to Box2D
-    // linear damping d via f^(dt*RATE) ~= 1/(1+d*dt)  =>  d ~= -ln(f)*RATE.
-    double f = world->friction;
-    if (f <= 0.0) f = 0.0001;
-    if (f > 1.0) f = 1.0;
-    eng->linear_damping = (float)(-log(f) * PHYSICS_TICK_RATE);
+    eng->linear_damping = damping_from_friction(world->friction);
+}
+
+void physics_reset_profiles(PhysicsWorld *world) {
+    for (int i = 0; i < FWM_DESKTOPS; i++) {
+        world->desktops[i].gravity      = world->gravity;
+        world->desktops[i].friction     = world->friction;
+        world->desktops[i].restitution  = world->restitution;
+        world->desktops[i].mass_density = world->mass_density;
+    }
 }
 
 void physics_destroy(PhysicsWorld *world) {
@@ -215,6 +288,10 @@ PhysicsBody *physics_sync_body(PhysicsWorld *world, uint32_t id, int x, int y, i
     body->pinned = 0;
     body->no_collide = 0;
     body->floating = 0;
+    /* No rule has spoken for this window yet (view.c does that right after, if
+     * one matched), so every material property defers to the desktop. */
+    body->rule_mass = body->rule_gravity = NAN;
+    body->rule_bounce = body->rule_friction = NAN;
     update_body_geometry(body, x, y, width, height, world->mass_density);
 
     int d = (int)((body->x + body->width / 2.0) / screen_width);
@@ -442,6 +519,7 @@ static void rebuild_walls(struct Engine *eng, PhysicsWorld *world, int screen_w,
 static void slot_create(struct Engine *eng, PhysicsWorld *world, int i, PhysicsBody *m,
                         b2BodyType type, int no_collide) {
     struct BodySlot *s = &eng->slots[i];
+    struct Material mat = material_for(world, m);
 
     b2BodyDef bd = b2DefaultBodyDef();
     bd.type = type;
@@ -454,7 +532,8 @@ static void slot_create(struct Engine *eng, PhysicsWorld *world, int i, PhysicsB
      * the window being stuck rather than thrown. This bleeds it off over a few
      * seconds while still letting a hard kick get several turns in. */
     bd.angularDamping = 0.35f;
-    bd.linearDamping = eng->linear_damping;
+    bd.linearDamping = mat.damping;
+    bd.gravityScale = mat.gravity_scale;
     bd.isBullet = true;                  // continuous collision: never tunnel a wall
     bd.isAwake = true;
     /* Carries the window id, so a hit event's shape resolves straight back to
@@ -463,14 +542,19 @@ static void slot_create(struct Engine *eng, PhysicsWorld *world, int i, PhysicsB
     s->body = b2CreateBody(eng->world, &bd);
 
     b2ShapeDef sd = b2DefaultShapeDef();
-    sd.density = 1.0f;
-    sd.material.restitution = (float)world->restitution;
-    sd.material.friction = 0.4f;
+    sd.density = mat.density;
+    sd.material.restitution = mat.restitution;
+    sd.material.friction = mat.friction;
     sd.enableHitEvents = true;           // impact effects (squash, shake, dust)
     sd.filter = filter_for(no_collide);
     b2Polygon box = b2MakeBox(px2m(m->width / 2.0), px2m(m->height / 2.0));
     s->shape = b2CreatePolygonShape(s->body, &sd, &box);
 
+    s->density = mat.density;
+    s->restitution = mat.restitution;
+    s->friction = mat.friction;
+    s->gscale = mat.gravity_scale;
+    s->damping = mat.damping;
     s->has = true;
     s->sw = m->width;
     s->sh = m->height;
@@ -489,7 +573,11 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
 
     rebuild_walls(eng, world, screen_width, screen_height);
 
-    // Gravity: config value is px/s^2 (y-down); convert to m/s^2.
+    /* Gravity: config value is px/s^2 (y-down); convert to m/s^2. This is the
+     * BASE vector — the one [physics] gravity names. A desktop with its own
+     * gravity, and a window whose rule overrode it, ride on top of it through
+     * their body's gravityScale (material_for), because Box2D has exactly one
+     * gravity vector for the whole world. */
     double g = world->gravity * world->gravity_scale;
     b2World_SetGravity(eng->world, (b2Vec2){0.0f, px2m(g)});
     // Box2D does NOT wake sleeping bodies when world gravity changes — a
@@ -497,11 +585,6 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
     // after cycle_gravity (until a drag changed its body type and woke it).
     bool gravity_changed = (g != eng->last_gravity);
     eng->last_gravity = g;
-
-    // Air drag depends on the mode. Zero-g (floating windows) needs the config
-    // friction as the only brake; with gravity on, real objects barely slow down
-    // mid-air — they stop via floor/wall contact friction instead.
-    float damping = (world->gravity_scale > 0.0) ? 0.05f : eng->linear_damping;
 
     // --- Push mirror -> Box2D ------------------------------------------------
     for (int i = 0; i < world->body_count; i++) {
@@ -531,13 +614,23 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
             continue;
         }
 
+        /* What this window is made of, this step: its desktop's profile with
+         * its own rule over the top. Cheap to recompute, and it has to be — a
+         * window dragged across a desktop edge changes material mid-flight. */
+        struct Material mat = material_for(world, m);
+        /* Keep the mirror's mass honest for whoever reads it (tray, IPC):
+         * mat.density is a multiple of the world's mass_density by
+         * construction. */
+        m->mass = calc_mass(m->width, m->height, world->mass_density * mat.density);
+
         // Size change -> rebuild the collision box.
         if (s->sw != m->width || s->sh != m->height) {
             b2DestroyShape(s->shape, false);
             b2ShapeDef sd = b2DefaultShapeDef();
-            sd.density = 1.0f;
-            sd.material.restitution = (float)world->restitution;
-            sd.material.friction = 0.4f;
+            sd.density = mat.density;
+            sd.material.restitution = mat.restitution;
+            sd.material.friction = mat.friction;
+            sd.enableHitEvents = true;
             sd.filter = filter_for(no_collide);
             b2Polygon box = b2MakeBox(px2m(m->width / 2.0), px2m(m->height / 2.0));
             s->shape = b2CreatePolygonShape(s->body, &sd, &box);
@@ -548,6 +641,36 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
             // delta. Re-drive the transform from the mirror or the window
             // jitters/creeps during interactive resize.
             b2Body_SetTransform(s->body, body_center_m(m), body_rot(m));
+            s->density = mat.density;
+            s->restitution = mat.restitution;
+            s->friction = mat.friction;
+        }
+
+        /* Material changes: a config reload, a rule applied, or the window
+         * having crossed onto a desktop with different physics. Guarded on the
+         * shadow so the common case is four float compares and no Box2D call. */
+        if (s->density != mat.density) {
+            b2Shape_SetDensity(s->shape, mat.density, true);
+            s->density = mat.density;
+        }
+        if (s->restitution != mat.restitution) {
+            b2Shape_SetRestitution(s->shape, mat.restitution);
+            s->restitution = mat.restitution;
+        }
+        if (s->friction != mat.friction) {
+            b2Shape_SetFriction(s->shape, mat.friction);
+            s->friction = mat.friction;
+        }
+        if (s->gscale != mat.gravity_scale) {
+            b2Body_SetGravityScale(s->body, mat.gravity_scale);
+            /* A window that was weightless and now is not has very likely been
+             * asleep for a while; gravity alone does not wake it (see above). */
+            b2Body_SetAwake(s->body, true);
+            s->gscale = mat.gravity_scale;
+        }
+        if (s->damping != mat.damping) {
+            b2Body_SetLinearDamping(s->body, mat.damping);
+            s->damping = mat.damping;
         }
 
         if (s->type != type) {
@@ -562,7 +685,6 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
                 b2Body_SetAngularVelocity(s->body, (float)m->angvel);
             }
         }
-        b2Body_SetLinearDamping(s->body, damping);
         if (s->no_collide != no_collide) {
             b2Shape_SetFilter(s->shape, filter_for(no_collide));
             s->no_collide = no_collide;

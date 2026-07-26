@@ -19,6 +19,7 @@
 
 #include "test.h"
 #include "config.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -339,6 +340,116 @@ static void test_gestures(void) {
     drop_config();
 }
 
+/* Per-window material and per-desktop profiles. Both use the same trick — a
+ * value the file may simply not mention — and both get it wrong in the same
+ * way if the "unset" state is ever confused with a real number, so the tests
+ * lean on the cases where 0 and -1 are meaningful values. */
+static void test_rule_material(void) {
+    CASE("[[rule]] material properties");
+    const char *p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[[rule]]\n"
+        "app_id   = \"^mpv$\"\n"
+        "mass     = 8\n"          /* an int where a double is expected */
+        "bounce   = 0.0\n"        /* 0 is a value, not silence */
+        "[[rule]]\n"
+        "app_id   = \"^balloon$\"\n"
+        "gravity  = -0.2\n"
+        "friction = 0.9\n");
+    FwmConfig cfg;
+    config_load(&cfg, p);
+    CHECK_INT(cfg.error_count, 0);
+    CHECK_INT(cfg.rule_count, 2);
+
+    ConfigRule out;
+    CHECK_INT(config_match_rules(&cfg, "mpv", "whatever", &out), 1);
+    CHECK_DBL(out.mass, 8.0, 1e-9);
+    CHECK_DBL(out.bounce, 0.0, 1e-9);
+    CHECK(isnan(out.gravity));    /* this rule said nothing about it */
+    CHECK(isnan(out.friction));
+
+    CHECK_INT(config_match_rules(&cfg, "balloon", NULL, &out), 1);
+    CHECK_DBL(out.gravity, -0.2, 1e-9);
+    CHECK_DBL(out.friction, 0.9, 1e-9);
+    CHECK(isnan(out.mass));
+
+    /* A window no rule matches carries no material at all. */
+    CHECK_INT(config_match_rules(&cfg, "kitty", NULL, &out), 0);
+    CHECK(isnan(out.mass) && isnan(out.gravity) && isnan(out.bounce) && isnan(out.friction));
+    config_free(&cfg);
+    drop_config();
+
+    CASE("out-of-range material is reported, not obeyed");
+    p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[[rule]]\n"
+        "app_id = \"^mpv$\"\n"
+        "mass   = 0\n"      /* a massless body breaks the solver */
+        "bounce = 3.0\n"    /* would gain energy on every bounce */
+        "pin    = true\n");
+    config_load(&cfg, p);
+    CHECK_INT(cfg.rule_count, 1);
+    CHECK(cfg.error_count >= 2);
+    config_match_rules(&cfg, "mpv", NULL, &out);
+    CHECK(isnan(out.mass));
+    CHECK(isnan(out.bounce));
+    CHECK_INT(out.pin, 1);   /* the rest of the rule still stands */
+    config_free(&cfg);
+    drop_config();
+}
+
+static void test_physics_profiles(void) {
+    CASE("[physics.<name>] profiles claim desktops");
+    const char *p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[physics]\n"
+        "gravity  = 981.0\n"
+        "friction = 0.985\n"
+        "gravity_steps = [0.0, 1.0]\n"
+        "[physics.moon]\n"
+        "gravity  = 160.0\n"
+        "desktops = [3, 4]\n"
+        "[physics.water]\n"
+        "friction = 0.9\n"
+        "desktops = [7]\n");
+    FwmConfig cfg;
+    config_load(&cfg, p);
+    CHECK_INT(cfg.error_count, 0);
+    CHECK_INT(cfg.physics.profile_count, 2);
+    CHECK_INT(cfg.physics.gravity_step_count, 2);
+    CHECK_DBL(cfg.physics.gravity_steps[1], 1.0, 1e-9);
+
+    /* Unclaimed desktops stay on the world's values. */
+    CHECK_INT(cfg.physics.desktop_profile[0], -1);
+    CHECK_INT(cfg.physics.desktop_profile[3], cfg.physics.desktop_profile[4]);
+    CHECK(cfg.physics.desktop_profile[3] >= 0);
+
+    const PhysicsProfileConfig *moon = &cfg.physics.profiles[cfg.physics.desktop_profile[3]];
+    CHECK_STR(moon->name, "moon");
+    CHECK_DBL(moon->gravity, 160.0, 1e-9);
+    /* A profile is a diff: what it does not write, it inherits. */
+    CHECK_DBL(moon->friction, 0.985, 1e-9);
+
+    const PhysicsProfileConfig *water = &cfg.physics.profiles[cfg.physics.desktop_profile[7]];
+    CHECK_DBL(water->friction, 0.9, 1e-9);
+    CHECK_DBL(water->gravity, 981.0, 1e-9);
+    config_free(&cfg);
+    drop_config();
+
+    CASE("a profile pointing nowhere is reported");
+    p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[physics.moon]\n"
+        "gravity  = 160.0\n"
+        "desktops = [99]\n");     /* no such desktop, so nothing is claimed */
+    config_load(&cfg, p);
+    CHECK(cfg.error_count >= 2);  /* the bad index, and the unused profile */
+    for (int i = 0; i < FWM_DESKTOPS; i++)
+        CHECK_INT(cfg.physics.desktop_profile[i], -1);
+    config_free(&cfg);
+    drop_config();
+}
+
 static void test_option_table(void) {
     CASE("the runtime option table");
     int count = 0;
@@ -366,6 +477,8 @@ int main(void) {
     test_tilde_expansion();
     test_input_touchpad();
     test_gestures();
+    test_rule_material();
+    test_physics_profiles();
     test_option_table();
     return t_report("config");
 }

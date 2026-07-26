@@ -1320,6 +1320,12 @@ void view_map(FwmView *view) {
         if (have_rule) {
             if (rule.nocollide >= 0) body->no_collide = rule.nocollide;
             if (rule.pin       >= 0) body->pinned     = rule.pin;
+            /* Material: copied across as-is, NANs included, because NAN is
+             * exactly what the body wants for "defer to the desktop". */
+            body->rule_mass     = rule.mass;
+            body->rule_gravity  = rule.gravity;
+            body->rule_bounce   = rule.bounce;
+            body->rule_friction = rule.friction;
         }
     }
     

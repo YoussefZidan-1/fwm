@@ -260,12 +260,33 @@ void server_dispatch_action(FwmServer *server, const char *action) {
                 }
             }
         }
+    } else if (strncmp(action, FWM_MODE_ACTION, strlen(FWM_MODE_ACTION)) == 0) {
+        /* Step into a submap, or back out of one. Unknown names return to the
+         * root map rather than leaving the keyboard in a mode that does not
+         * exist — the safe direction when a config reload has just removed the
+         * mode the user was standing in. */
+        const char *name = action + strlen(FWM_MODE_ACTION);
+        if (strcmp(name, FWM_MODE_DEFAULT) == 0) server->key_mode = -1;
+        else                                     server->key_mode = config_mode_find(&server->config, name);
+        server_request_tray_redraw(server);
     } else if (strcmp(action, "cycle_gravity") == 0) {
-        double g = server->physics.gravity_scale;
-        if (g == 0.0)       server->physics.gravity_scale = 0.15;
-        else if (g == 0.15) server->physics.gravity_scale = 1.0;
-        else                server->physics.gravity_scale = 0.0;
-        ipc_emit_gravity(server->ipc, server->physics.gravity_scale);
+        /* Walk the ladder [physics] gravity_steps sets (zero-g, a lick of it,
+         * earth by default). The current value is matched by proximity rather
+         * than equality: it may have come from `fwmctl set` or a config reload
+         * and land between two steps, and the sensible answer to "cycle from
+         * here" is then the step after the nearest one. */
+        const PhysicsConfig *pc = &server->config.physics;
+        int n = pc->gravity_step_count;
+        if (n > 0) {
+            int nearest = 0;
+            double best = fabs(server->physics.gravity_scale - pc->gravity_steps[0]);
+            for (int i = 1; i < n; i++) {
+                double d = fabs(server->physics.gravity_scale - pc->gravity_steps[i]);
+                if (d < best) { best = d; nearest = i; }
+            }
+            server->physics.gravity_scale = pc->gravity_steps[(nearest + 1) % n];
+            ipc_emit_gravity(server->ipc, server->physics.gravity_scale);
+        }
     } else if (strcmp(action, "pin_window") == 0) {
         if (server->focused_view) {
             PhysicsBody *pb = physics_find_body(&server->physics, server->focused_view->id);

@@ -13,6 +13,29 @@ stop_speed_threshold  = 1.0
 restitution           = 0.3
 gravity               = 981.0
 tick_rate             = 60.0
+# What super+g cycles through: multipliers on the gravity above, in order.
+# The default is the built-in trio — weightless, a lick of it, earth.
+#gravity_steps        = [0.0, 0.15, 1.0]
+
+# Physics per desktop. A [physics.<name>] table is a DIFF against the block
+# above: it writes friction / mass_density / restitution / gravity, inherits
+# everything it does not mention, and names the desktops it applies to. A
+# desktop no profile claims behaves exactly as [physics] says, so adding this
+# section changes nothing until you point one at a desktop.
+#
+# Windows carry their desktop's physics: drag one from the moon onto the water
+# desktop and it slows down as it crosses the edge. super+g still turns gravity
+# off everywhere at once — it is the master switch, and 0 there is 0 here too.
+#
+#[physics.moon]
+#gravity  = 160.0          # a sixth of earth: long, slow falls
+#desktops = [3, 4]
+#
+#[physics.water]
+#friction    = 0.9         # everything comes to a stop quickly
+#restitution = 0.05        # and lands without a bounce
+#gravity     = 300.0
+#desktops    = [7]
 
 # Window decorations: focus border colors ("#RRGGBB" or "#RRGGBBAA"),
 # border width (0 disables) and map fade-in duration (0 disables).
@@ -316,7 +339,19 @@ dir = "~/Pictures"
 # style as Hyprland's `class:^(mpv)$`. A rule with both matchers needs both to
 # hit; rules are applied in file order, so a later one wins field by field.
 #
-# Properties: nocollide, pin (booleans) and desktop (0..9).
+# Properties: nocollide, pin (booleans) and desktop (0..9), plus what the
+# window is MADE of:
+#
+#   mass      how heavy, relative to a normal window of the same size. 8 is a
+#             window nothing can shove; 0.1 skitters away when brushed.
+#   gravity   multiplies the desktop's gravity. 0 = weightless in a room where
+#             everything else falls, -0.2 = a balloon that drifts up.
+#   bounce    restitution 0..1. 0 lands dead, 0.9 is a rubber ball.
+#   friction  how much speed it keeps per tick, 0..1, like [physics] friction.
+#             Low values also make it grip other windows more.
+#
+# These four are absolute settings, not toggles: they layer over the desktop's
+# profile, so a heavy window stays heavy wherever it is dragged.
 #
 # There is no per-window "float" on purpose: tiling here is a property of the
 # DESKTOP, not of the window, so such a rule could not be honoured. Use
@@ -333,6 +368,16 @@ dir = "~/Pictures"
 #[[rule]]
 #title = "^Picture-in-Picture$"
 #pin   = true
+#
+#[[rule]]
+#app_id = "^mpv$"
+#mass   = 8.0              # a video player has some heft to it
+#
+#[[rule]]
+#app_id  = "^(kitty|foot)$"
+#mass    = 0.15            # terminals are light ...
+#bounce  = 0.85            # ... and bouncy
+#gravity = -0.1            # and drift gently upward when left alone
 
 # Anything above with a numeric or colour value can also be changed live,
 # without editing this file:

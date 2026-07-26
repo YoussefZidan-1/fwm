@@ -56,7 +56,27 @@ typedef struct {
     int spin;
     double angle;
     double angvel;   /* rad/s */
+
+    /* Per-window material, straight from [[rule]]. NAN means "the rule said
+     * nothing about it", so the desktop's profile stands — the same tri-state
+     * the rest of the rule properties use, spelled for doubles because 0 is a
+     * meaningful value for every one of them (a weightless window, a window
+     * that does not bounce). Resolved against the profile in physics_step. */
+    double rule_mass;      /* multiplies the profile's mass_density; 1 = normal */
+    double rule_gravity;   /* multiplies the profile's gravity; -1 floats up */
+    double rule_bounce;    /* restitution 0..1, absolute */
+    double rule_friction;  /* per-tick velocity retention, absolute */
 } PhysicsBody;
+
+/* The physics of one desktop. Every field starts as the [physics] value and is
+ * overridden by the [physics.<name>] profile the desktop was assigned, so a
+ * desktop nobody configured behaves exactly as the whole world used to. */
+typedef struct {
+    double gravity;      /* px/s^2 for this desktop, before gravity_scale */
+    double friction;     /* per-tick velocity retention */
+    double restitution;
+    double mass_density;
+} PhysicsProfile;
 
 /* One collision hard enough to be worth reacting to, reported through the
  * mirror so the compositor never has to talk to Box2D. Valid only until the
@@ -87,6 +107,12 @@ typedef struct {
     double restitution;
     double gravity;
 
+    /* Per-desktop physics. Filled from the config at load and reload; the
+     * defaults above are what an unassigned desktop gets. Indexed by
+     * PhysicsBody.desktop_id, so a window carries its desktop's physics with it
+     * the moment it is dragged across the edge. */
+    PhysicsProfile desktops[FWM_DESKTOPS];
+
     /* Opaque Box2D engine state (see physics.c). The struct above is the
      * authoritative "mirror" that the rest of the compositor reads and writes;
      * physics_step pushes it into Box2D, steps, and pulls results back. */
@@ -94,6 +120,10 @@ typedef struct {
 } PhysicsWorld;
 
 void physics_init(PhysicsWorld *world);
+/* Point every desktop at the world's own scalars. Call it after those change
+ * (config load, reload, `fwmctl set`), then write the desktops a
+ * [physics.<name>] profile claims over the top. */
+void physics_reset_profiles(PhysicsWorld *world);
 void physics_destroy(PhysicsWorld *world);
 PhysicsBody *physics_sync_body(PhysicsWorld *world, uint32_t id, int x, int y, int width, int height, int screen_width);
 void physics_stop_body(PhysicsWorld *world, uint32_t id);

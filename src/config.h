@@ -19,6 +19,8 @@
 #include <stddef.h>
 #include <xkbcommon/xkbcommon.h>
 
+#include "defines.h"
+
 /* Modifiers */
 #define FWM_MOD_SHIFT (1 << 0)
 #define FWM_MOD_CTRL  (1 << 1)
@@ -26,6 +28,31 @@
 #define FWM_MOD_LOGO  (1 << 3)
 
 /* ── physics ─────────────────────────────────────────────────────────── */
+
+/*
+ * A named set of physics a desktop can be given:
+ *
+ *   [physics.moon]
+ *   gravity  = 160.0
+ *   desktops = [3, 4]
+ *
+ * Every field starts at the [physics] value and is overridden only by what the
+ * profile writes, so a profile is a diff against the world, not a second copy
+ * of it. A desktop no profile claims keeps the [physics] values exactly, which
+ * is why an existing config behaves as it always did.
+ */
+#define CONFIG_MAX_PROFILES 10
+
+typedef struct {
+    char   name[32];
+    double friction;
+    double mass_density;
+    double restitution;
+    double gravity;
+} PhysicsProfileConfig;
+
+/* How many steps cycle_gravity walks through. */
+#define CONFIG_MAX_GRAVITY_STEPS 8
 
 typedef struct {
     double friction;
@@ -36,6 +63,18 @@ typedef struct {
     double restitution;
     double gravity;
     double tick_rate;
+
+    PhysicsProfileConfig profiles[CONFIG_MAX_PROFILES];
+    int    profile_count;
+    /* Which profile each desktop was assigned, or -1 for the [physics] values.
+     * Resolved at load: a desktop claimed by two profiles goes to the last one,
+     * matching how a later [[rule]] wins over an earlier one. */
+    int    desktop_profile[FWM_DESKTOPS];
+
+    /* The gravity multipliers cycle_gravity walks, in order. Defaults to the
+     * built-in zero-g / space / earth trio. */
+    double gravity_steps[CONFIG_MAX_GRAVITY_STEPS];
+    int    gravity_step_count;
 } PhysicsConfig;
 
 /* ── tiling ──────────────────────────────────────────────────────────── */
@@ -308,6 +347,24 @@ typedef struct {
     int nocollide;  /* PhysicsBody.no_collide */
     int pin;        /* PhysicsBody.pinned */
     int desktop;    /* 0..9; where the window opens */
+
+    /* What the window is made of. NAN is the "says nothing" state here, because
+     * 0 is a meaningful value for every one of them: a weightless window, one
+     * that does not bounce, one that slides forever. Applied to the physics
+     * body, which resolves them against the desktop's profile every step — so
+     * a heavy window stays heavy when it is dragged onto the moon desktop.
+     *
+     *   mass     multiplies the desktop's mass_density. 8 = a window that
+     *            shrugs off anything shoving it, 0.1 = one that skitters.
+     *   gravity  multiplies the desktop's gravity. 0 = weightless in a room
+     *            where everything else falls, -0.2 = a balloon.
+     *   bounce   restitution, absolute 0..1.
+     *   friction per-tick velocity retention, absolute 0..1, like
+     *            [physics] friction. */
+    double mass;
+    double gravity;
+    double bounce;
+    double friction;
 } ConfigRule;
 
 /* ── runtime-settable options ────────────────────────────────────────── */

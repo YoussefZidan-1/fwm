@@ -233,6 +233,32 @@ void server_set_wallpaper(FwmServer *server, const char *path) {
     wlr_log(WLR_INFO, "wallpaper set to %s", path);
 }
 
+void server_apply_physics_config(FwmServer *server) {
+    const PhysicsConfig *pc = &server->config.physics;
+
+    /* Physics knobs are plain scalars on the live world. */
+    server->physics.friction               = pc->friction;
+    server->physics.mass_density           = pc->mass_density;
+    server->physics.throw_speed_multiplier = pc->throw_speed_multiplier;
+    server->physics.max_throw_speed        = pc->max_throw_speed;
+    server->physics.stop_speed_threshold   = pc->stop_speed_threshold;
+    server->physics.restitution            = pc->restitution;
+    server->physics.gravity                = pc->gravity;
+
+    /* Every desktop starts on those, then takes its profile if it has one.
+     * Order matters: reset reads the scalars just written. */
+    physics_reset_profiles(&server->physics);
+    for (int d = 0; d < FWM_DESKTOPS; d++) {
+        int idx = pc->desktop_profile[d];
+        if (idx < 0 || idx >= pc->profile_count) continue;
+        const PhysicsProfileConfig *pr = &pc->profiles[idx];
+        server->physics.desktops[d].friction     = pr->friction;
+        server->physics.desktops[d].mass_density = pr->mass_density;
+        server->physics.desktops[d].restitution  = pr->restitution;
+        server->physics.desktops[d].gravity      = pr->gravity;
+    }
+}
+
 /* Push the current FwmConfig onto the live compositor.
  *
  * Split out of server_reload_config so that a single `fwmctl set` can reuse
@@ -247,14 +273,7 @@ void server_apply_config(FwmServer *server, int rebuild_wallpaper) {
      * the whole system. */
     theme_build(&server->config);
 
-    /* Physics knobs are plain scalars on the live world. */
-    server->physics.friction              = server->config.physics.friction;
-    server->physics.mass_density          = server->config.physics.mass_density;
-    server->physics.throw_speed_multiplier = server->config.physics.throw_speed_multiplier;
-    server->physics.max_throw_speed       = server->config.physics.max_throw_speed;
-    server->physics.stop_speed_threshold  = server->config.physics.stop_speed_threshold;
-    server->physics.restitution           = server->config.physics.restitution;
-    server->physics.gravity               = server->config.physics.gravity;
+    server_apply_physics_config(server);
 
     /* Keyboards: layout/variant/options/repeat may all have changed. */
     struct FwmKeyboard *kb;

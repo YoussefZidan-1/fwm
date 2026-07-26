@@ -31,6 +31,8 @@ This is the primary, actively developed version. The legacy X11 version lives on
 - **Continuous collision** — fast throws never tunnel through walls.
 - **Free rotation** (`Super+R`, experimental) — hands a window's rotation to the simulation: the collision box turns with the picture, so it tumbles off the walls and shoves its neighbours corner-first. See below for how it is spun.
 - **Per-window toggles** — pin (`Super+P`), collision off (`Super+N`), calm everything (`Super+Shift+C`).
+- **What a window is made of** — `[[rule]]` sets `mass`, `bounce`, `friction` and `gravity` per window, so a video player can be eight times as heavy as a terminal and a terminal can be a balloon that drifts upward. The properties travel with the window, not with where it happens to be.
+- **Physics per desktop** — a `[physics.<name>]` profile writes gravity, friction, restitution or density and names the desktops it applies to. Desktop 4 on the moon, desktop 8 underwater; drag a window across the edge and it changes as it goes. `Super+G` remains the master switch, and what it cycles through is `gravity_steps` in the config.
 
 ### Free rotation (experimental)
 

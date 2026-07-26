@@ -358,6 +358,10 @@ void server_reload_config(FwmServer *server);
  * file. Used by server_reload_config (rebuild_wallpaper = 1) and by
  * `fwmctl set`, which must not pay for an image decode per keystroke (0). */
 void server_apply_config(FwmServer *server, int rebuild_wallpaper);
+/* Copy the config's physics onto the live world: the scalars, and the
+ * per-desktop profiles built out of them. Split out because startup and reload
+ * both need exactly this and nothing else. */
+void server_apply_physics_config(FwmServer *server);
 /* Run a keybind action from outside the keyboard path (see src/ipc.c). */
 void server_dispatch_action_external(FwmServer *server, const char *action);
 /* Swap the wallpaper at runtime: rebuilds the layers, recomputes the palette

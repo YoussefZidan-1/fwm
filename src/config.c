@@ -20,6 +20,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <unistd.h>
+#include <math.h>
 
 /* ── physics defaults (mirrors old defines.h) ────────────────────────── */
 
@@ -32,6 +33,14 @@ static const PhysicsConfig physics_defaults = {
     .restitution            = 0.75,
     .gravity                = 200.0,
     .tick_rate              = 60.0,
+    /* No profiles, every desktop on the world's own values, and the gravity
+     * ladder cycle_gravity has always climbed. Spelled out because this struct
+     * is also assigned wholesale on the paths that never reach load_physics
+     * (no config file, unreadable file, syntax error). */
+    .profile_count      = 0,
+    .desktop_profile    = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 },
+    .gravity_steps      = { 0.0, 0.15, 1.0 },
+    .gravity_step_count = 3,
 };
 
 /* ── diagnostics ─────────────────────────────────────────────────────── */
@@ -144,8 +153,60 @@ static int parse_bind_key(const char *str, unsigned int *mod_out, xkb_keysym_t *
         if (_d.ok) cfg_field = _d.u.d; \
     } while (0)
 
-static void load_physics(toml_table_t *root, PhysicsConfig *p) {
+/* One [physics.<name>] profile: the world's values, with whatever the table
+ * writes over the top, plus the desktops it claims. */
+static void load_physics_profile(FwmConfig *cfg, toml_table_t *tbl, const char *name) {
+    PhysicsConfig *p = &cfg->physics;
+    if (p->profile_count >= CONFIG_MAX_PROFILES) {
+        config_report_error(cfg, "[physics.%s]: too many profiles (max %d) — ignored",
+                            name, CONFIG_MAX_PROFILES);
+        return;
+    }
+
+    PhysicsProfileConfig *pr = &p->profiles[p->profile_count];
+    snprintf(pr->name, sizeof(pr->name), "%s", name);
+    pr->friction     = p->friction;
+    pr->mass_density = p->mass_density;
+    pr->restitution  = p->restitution;
+    pr->gravity      = p->gravity;
+
+    LOAD_DOUBLE(tbl, "friction",     pr->friction);
+    LOAD_DOUBLE(tbl, "mass_density", pr->mass_density);
+    LOAD_DOUBLE(tbl, "restitution",  pr->restitution);
+    LOAD_DOUBLE(tbl, "gravity",      pr->gravity);
+
+    /* A profile nothing points at is dead weight, and silence about it is the
+     * kind of thing that costs an evening. */
+    toml_array_t *desks = toml_array_in(tbl, "desktops");
+    int claimed = 0;
+    for (int i = 0; desks && i < toml_array_nelem(desks); i++) {
+        toml_datum_t d = toml_int_at(desks, i);
+        if (!d.ok) continue;
+        if (d.u.i < 0 || d.u.i >= FWM_DESKTOPS) {
+            config_report_error(cfg, "[physics.%s]: desktop %lld out of range 0..%d — ignored",
+                                name, (long long)d.u.i, FWM_DESKTOPS - 1);
+            continue;
+        }
+        p->desktop_profile[d.u.i] = p->profile_count;
+        claimed++;
+    }
+    if (!claimed)
+        config_report_error(cfg, "[physics.%s]: no desktops = [...] — profile unused", name);
+
+    p->profile_count++;
+}
+
+static void load_physics(toml_table_t *root, FwmConfig *cfg) {
+    PhysicsConfig *p = &cfg->physics;
     *p = physics_defaults;
+    p->profile_count = 0;
+    for (int i = 0; i < FWM_DESKTOPS; i++) p->desktop_profile[i] = -1;
+    /* Zero-g, a lick of gravity, and earth — what cycle_gravity has always
+     * walked, now merely the default list rather than the only one. */
+    p->gravity_steps[0] = 0.0;
+    p->gravity_steps[1] = 0.15;
+    p->gravity_steps[2] = 1.0;
+    p->gravity_step_count = 3;
 
     toml_table_t *tbl = toml_table_in(root, "physics");
     if (!tbl) return;
@@ -158,6 +219,36 @@ static void load_physics(toml_table_t *root, PhysicsConfig *p) {
     LOAD_DOUBLE(tbl, "restitution",            p->restitution);
     LOAD_DOUBLE(tbl, "gravity",                p->gravity);
     LOAD_DOUBLE(tbl, "tick_rate",              p->tick_rate);
+
+    toml_array_t *steps = toml_array_in(tbl, "gravity_steps");
+    if (steps) {
+        int n = toml_array_nelem(steps);
+        int count = 0;
+        for (int i = 0; i < n && count < CONFIG_MAX_GRAVITY_STEPS; i++) {
+            toml_datum_t d = toml_double_at(steps, i);
+            if (!d.ok) {
+                toml_datum_t di = toml_int_at(steps, i);   /* "1" is not "1.0" */
+                if (!di.ok) continue;
+                d.u.d = (double)di.u.i;
+            }
+            p->gravity_steps[count++] = d.u.d;
+        }
+        if (count > 0) p->gravity_step_count = count;
+        else config_report_error(cfg, "[physics] gravity_steps: no usable numbers — "
+                                      "keeping the built-in steps");
+        if (n > CONFIG_MAX_GRAVITY_STEPS)
+            config_report_error(cfg, "[physics] gravity_steps: only the first %d are used",
+                                CONFIG_MAX_GRAVITY_STEPS);
+    }
+
+    /* Sub-tables of [physics] are profiles; the scalars above are not. Walked
+     * after them so a profile inherits the world's final values. */
+    for (int i = 0; ; i++) {
+        const char *key = toml_key_in(tbl, i);
+        if (!key) break;
+        toml_table_t *sub = toml_table_in(tbl, key);
+        if (sub) load_physics_profile(cfg, sub, key);
+    }
 }
 
 /* ── tiling section ──────────────────────────────────────────────────── */
@@ -820,6 +911,26 @@ static int rule_tristate(toml_table_t *tbl, const char *key) {
     return d.ok ? (d.u.b ? 1 : 0) : -1;
 }
 
+/* The same idea for a number, where -1 is a value someone may well mean
+ * (gravity = -1 is a window that falls upward). NAN is the "unset" state, and
+ * an integer in the file is accepted as the double it obviously is — writing
+ * `mass = 8` and getting silence would be a mean trick. */
+static double rule_number(FwmConfig *cfg, toml_table_t *tbl, const char *key,
+                          int index, double min, double max) {
+    toml_datum_t d = toml_double_in(tbl, key);
+    if (!d.ok) {
+        toml_datum_t di = toml_int_in(tbl, key);
+        if (!di.ok) return NAN;
+        d.u.d = (double)di.u.i;
+    }
+    if (d.u.d < min || d.u.d > max) {
+        config_report_error(cfg, "[[rule]] #%d: %s %g out of range %g..%g — ignored",
+                            index + 1, key, d.u.d, min, max);
+        return NAN;
+    }
+    return d.u.d;
+}
+
 static void load_rules(toml_table_t *root, FwmConfig *cfg) {
     cfg->rules      = NULL;
     cfg->rule_count = 0;
@@ -874,7 +985,18 @@ static void load_rules(toml_table_t *root, FwmConfig *cfg) {
                 r->desktop = (int)desk.u.i;
         }
 
-        if (r->nocollide < 0 && r->pin < 0 && r->desktop < 0)
+        /* Material. Ranges are wide on purpose — a window 100x heavier than
+         * normal or one that falls upward is a thing someone may genuinely
+         * want — and only bar the values that would break the simulation
+         * outright (a massless body, restitution over 1 gaining energy on
+         * every bounce, retention over 1 accelerating for free). */
+        r->mass     = rule_number(cfg, tbl, "mass",     i, 0.001, 1000.0);
+        r->gravity  = rule_number(cfg, tbl, "gravity",  i, -100.0, 100.0);
+        r->bounce   = rule_number(cfg, tbl, "bounce",   i, 0.0, 1.0);
+        r->friction = rule_number(cfg, tbl, "friction", i, 0.0, 1.0);
+
+        if (r->nocollide < 0 && r->pin < 0 && r->desktop < 0 &&
+            isnan(r->mass) && isnan(r->gravity) && isnan(r->bounce) && isnan(r->friction))
             config_report_error(cfg, "[[rule]] #%d: matches but sets nothing", i + 1);
 
         idx++;
@@ -887,6 +1009,7 @@ int config_match_rules(const FwmConfig *cfg, const char *app_id, const char *tit
     out->nocollide = -1;
     out->pin       = -1;
     out->desktop   = -1;
+    out->mass = out->gravity = out->bounce = out->friction = NAN;
 
     int matched = 0;
     for (int i = 0; i < cfg->rule_count; i++) {
@@ -905,6 +1028,10 @@ int config_match_rules(const FwmConfig *cfg, const char *app_id, const char *tit
         if (r->nocollide >= 0) out->nocollide = r->nocollide;
         if (r->pin       >= 0) out->pin       = r->pin;
         if (r->desktop   >= 0) out->desktop   = r->desktop;
+        if (!isnan(r->mass))     out->mass     = r->mass;
+        if (!isnan(r->gravity))  out->gravity  = r->gravity;
+        if (!isnan(r->bounce))   out->bounce   = r->bounce;
+        if (!isnan(r->friction)) out->friction = r->friction;
         matched = 1;
     }
     return matched;
@@ -1086,7 +1213,7 @@ void config_load(FwmConfig *cfg, const char *path) {
         return;
     }
 
-    load_physics(root, &cfg->physics);
+    load_physics(root, cfg);
     load_tiling(root, &cfg->tiling);
     load_camera(root, &cfg->camera);
     load_decor(root, cfg);

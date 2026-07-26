@@ -897,13 +897,7 @@ bool server_init(FwmServer *server) {
 
     // Init physics
     physics_init(&server->physics);
-    server->physics.friction = server->config.physics.friction;
-    server->physics.mass_density = server->config.physics.mass_density;
-    server->physics.throw_speed_multiplier = server->config.physics.throw_speed_multiplier;
-    server->physics.max_throw_speed = server->config.physics.max_throw_speed;
-    server->physics.stop_speed_threshold = server->config.physics.stop_speed_threshold;
-    server->physics.restitution = server->config.physics.restitution;
-    server->physics.gravity = server->config.physics.gravity;
+    server_apply_physics_config(server);
     
     server->camera_x = 0;
     server->target_camera_x = 0;
