@@ -143,6 +143,15 @@ static void view_border_box(FwmView *view, int *w, int *h);
 #define JELLY_STRAIN_PER_PX 0.0016 /* lag px -> fraction of the window's size */
 #define JELLY_MAX_S        0.22    /* cap on the stretch, before the bulge */
 #define JELLY_BULGE        0.5     /* how much the other axis pinches in */
+/* How much of the lag the picture actually hangs back by, and the ceiling on
+ * it. This is the part that reads as jelly; the stretch alone only pulsed. */
+#define JELLY_TRAIL        0.45
+#define JELLY_TRAIL_MAX_PX 60.0
+/* Lag at which the stretch has slid fully onto the trailing edge. */
+#define JELLY_ANCHOR_REF_PX 40.0
+/* Integration sub-step. Well under 2/sqrt(K), where forward Euler blows up. */
+#define JELLY_STEP_S       (1.0 / 240.0)
+#define JELLY_MAX_STEPS    64
 /* An impact arriving mid-drag is fed to the spring as a kick. Peak lag from a
  * kick is about v/sqrt(K), so this turns a typical 0.15 impact into ~40px. */
 #define JELLY_HIT_KICK     4000.0
@@ -416,6 +425,10 @@ void view_squash_tick(FwmView *view, double dt) {
 
 /* ── drag wobble ──────────────────────────────────────────────────────── */
 
+static double clampd(double v, double lo, double hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
 void view_jelly_begin(FwmView *view, double strength) {
     if (!view->scene_tree || !view->last_buffer) return;
     if (strength <= 0.0) return;
@@ -504,10 +517,22 @@ void view_jelly_tick(FwmView *view, double strength, double dt) {
     view->jelly_px = px;
     view->jelly_py = py;
 
-    view->jelly_vx += (JELLY_K * (px - view->jelly_mx) - JELLY_C * view->jelly_vx) * dt;
-    view->jelly_vy += (JELLY_K * (py - view->jelly_my) - JELLY_C * view->jelly_vy) * dt;
-    view->jelly_mx += view->jelly_vx * dt;
-    view->jelly_my += view->jelly_vy * dt;
+    /* Sub-stepped, and not as a nicety: forward Euler on a spring this stiff
+     * goes unstable somewhere past dt = 2/sqrt(K), and server_animate hands out
+     * dt up to its 0.25s stall clamp. One dropped frame was enough to have the
+     * mass thrown clear across the screen and snap back — a flinch, not a
+     * wobble. Fixed small steps make a long frame slow the wobble down instead
+     * of detonating it. */
+    int steps = (int)ceil(dt / JELLY_STEP_S);
+    if (steps < 1) steps = 1;
+    if (steps > JELLY_MAX_STEPS) steps = JELLY_MAX_STEPS;
+    double sdt = dt / steps;
+    for (int i = 0; i < steps; i++) {
+        view->jelly_vx += (JELLY_K * (px - view->jelly_mx) - JELLY_C * view->jelly_vx) * sdt;
+        view->jelly_vy += (JELLY_K * (py - view->jelly_my) - JELLY_C * view->jelly_vy) * sdt;
+        view->jelly_mx += view->jelly_vx * sdt;
+        view->jelly_my += view->jelly_vy * sdt;
+    }
 
     /* How far the jelly is behind the window it is painted on. */
     double lx = view->jelly_mx - px;
@@ -539,11 +564,29 @@ void view_jelly_tick(FwmView *view, double strength, double dt) {
     if (dw < 1) dw = 1;
     if (dh < 1) dh = 1;
 
-    /* Plant the leading edge and let the stretch trail: dragged left the window
-     * lags to the RIGHT, so the left edge stays under the cursor and the jelly
-     * is what strings out behind. */
-    int ox = lx > 0 ? 0 : w - dw;
-    int oy = ly > 0 ? 0 : h - dh;
+    /* The body trails: the picture itself hangs back along the lag, and the
+     * stretch grows out on the same side. Without this the window stayed
+     * exactly where it was and only its SIZE pulsed, which is a twitch, not a
+     * sway — the size is the small half of the effect and the trailing is what
+     * reads as weight. Capped so a hard shake cannot tear the picture off the
+     * box it belongs to. */
+    double tx = JELLY_TRAIL * lx, ty = JELLY_TRAIL * ly;
+    if (tx >  JELLY_TRAIL_MAX_PX) tx =  JELLY_TRAIL_MAX_PX;
+    if (tx < -JELLY_TRAIL_MAX_PX) tx = -JELLY_TRAIL_MAX_PX;
+    if (ty >  JELLY_TRAIL_MAX_PX) ty =  JELLY_TRAIL_MAX_PX;
+    if (ty < -JELLY_TRAIL_MAX_PX) ty = -JELLY_TRAIL_MAX_PX;
+
+    /* Which edge the stretch grows from, as a weight rather than a choice.
+     * Picking the edge outright — plant the left one while the lag is positive,
+     * the right one while it is negative — teleports the whole box by (w - dw)
+     * at every zero crossing of the wobble, several times a second. That jump
+     * WAS the twitch. At rest the weight is 0.5, i.e. the stretch is centred,
+     * and it slides to one edge as the lag builds. */
+    double ux = 0.5 - 0.5 * clampd(lx / JELLY_ANCHOR_REF_PX, -1.0, 1.0);
+    double uy = 0.5 - 0.5 * clampd(ly / JELLY_ANCHOR_REF_PX, -1.0, 1.0);
+
+    int ox = (int)lround(tx + (w - dw) * ux);
+    int oy = (int)lround(ty + (h - dh) * uy);
 
     wlr_scene_buffer_set_dest_size(view->squash_buf, dw, dh);
     wlr_scene_node_set_position(&view->squash_buf->node, ox, oy);
