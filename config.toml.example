@@ -174,7 +174,7 @@ tap = true
 [binds]
 # format: "mod+key" = "action"
 # mod keys: super, alt, shift, ctrl
-# system actions: killclient, toggle_tiling, fake_fullscreen, real_fullscreen,
+# system actions: terminal, killclient, toggle_tiling, fake_fullscreen, real_fullscreen,
 #                 pin_window, toggle_nocollide, toggle_nocollide_all,
 #                 toggle_tiling_all, toggle_floating, toggle_floating_all,
 #                 calm_all, cycle_gravity, toggle_tray,
@@ -197,7 +197,13 @@ tap = true
 # desktop edge; in tiling you cannot, because the layout owns its geometry —
 # these actions are the way to move a tiled window out.
 
-"super+Return"       = "spawn:kitty"
+# `terminal` runs $TERMINAL if you have set it (arguments and all — the whole
+# value goes through a shell), and otherwise the first emulator it finds
+# installed, cheapest to start first. Not $TERM: that is the terminfo entry, so
+# honouring it would try to run "xterm-256color" from inside kitty. Want a
+# specific one regardless? spawn: takes anything, including variables of your
+# own: "spawn:$MY_TERM -e tmux".
+"super+Return"       = "terminal"
 #"super+space"        = "spawn:rofi -show drun -normal-window"
 "super+q"            = "killclient"
 "super+t"            = "toggle_tiling"

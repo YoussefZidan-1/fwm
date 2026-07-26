@@ -72,7 +72,7 @@ static int action_is_known(const char *a) {
         "toggle_nocollide", "toggle_nocollide_all", "toggle_tiling_all",
         "toggle_floating", "toggle_floating_all",
         "calm_all", "fake_fullscreen", "real_fullscreen",
-        "launcher", "toggle_tray", "spin_window", "spin_all", NULL
+        "launcher", "toggle_tray", "spin_window", "spin_all", "terminal", NULL
     };
     static const char *prefixes[] = {
         "spawn:", "view:", "move_camera:", "tile_focus:", "tile_move:",
@@ -531,7 +531,7 @@ static void load_session(toml_table_t *root, SessionConfig *s, FwmConfig *cfg) {
  * cannot spawn a terminal, switch desktops or exit. Mirrors the defaults in
  * config.toml.example; keep the two in sync. */
 static const struct { const char *bind; const char *action; } default_binds[] = {
-    { "super+Return",         "spawn:kitty"      },
+    { "super+Return",         "terminal"         },
     { "super+space",          "launcher"         },
     { "super+q",              "killclient"       },
     { "super+t",              "toggle_tiling"    },

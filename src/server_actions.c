@@ -139,6 +139,72 @@ bool server_can_spin(const PhysicsBody *b) {
  * effects.spin. */
 #define SPIN_KICK 0.6
 
+/* Run a command as a detached child. Through a shell, so a bind can carry
+ * quoting, arguments and $VARIABLES — `spawn:$BROWSER --new-window` works for
+ * exactly the reason it looks like it should. */
+static void server_spawn(const char *cmd) {
+    if (fork() == 0) {
+        setsid();
+        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        exit(1);
+    }
+}
+
+/* Is `name` an executable somewhere on PATH? */
+static bool on_path(const char *name) {
+    const char *path = getenv("PATH");
+    if (!path || !*path) path = "/usr/local/bin:/usr/bin:/bin";
+    while (*path) {
+        const char *sep = strchr(path, ':');
+        size_t len = sep ? (size_t)(sep - path) : strlen(path);
+        if (len == 0) { len = 1; path = "."; }   /* empty entry means cwd */
+        char full[512];
+        if (snprintf(full, sizeof(full), "%.*s/%s", (int)len, path, name) < (int)sizeof(full)
+            && access(full, X_OK) == 0) return true;
+        if (!sep) break;
+        path = sep + 1;
+    }
+    return false;
+}
+
+/* What `terminal` should run.
+ *
+ * $TERMINAL first — it is the variable the user sets when they have an opinion,
+ * and it may carry arguments, which is fine because we go through a shell.
+ * Deliberately NOT $TERM: that is the terminfo entry name, so honouring it
+ * would try to run "xterm-256color" from inside kitty.
+ *
+ * Otherwise the first emulator actually installed, cheapest to start first —
+ * on old integrated graphics the difference between foot and kitty is two
+ * seconds of staring at nothing. A list is still a choice made for the user,
+ * but unlike a hard-coded name it is one they can override with either half of
+ * the mechanism: the variable, or `spawn:` with whatever they please. */
+static const char *terminal_command(FwmServer *server) {
+    const char *env = getenv("TERMINAL");
+    if (env && *env) return env;
+
+    static const char *known[] = {
+        "foot", "alacritty", "kitty", "wezterm", "ghostty", "st", "urxvt",
+        "konsole", "gnome-terminal", "xfce4-terminal", "lxterminal", "xterm",
+        NULL,
+    };
+    for (int i = 0; known[i]; i++)
+        if (on_path(known[i])) return known[i];
+
+    /* Nothing to run. Said once, through the tray pill that reports config
+     * problems, because a bind that silently does nothing is the worst way to
+     * find out that no terminal is installed. */
+    static bool warned = false;
+    if (!warned) {
+        warned = true;
+        config_report_error(&server->config,
+                            "`terminal`: no terminal emulator found — set $TERMINAL "
+                            "or bind spawn:<your terminal>");
+        server_request_tray_redraw(server);
+    }
+    return NULL;
+}
+
 /* The desktop an action's argument names: a number ("view:3"), or "next" /
  * "prev" relative to where the camera is HEADED — which is what the user is
  * aiming at when a gesture or a held key fires this twice in a row. Returns -1
@@ -425,13 +491,12 @@ void server_dispatch_action(FwmServer *server, const char *action) {
             bool on = pb && pb->fullscreen;
             server_set_fullscreen(server, server->focused_view, !on, true);
         }
+    } else if (strcmp(action, "terminal") == 0) {
+        const char *cmd = terminal_command(server);
+        if (cmd) server_spawn(cmd);
     } else if (strncmp(action, "spawn:", 6) == 0) {
         const char *cmd = action + 6;
-        if (fork() == 0) {
-            setsid();
-            execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
-            exit(1);
-        }
+        server_spawn(cmd);
     } else if (strncmp(action, "move_camera:", 12) == 0) {
         int amt = atoi(action + 12);
         int new_target = server->target_camera_x + amt;

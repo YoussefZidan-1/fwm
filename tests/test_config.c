@@ -165,6 +165,17 @@ static void test_bad_input(void) {
     CHECK(cfg.decor.col_active[3] > 0.0);          /* still a visible colour */
     config_free(&cfg);
 
+    CASE("the built-in binds are all understood");
+    /* apply_default_binds runs whenever the file is unusable, so a typo in that
+     * table would be found only on a machine with a broken config. */
+    p = write_config("");
+    config_load(&cfg, p);
+    CHECK_INT(cfg.fallback_binds, 1);
+    const KeyBind *kb = config_match_bind(&cfg, XKB_KEY_Return, FWM_MOD_LOGO);
+    CHECK_NOT_NULL(kb);
+    CHECK_STR(kb->action, "terminal");   /* not a hard-coded emulator name */
+    config_free(&cfg);
+
     CASE("bind to an action that does not exist");
     p = write_config("[binds]\n\"super+q\" = \"no_such_action\"\n");
     config_load(&cfg, p);

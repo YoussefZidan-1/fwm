@@ -110,6 +110,7 @@ static const char *action_label(const char *a, char *buf, size_t cap) {
         { "group_prev",       "prev tab" },
         { "group_add",        "join stack under" },
         { "launcher",         "app launcher" },
+        { "terminal",         "terminal" },
         { "show_hints",       "this help" },
         { "reload_config",    "reload config" },
         { "wallpaper_picker", "wallpaper picker" },

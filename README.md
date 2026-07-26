@@ -157,13 +157,15 @@ Known gaps: no HiDPI / fractional output scale, no multimonitor, no IME (xkb lay
 
 wlroots must be built with Xwayland support — CMake refuses to configure otherwise. Xwayland itself starts lazily, only when the first X11 client appears.
 
-**A note on the default terminal.** `super+Return` spawns `kitty`, which draws through OpenGL 3.3 and pays for that at startup. On old integrated graphics this is slow in a way that looks like the compositor hanging: on a 2012 laptop kitty takes ~2s to appear where [foot](https://codeberg.org/dnkl/foot) takes ~400ms in the same session. Nothing in fwm is involved — both terminals travel the identical map path — so if your machine is of that vintage, rebind it:
+**Which terminal `super+Return` opens.** The `terminal` action runs `$TERMINAL` if you have set one — arguments included, since the value goes through a shell — and otherwise the first emulator it finds installed, cheapest to start first. It deliberately ignores `$TERM`: that is the terminfo entry name, so honouring it would try to run `xterm-256color` from inside kitty. If nothing is installed, the tray says so once rather than leaving a key that quietly does nothing.
+
+Why "cheapest first": `kitty` draws through OpenGL 3.3 and pays for that at startup. On old integrated graphics this is slow in a way that looks like the compositor hanging — on a 2012 laptop kitty takes ~2s to appear where [foot](https://codeberg.org/dnkl/foot) takes ~400ms in the same session. Nothing in fwm is involved; both terminals travel the identical map path. (`kitty`'s `single_instance yes` is the other way out: you pay the startup once per session instead of per window.)
+
+To pin a specific one, bind it directly — `spawn:` takes anything a shell does:
 
 ```toml
 "super+Return" = "spawn:foot"
 ```
-
-`kitty`'s `single_instance yes` is the other way out: you pay the startup once per session instead of per window.
 
 ---
 
@@ -531,7 +533,7 @@ fit  = "pan"
 #fps  = 15
 
 [binds]
-"super+Return"       = "spawn:kitty"
+"super+Return"       = "terminal"
 "super+space"        = "launcher"
 "super+q"            = "killclient"
 "super+t"            = "toggle_tiling"
