@@ -53,7 +53,9 @@ struct BodySlot {
     int sw, sh;              /* shape size the box was built with (px) */
     b2BodyType type;         /* last applied body type */
     int no_collide;          /* last applied collision-filter state */
+    int spin;                /* last applied free-rotation state */
     double sx, sy, svx, svy; /* shadow of last-written mirror position/velocity */
+    double sang, sangvel;    /* ... and of its rotation */
 };
 
 struct Engine {
@@ -243,9 +245,34 @@ void physics_throw_body(PhysicsWorld *world, uint32_t id, double vx, double vy) 
             body->vx = vx * world->throw_speed_multiplier;
             body->vy = vy * world->throw_speed_multiplier;
             clamp_velocity(&body->vx, &body->vy, world->max_throw_speed);
+            /* The spin a thrown window carries is NOT invented here. It is
+             * whatever it already had when it was let go, which the drag has
+             * been building all along out of where it was grabbed and how the
+             * hand moved (server_drag_swing). Adding a term proportional to
+             * the throw was the first version and it fought that: a window
+             * flung straight got a spin nothing in the gesture called for. */
             return;
         }
     }
+}
+
+void physics_spin_body(PhysicsWorld *world, uint32_t id, double angvel) {
+    PhysicsBody *body = physics_find_body(world, id);
+    if (!body) return;
+    body->spin = 1;
+    body->angvel = angvel;
+}
+
+void physics_unspin_body(PhysicsWorld *world, uint32_t id) {
+    PhysicsBody *body = physics_find_body(world, id);
+    if (!body) return;
+    body->spin = 0;
+    /* Settle upright rather than freezing at whatever angle the window happened
+     * to be at: a window left tilted has an axis-aligned scene node again the
+     * moment the snapshot goes away, so the tilt would simply vanish in one
+     * frame — snapping the mirror here makes that the intended end state. */
+    body->angle = 0.0;
+    body->angvel = 0.0;
 }
 
 void physics_set_velocity(PhysicsWorld *world, uint32_t id, double vx, double vy) {
@@ -337,6 +364,13 @@ static b2Vec2 body_center_m(const PhysicsBody *m) {
     };
 }
 
+/* Every b2Body_SetTransform below must go through this: passing b2Rot_identity
+ * would silently un-rotate a spinning window on the next resize, drag or
+ * teleport. */
+static b2Rot body_rot(const PhysicsBody *m) {
+    return m->spin ? b2MakeRot((float)m->angle) : b2Rot_identity;
+}
+
 /* Collision categories. "No collide" means "pass through other WINDOWS", never
  * "leave the play area": a body whose category or mask is zero fails Box2D's
  * two-way filter test against everything, walls included, so such windows used
@@ -413,7 +447,13 @@ static void slot_create(struct Engine *eng, PhysicsWorld *world, int i, PhysicsB
     bd.type = type;
     bd.position = body_center_m(m);
     bd.linearVelocity = (b2Vec2){px2m(m->vx), px2m(m->vy)};
-    bd.fixedRotation = true;             // windows never rotate
+    bd.rotation = body_rot(m);
+    bd.angularVelocity = (float)m->angvel;
+    bd.fixedRotation = !m->spin;         // windows never rotate unless spun
+    /* Left free a spin coasts for the better part of a minute, which reads as
+     * the window being stuck rather than thrown. This bleeds it off over a few
+     * seconds while still letting a hard kick get several turns in. */
+    bd.angularDamping = 0.35f;
     bd.linearDamping = eng->linear_damping;
     bd.isBullet = true;                  // continuous collision: never tunnel a wall
     bd.isAwake = true;
@@ -436,8 +476,10 @@ static void slot_create(struct Engine *eng, PhysicsWorld *world, int i, PhysicsB
     s->sh = m->height;
     s->type = type;
     s->no_collide = no_collide;
+    s->spin = m->spin;
     s->sx = m->x; s->sy = m->y;
     s->svx = m->vx; s->svy = m->vy;
+    s->sang = m->angle; s->sangvel = m->angvel;
 }
 
 void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
@@ -505,12 +547,20 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
             // anchors the top-left corner — the center moves by half the size
             // delta. Re-drive the transform from the mirror or the window
             // jitters/creeps during interactive resize.
-            b2Body_SetTransform(s->body, body_center_m(m), b2Rot_identity);
+            b2Body_SetTransform(s->body, body_center_m(m), body_rot(m));
         }
 
         if (s->type != type) {
             b2Body_SetType(s->body, type);
             s->type = type;
+            /* Changing type moves the body between solver sets; re-assert the
+             * spin the mirror is carrying so letting go of a window you were
+             * stirring hands the spin over to free flight instead of dropping
+             * it at the moment of release. */
+            if (m->spin) {
+                b2Body_SetAwake(s->body, true);
+                b2Body_SetAngularVelocity(s->body, (float)m->angvel);
+            }
         }
         b2Body_SetLinearDamping(s->body, damping);
         if (s->no_collide != no_collide) {
@@ -518,24 +568,63 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
             s->no_collide = no_collide;
         }
 
+        /* Spin turned on or off since the last step. Clearing fixedRotation
+         * makes Box2D recompute the body's rotational inertia from its shape,
+         * so the order here matters: free the rotation first, then hand it the
+         * angle and the kick the mirror is carrying. */
+        if (s->spin != m->spin) {
+            /* Waking comes FIRST and is not optional: a sleeping Box2D body has
+             * no velocity state at all, so b2Body_SetAngularVelocity on one is
+             * silently dropped and the window that was just kicked into a spin
+             * simply sits there. (A window resting in zero-g is asleep within a
+             * second, which is to say: always, by the time the bind is pressed.) */
+            b2Body_SetAwake(s->body, true);
+            b2Body_SetFixedRotation(s->body, !m->spin);
+            b2Body_SetTransform(s->body, body_center_m(m), body_rot(m));
+            b2Body_SetAngularVelocity(s->body, (float)m->angvel);
+            s->spin = m->spin;
+            s->sang = m->angle;
+            s->sangvel = m->angvel;
+        }
+
         if (type == b2_dynamicBody) {
             if (gravity_changed) b2Body_SetAwake(s->body, true);
             // Only override Box2D's own evolution when the mirror was changed
             // from outside (teleport, throw, stop) since the last write-back.
             if (fabs(m->x - s->sx) > POS_EPS || fabs(m->y - s->sy) > POS_EPS) {
-                b2Body_SetTransform(s->body, body_center_m(m), b2Rot_identity);
+                b2Body_SetTransform(s->body, body_center_m(m), body_rot(m));
             }
             if (fabs(m->vx - s->svx) > VEL_EPS || fabs(m->vy - s->svy) > VEL_EPS) {
                 b2Body_SetLinearVelocity(s->body, (b2Vec2){px2m(m->vx), px2m(m->vy)});
                 b2Body_SetAwake(s->body, true);
             }
+            /* The same rule one axis up, for the angle and the spin. */
+            if (m->spin && fabs(m->angle - s->sang) > 1e-4) {
+                b2Body_SetTransform(s->body, body_center_m(m), body_rot(m));
+            }
+            if (m->spin && fabs(m->angvel - s->sangvel) > 1e-4) {
+                b2Body_SetAwake(s->body, true);   /* before the write; see above */
+                b2Body_SetAngularVelocity(s->body, (float)m->angvel);
+            }
         } else {
-            // Static / kinematic: the mirror is authoritative, drive it in.
-            b2Body_SetTransform(s->body, body_center_m(m), b2Rot_identity);
+            /* Static / kinematic: the mirror is authoritative, drive it in.
+             *
+             * With one exception. A window being DRAGGED is kinematic — the
+             * mouse owns where it is — but a spinning one must keep turning
+             * while you hold it, or the whole effect freezes the moment you
+             * pick the window up. So the position still comes from the mirror
+             * and the ROTATION is left to Box2D, which integrates it from the
+             * angular velocity the drag keeps writing (server_pointer.c's
+             * swirl). Rewriting the rotation from the mirror here would pin
+             * the window at the angle it had when the grab started. */
+            bool spin_drag = (type == b2_kinematicBody && m->spin);
+            b2Rot rot = spin_drag ? b2Body_GetRotation(s->body) : body_rot(m);
+            b2Body_SetTransform(s->body, body_center_m(m), rot);
             b2Vec2 v = (type == b2_kinematicBody)
                            ? (b2Vec2){px2m(m->vx), px2m(m->vy)}
                            : (b2Vec2){0.0f, 0.0f};
             b2Body_SetLinearVelocity(s->body, v);
+            if (spin_drag) b2Body_SetAngularVelocity(s->body, (float)m->angvel);
         }
     }
 
@@ -573,6 +662,10 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
             m->y = m2px(p.y) - m->height / 2.0;
             m->vx = m2px(v.x);
             m->vy = m2px(v.y);
+            if (m->spin) {
+                m->angle  = b2Rot_GetAngle(b2Body_GetRotation(s->body));
+                m->angvel = b2Body_GetAngularVelocity(s->body);
+            }
 
             // Safety net for a TRUE escape only: the body has left the play area
             // entirely (no overlap at all) — e.g. spawned out of bounds. Normal
@@ -590,7 +683,7 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
             if (m->y + m->height <= 0.0){ m->y = 0.0;   m->vy = fabs(m->vy) * r; clamped = 1; }
             else if (m->y >= H)         { m->y = max_y; m->vy = -fabs(m->vy) * r; clamped = 1; }
             if (clamped) {
-                b2Body_SetTransform(s->body, body_center_m(m), b2Rot_identity);
+                b2Body_SetTransform(s->body, body_center_m(m), body_rot(m));
                 b2Body_SetLinearVelocity(s->body, (b2Vec2){px2m(m->vx), px2m(m->vy)});
             }
 
@@ -600,11 +693,19 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
         } else {
             // Anchor / dragged bodies keep the mirror the outside world set.
             if (s->type == b2_staticBody) { m->vx = 0; m->vy = 0; m->flying = 0; }
+            /* Except the angle of a window spinning in your hand, which Box2D
+             * integrated above and the mirror has to learn about — it is what
+             * the renderer draws, and it is the angle the window carries into
+             * free flight when you let go. */
+            if (s->type == b2_kinematicBody && m->spin) {
+                m->angle = b2Rot_GetAngle(b2Body_GetRotation(s->body));
+            }
         }
 
         // Refresh the shadow so the next step can detect external writes.
         s->sx = m->x; s->sy = m->y;
         s->svx = m->vx; s->svy = m->vy;
+        s->sang = m->angle; s->sangvel = m->angvel;
 
         int d = (int)((m->x + m->width / 2.0) / screen_width);
         if (d < 0) d = 0;

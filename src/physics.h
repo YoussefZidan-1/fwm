@@ -45,6 +45,17 @@ typedef struct {
     int tile_sav_w, tile_sav_h;
     int tiling_saved;
     int corner_mode;
+
+    /* Free rotation (experimental). Off by default: with `spin` clear the body
+     * keeps Box2D's fixedRotation and behaves exactly as it always has. With it
+     * set the collision box really turns — a spinning window wedges into a
+     * corner and bounces off its own edges, it is not a picture spinning over
+     * an upright box. `angle` is radians, y-down like every other coordinate
+     * here, so it feeds the renderer's rotation matrix unchanged; x/y stay the
+     * top-left of the UNROTATED box, i.e. the rotation is about the center. */
+    int spin;
+    double angle;
+    double angvel;   /* rad/s */
 } PhysicsBody;
 
 /* One collision hard enough to be worth reacting to, reported through the
@@ -92,6 +103,12 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
 void physics_set_velocity(PhysicsWorld *world, uint32_t id, double vx, double vy);
 PhysicsBody *physics_find_body(PhysicsWorld *world, uint32_t id);
 void physics_remove_body(PhysicsWorld *world, uint32_t id);
+/* Free rotation (experimental). physics_spin_body turns it on and gives the
+ * window a kick of `angvel` rad/s; physics_unspin_body stops it and settles the
+ * body back upright. Both are no-ops for an unknown id. */
+void physics_spin_body(PhysicsWorld *world, uint32_t id, double angvel);
+void physics_unspin_body(PhysicsWorld *world, uint32_t id);
+
 void physics_push_away(PhysicsWorld *world, uint32_t pushed, uint32_t pusher, double speed);
 void physics_push_overlapping(PhysicsWorld *world, uint32_t pusher, double speed);
 

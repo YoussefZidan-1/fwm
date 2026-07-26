@@ -129,6 +129,27 @@ static void server_animate(FwmServer *server) {
         wl_list_for_each(sv, &server->views, link) view_squash_tick(sv, dt);
     }
 
+    /* Free rotation. Also a frame-time ramp, and for a stronger reason than
+     * the others: this one repaints a snapshot every frame, so running it on
+     * the physics timer would render angles nobody ever sees. The body is the
+     * authority — the view only shows the angle Box2D integrated. */
+    {
+        FwmView *rv;
+        wl_list_for_each(rv, &server->views, link) {
+            PhysicsBody *rb = physics_find_body(&server->physics, rv->id);
+            if (rb && rb->spin && server_can_spin(rb) && server->config.effects.spin > 0.0) {
+                view_spin_tick(rv, rb->angle, dt);
+            } else {
+                /* Also the path that lands a window turned off mid-spin by a
+                 * config reload: the body stops rotating and the picture goes
+                 * back to being the live window — as does one that was tiled
+                 * or made fullscreen while it turned. */
+                if (rb && rb->spin) physics_unspin_body(&server->physics, rv->id);
+                if (view_is_spinning(rv)) view_stop_spin(rv);
+            }
+        }
+    }
+
     // Window open animation. The client's surface is never blended: it is
     // hidden until it has content, then shown fully opaque while a cover rect
     // we draw ourselves fades out over it and the window rises into place.

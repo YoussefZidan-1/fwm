@@ -29,7 +29,27 @@ This is the primary, actively developed version. The legacy X11 version lives on
 - **Gravity modes** — cycle `Super+G` between zero-g, space mode, and Earth gravity (9.8 m/s² at the compositor's 100 px/m scale). Windows fall, thud, and stack on the floor.
 - **Realistic feel** — dull heavy bounces (restitution 0.3), contact friction, no mid-air braking under gravity; long weighty glides in zero-g.
 - **Continuous collision** — fast throws never tunnel through walls.
+- **Free rotation** (`Super+R`, experimental) — hands a window's rotation to the simulation: the collision box turns with the picture, so it tumbles off the walls and shoves its neighbours corner-first. See below for how it is spun.
 - **Per-window toggles** — pin (`Super+P`), collision off (`Super+N`), calm everything (`Super+Shift+C`).
+
+### Free rotation (experimental)
+
+`Super+R` does not spin a window so much as let go of it: the press itself is a
+nudge of about a quarter turn. The spinning comes from what you do with the
+window afterwards.
+
+Dragged, a spinning window hangs from the point you took hold of, the way a real
+object held there would. Take it by a corner and it swings behind your hand,
+settles hanging straight down if gravity is on, and whirls when you flick your
+wrist; take it dead center and it does not swing at all. Stirring the mouse in
+circles winds it up further, and it keeps whatever spin it had when you let go.
+`spin_all` does the same for every window at once (unbound by default).
+
+Two things to expect. While it turns, the window shows a snapshot of itself
+refreshed a few times a second rather than live content — the trade that makes
+arbitrary rotation possible at all. And it is only as free to turn as the room
+around it: a window whose diagonal is taller than the screen wedges against the
+floor and ceiling instead of coming round.
 
 ### World
 - **10 virtual desktops** on one continuous strip — the world is 10 screens wide, windows keep absolute positions.
@@ -61,6 +81,7 @@ This is the primary, actively developed version. The legacy X11 version lives on
 - **Focus borders** — accent color on the focused window, muted on the rest; colors and width in the config.
 - **Window fade-in** — new windows ease in over ~260 ms (configurable, 0 disables).
 - **Impact effects** — windows squash and stretch where they hit; optional camera shake on hard landings.
+- **Rotated windows** — a spinning window is drawn at any angle, not in quarter turns. wlroots' scene graph is axis-aligned to its bones, so this one effect draws its own rotated quad on the renderer's GL context (`src/rotate.c`); everything else stays on the public API.
 - **Wallpaper-derived palette** — optionally tint the whole UI toward the wallpaper's dominant hue (`color_source = "wallpaper"`).
 - **Minimal tray** — three flat chevron-ended islands: focused window + physics readout, desktop indicators, clock. No titlebars anywhere (server-side decorations).
 - **Transparency** — client alpha (e.g. kitty `background_opacity`) is rendered as-is.
@@ -345,6 +366,7 @@ free_speed = 14.0    # how tightly the camera follows a held move_camera: bind
 [effects]
 camera_shake = 0.0   # jolt the view on hard impacts; off by default, 1.0 to enable
 squash       = 1.0   # windows deform on impact, scaled by speed; 0 disables
+spin         = 1.0   # strength of the spin_window kick (experimental); 0 disables
 
 [focus]
 # When an app asks to be raised (xdg-activation): "never" ignores it,
@@ -434,6 +456,7 @@ fit  = "pan"
 "super+n"            = "toggle_nocollide"
 "super+g"            = "cycle_gravity"
 "super+j"            = "toggle_tray"
+"super+r"            = "spin_window"
 "super+s"            = "toggle_split"
 "super+shift+c"      = "calm_all"
 "super+shift+n"      = "toggle_nocollide_all"
@@ -470,6 +493,7 @@ fit  = "pan"
 | `toggle_split` | flip split orientation of the focused tile |
 | `toggle_tray` | hide/show the tray — it stops reserving its strip, so windows fill the top |
 | `pin_window`, `toggle_nocollide`, `calm_all`, `cycle_gravity` | physics toggles |
+| `spin_window` / `spin_all` | **experimental:** set the focused window (or every window) spinning, picture and collision box alike; press again to settle |
 | `toggle_nocollide_all` / `toggle_tiling_all` / `toggle_floating_all` | same, but every window / every desktop at once |
 | `group_toggle`, `group_add`, `group_next`, `group_prev` | tab-stacks: make a stack, join it, cycle tabs |
 | `launcher` | built-in app launcher |

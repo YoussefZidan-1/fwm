@@ -82,6 +82,27 @@ static void constraints_follow_focus(FwmServer *server, struct wlr_surface *surf
 #include <xkbcommon/xkbcommon.h>
 #include "server_internal.h"
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+/* Winding a spinning window up by stirring the mouse in circles (see the drag
+ * handler).
+ *
+ * The rate is measured over a WINDOW of hand movement, never from a single
+ * pointer event. Dividing one event's change of direction by its own interval
+ * was the first attempt and it was unusable: events arrive every 2-4ms, so a
+ * few degrees of ordinary hand wobble read as hundreds of rad/s and the
+ * smallest movement sent the window off like a buzzsaw. Summed over ~0.2s
+ * instead, wobble cancels itself out (it turns both ways) while real circling
+ * accumulates — which is exactly the difference we want to be sensitive to. */
+#define SWIRL_MIN_SPEED 150.0   /* px/s below which the direction is noise */
+#define SWIRL_MIN_STEP    0.02  /* s between samples; events are far denser */
+#define SWIRL_TAU         0.20  /* s of hand movement the rate is read from */
+#define SWIRL_GAIN        0.7   /* of the hand's rate; <1 keeps it controllable */
+#define SWIRL_MAX         6.0   /* rad/s ceiling, about one turn a second */
+#define SWIRL_DEADBAND    0.4   /* rad/s under which stirring is ignored */
+
 struct FwmView *view_at(FwmServer *server, double lx, double ly,
                                struct wlr_surface **surface, double *sx, double *sy) {
     struct wlr_scene_node *node = wlr_scene_node_at(&server->scene->tree.node, lx, ly, sx, sy);
@@ -171,7 +192,13 @@ static void handle_cursor_motion(struct wl_listener *listener, void *data) {
         FwmView *view = server->interactive.view;
         double dx = lx - server->interactive.start_x;
         double dy = ly - server->interactive.start_y;
-        
+        PhysicsBody *db = physics_find_body(&server->physics, view->id);
+        /* A spinning window is placed by server_drag_swing on the physics tick
+         * instead — it hangs from the grab point, so where it belongs depends
+         * on an angle that is still being integrated. Writing a second,
+         * unswung position here would fight it into a jitter. */
+        bool swinging = db && db->spin;
+
         // Keep the window fully inside the play area while dragging. Because the
         // dragged body is kinematic it would otherwise pass straight through the
         // (static) boundary walls and, on release, either get stuck outside them
@@ -206,12 +233,14 @@ static void handle_cursor_motion(struct wl_listener *listener, void *data) {
             server->interactive.view_start_y += target_world_y - want_y;
         }
 
-        view->x = target_world_x;
-        view->y = target_world_y;
+        if (!swinging) {
+            view->x = target_world_x;
+            view->y = target_world_y;
 
-        if (view->scene_tree) {
-            wlr_scene_node_set_position(&view->scene_tree->node,
-                (int)lround(view->x - server->camera_x), (int)lround(view->y));
+            if (view->scene_tree) {
+                wlr_scene_node_set_position(&view->scene_tree->node,
+                    (int)lround(view->x - server->camera_x), (int)lround(view->y));
+            }
         }
 
         // Shift velocity history
@@ -237,6 +266,93 @@ static void handle_cursor_motion(struct wl_listener *listener, void *data) {
         
         // Sync position in physics
         physics_sync_body(&server->physics, view->id, view->x, view->y, view->width, view->height, server->screen_width);
+
+        /* Swirl the dragged window up (only one that is already spinning: see
+         * spin_window). What is measured is not where the cursor is but how
+         * fast its DIRECTION of travel is turning — stir the mouse in circles
+         * and that rate is the rate of the circles, so the window turns with
+         * your hand; drag it in a straight line and it is exactly zero.
+         *
+         * Measuring the cursor's angle around the window center instead does
+         * not work at all: the window follows the cursor, so the grab point
+         * stays put relative to it and circling produces a sine that averages
+         * to nothing. */
+        {
+            PhysicsBody *sb = db;
+            double sp = hypot(server->interactive.vx, server->interactive.vy);
+            if (sb && sb->spin && sp > SWIRL_MIN_SPEED) {
+                double dir = atan2(server->interactive.vy, server->interactive.vx);
+                double dt_s = server->interactive.swirl_have
+                    ? (double)(now.tv_sec - server->interactive.swirl_time.tv_sec)
+                      + (double)(now.tv_nsec - server->interactive.swirl_time.tv_nsec) / 1e9
+                    : 0.0;
+                /* Pointer events arrive every few ms. Sampling each one reads
+                 * the hand's tremor rather than its path, so take one every
+                 * SWIRL_MIN_STEP and let the ones in between accumulate into
+                 * the same interval. */
+                if (server->interactive.swirl_have && dt_s >= SWIRL_MIN_STEP) {
+                    double d = dir - server->interactive.swirl_dir;
+                    while (d >  M_PI) d -= 2.0 * M_PI;   /* shortest way round */
+                    while (d < -M_PI) d += 2.0 * M_PI;
+                    /* Half a turn between two samples is not a swirl, it is the
+                     * hand reversing; taking it as one would fling the window
+                     * the wrong way on every direction change. */
+                    if (dt_s < 0.2 && fabs(d) < M_PI / 2.0) {
+                        /* Leaky integrals: all three fade with the same time
+                         * constant, so their ratios describe the last
+                         * SWIRL_TAU seconds of hand movement without anything
+                         * being kept in a ring buffer. */
+                        double decay = exp(-dt_s / SWIRL_TAU);
+                        server->interactive.swirl_acc =
+                            server->interactive.swirl_acc * decay + d;
+                        server->interactive.swirl_abs =
+                            server->interactive.swirl_abs * decay + fabs(d);
+                        server->interactive.swirl_span =
+                            server->interactive.swirl_span * decay + dt_s;
+
+                        if (server->interactive.swirl_span > 0.05 &&
+                            server->interactive.swirl_abs > 1e-6) {
+                            /* How much of the turning went the SAME way: 1 for
+                             * a clean circle, near 0 for a hand that wobbles
+                             * both ways while dragging in a straight-ish line.
+                             * Squared, because without it an unsteady hand
+                             * still won — a random walk of directions sums to a
+                             * large number often enough to fling the window
+                             * across the screen, which is exactly how this
+                             * first shipped and exactly how it felt. */
+                            double coh = fabs(server->interactive.swirl_acc)
+                                       / server->interactive.swirl_abs;
+                            double omega = server->interactive.swirl_acc
+                                         / server->interactive.swirl_span;
+                            omega *= SWIRL_GAIN * coh * coh;
+                            if (omega >  SWIRL_MAX) omega =  SWIRL_MAX;
+                            if (omega < -SWIRL_MAX) omega = -SWIRL_MAX;
+                            /* Approach rather than assign, so the window winds
+                             * up over a stroke or two instead of snapping to
+                             * whatever the last fifth of a second looked like.
+                             *
+                             * Only ever ADDS speed (or reverses it): a window
+                             * held by its corner is already being whirled by
+                             * the swing, usually faster than the hand itself
+                             * turns, and braking it back down to the hand's
+                             * rate would undo the physical part with the
+                             * gesture part. */
+                            bool helps = (omega > 0) != (sb->angvel > 0)
+                                       || fabs(omega) > fabs(sb->angvel);
+                            if (fabs(omega) >= SWIRL_DEADBAND && helps)
+                                sb->angvel += (omega - sb->angvel) * 0.15;
+                        }
+                    }
+                }
+                /* Only a processed sample becomes the new reference: skipping
+                 * one must leave the interval to grow, not restart it. */
+                if (!server->interactive.swirl_have || dt_s >= SWIRL_MIN_STEP) {
+                    server->interactive.swirl_dir = dir;
+                    server->interactive.swirl_time = now;
+                    server->interactive.swirl_have = 1;
+                }
+            }
+        }
         
         // Auto camera scroll at edges
         if (server->camera_x == server->target_camera_x) {
@@ -445,6 +561,27 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
                         server->interactive.vx = 0;
                         server->interactive.vy = 0;
                         server->interactive.hist_count = 0;
+                        server->interactive.swirl_have = 0;
+                        server->interactive.swirl_acc = 0.0;
+                        server->interactive.swirl_abs = 0.0;
+                        server->interactive.swirl_span = 0.0;
+
+                        /* Remember WHERE the window was taken hold of, in its
+                         * own frame, so a spinning one can hang from that
+                         * point (server_drag_swing). Recorded for every drag,
+                         * spinning or not: the window may be set spinning
+                         * while it is already being held. */
+                        {
+                            double cx = view->x + view->width  / 2.0;
+                            double cy = view->y + view->height / 2.0;
+                            double ox = (lx + server->camera_x) - cx;
+                            double oy = ly - cy;
+                            double ang = pb ? pb->angle : 0.0;
+                            double c = cos(-ang), s = sin(-ang);
+                            server->interactive.grab_lx = c * ox - s * oy;
+                            server->interactive.grab_ly = s * ox + c * oy;
+                            server->interactive.pivot_have = 0;
+                        }
                         server->interactive.collision_disabled = (active_mods & FWM_MOD_SHIFT) ? 1 : 0;
                     }
                 } else if (event->button == BTN_RIGHT) {

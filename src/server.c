@@ -14,6 +14,7 @@
 
 #include "server.h"
 #include "view.h"
+#include "rotate.h"
 #include "physics.h"
 #include "bsp.h"
 #include "theme.h"
@@ -257,6 +258,14 @@ static int server_is_busy(FwmServer *server) {
     for (int i = 0; i < server->physics.body_count; i++) {
         const PhysicsBody *b = &server->physics.bodies[i];
         if (b->active && b->flying) return 1;
+        /* A window can spin in place with no linear motion at all: `flying`
+         * would say idle and the frame loop would drop to the heartbeat,
+         * leaving the rotation to advance four times a second. Once the spin
+         * has bled off, the window keeps the angle it came to rest at — that
+         * is the point of the effect — but nothing is moving any more, so it
+         * stops counting as busy and the snapshot refresh rides the heartbeat
+         * from there. */
+        if (b->active && b->spin && fabs(b->angvel) > 0.01) return 1;
     }
     FwmView *v;
     wl_list_for_each(v, &server->views, link) {
@@ -373,6 +382,110 @@ void server_video_sync(FwmServer *server) {
     } else if (!want && server->video_timer_on) {
         server->video_timer_on = 0;
         wl_event_source_timer_update(server->video_timer, 0); /* disarm */
+    }
+}
+
+/* How fast the swing bleeds off, 1/s. Some is wanted: a real window dragged by
+ * its corner settles behind the hand rather than swinging forever. */
+#define SWING_DAMP 1.2
+/* Ceilings on what one tick may produce, because the pivot's acceleration is
+ * differentiated twice from a 60Hz cursor sample: one dropped frame during a
+ * fast flick is otherwise an impulse the size of a car crash. */
+#define SWING_MAX_ACCEL 20000.0   /* px/s^2 */
+#define SWING_MAX_SPEED    12.0   /* rad/s */
+
+/* A window being dragged hangs from the point it was grabbed by.
+ *
+ * Physically this is a compound pendulum whose pivot is the cursor: the window
+ * turns about its own center of mass, the hand holds it somewhere else, and
+ * everything that would swing a real object hanging from that point swings
+ * this one — gravity when it is on, and the pseudo-force of the pivot being
+ * yanked around when it is not (which is what makes a flick of the wrist
+ * whirl a window held by its corner even in zero-g).
+ *
+ *   alpha = (r x (g - a_pivot)) / (I/m)      with  I/m = (w^2+h^2)/12 + |r|^2
+ *
+ * The mass cancels, which is why none of it appears below. `r` runs from the
+ * grab point to the window's center, so grabbing a window dead center gives
+ * r = 0 and no swing at all — exactly as it should, and exactly what happens
+ * with a real sheet of paper.
+ *
+ * The position is then placed so the grab point stays under the cursor: as the
+ * window turns, its center orbits the pivot. */
+static void server_drag_swing(FwmServer *server, double dt) {
+    if (server->interactive.action != FWM_ACTION_MOVE || !server->interactive.view) return;
+    FwmView *view = server->interactive.view;
+    PhysicsBody *b = physics_find_body(&server->physics, view->id);
+    if (!b || !b->spin || dt <= 0.0) return;
+
+    /* The cursor, in the same world coordinates the bodies live in. */
+    double px = server->cursor->x + server->camera_x;
+    double py = server->cursor->y;
+
+    if (!server->interactive.pivot_have) {
+        server->interactive.pivot_x = px;
+        server->interactive.pivot_y = py;
+        server->interactive.pivot_vx = 0.0;
+        server->interactive.pivot_vy = 0.0;
+        server->interactive.pivot_have = 1;
+        return;   /* no history yet: nothing to differentiate */
+    }
+
+    /* Velocity of the pivot, lightly smoothed, and its change — the pointer
+     * arrives in bursts and raw double differentiation of it is all spikes. */
+    double nvx = (px - server->interactive.pivot_x) / dt;
+    double nvy = (py - server->interactive.pivot_y) / dt;
+    double svx = server->interactive.pivot_vx * 0.6 + nvx * 0.4;
+    double svy = server->interactive.pivot_vy * 0.6 + nvy * 0.4;
+    double ax = (svx - server->interactive.pivot_vx) / dt;
+    double ay = (svy - server->interactive.pivot_vy) / dt;
+    if (ax >  SWING_MAX_ACCEL) ax =  SWING_MAX_ACCEL;
+    if (ax < -SWING_MAX_ACCEL) ax = -SWING_MAX_ACCEL;
+    if (ay >  SWING_MAX_ACCEL) ay =  SWING_MAX_ACCEL;
+    if (ay < -SWING_MAX_ACCEL) ay = -SWING_MAX_ACCEL;
+    server->interactive.pivot_x = px;
+    server->interactive.pivot_y = py;
+    server->interactive.pivot_vx = svx;
+    server->interactive.pivot_vy = svy;
+
+    /* Grab point -> center, with the window's current rotation applied. */
+    double c = cos(b->angle), s = sin(b->angle);
+    double rx = -(c * server->interactive.grab_lx - s * server->interactive.grab_ly);
+    double ry = -(s * server->interactive.grab_lx + c * server->interactive.grab_ly);
+
+    double gy = server->physics.gravity * server->physics.gravity_scale;
+    double ex = 0.0 - ax;      /* effective field in the pivot's frame */
+    double ey = gy  - ay;
+
+    double inertia = ((double)b->width * b->width + (double)b->height * b->height) / 12.0
+                   + rx * rx + ry * ry;
+    if (inertia > 1.0) {
+        double alpha = (rx * ey - ry * ex) / inertia;
+        b->angvel += alpha * dt;
+    }
+    b->angvel *= exp(-SWING_DAMP * dt);
+    if (b->angvel >  SWING_MAX_SPEED) b->angvel =  SWING_MAX_SPEED;
+    if (b->angvel < -SWING_MAX_SPEED) b->angvel = -SWING_MAX_SPEED;
+
+    /* Hang the window off the pivot. The clamp is the same one the drag itself
+     * uses: a kinematic body passes straight through the play-area walls, so
+     * nothing else keeps a swinging window on screen. */
+    double cx = px + rx, cy = py + ry;
+    double nx = cx - b->width / 2.0, ny = cy - b->height / 2.0;
+    double max_x = 10.0 * server->screen_width - b->width;
+    double max_y = server->screen_height - b->height;
+    if (nx < 0) nx = 0;
+    if (ny < 0) ny = 0;
+    if (nx > max_x) nx = max_x > 0 ? max_x : 0;
+    if (ny > max_y) ny = max_y > 0 ? max_y : 0;
+
+    b->x = nx;
+    b->y = ny;
+    view->x = (int)lround(nx);
+    view->y = (int)lround(ny);
+    if (view->scene_tree) {
+        wlr_scene_node_set_position(&view->scene_tree->node,
+                                    (int)lround(nx - server->camera_x), (int)lround(ny));
     }
 }
 
@@ -504,6 +617,12 @@ static int physics_tick_cb(void *data) {
             av->y = pb->y;
         }
     }
+
+    /* A spinning window being dragged hangs from the point it was grabbed by.
+     * Runs on the tick rather than on pointer motion because a pendulum keeps
+     * swinging after the hand stops, and because differentiating the cursor
+     * twice needs a fixed dt. */
+    server_drag_swing(server, dt);
 
     // Tab bars follow their window's width (resize/tiling glides).
     group_tick(server);
@@ -858,7 +977,11 @@ void server_destroy(FwmServer *server) {
     server->wallpaper = NULL;
     launcher_destroy(server->launcher);
     server->launcher = NULL;
-    
+
+    /* The rotation shaders belong to the renderer's GL context; they have to go
+     * while that context still exists. */
+    rotate_shutdown(server->wlr_renderer);
+
     if (server->video_timer) {
         wl_event_source_remove(server->video_timer);
         server->video_timer = NULL;

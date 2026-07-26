@@ -104,6 +104,31 @@ typedef struct FwmView {
     double squash_amount;             /* peak deformation, 0..1 */
     double squash_nx, squash_ny;      /* impact normal, points at the contact */
 
+    /* Free rotation (experimental; see PhysicsBody.spin).
+     *
+     * Same snapshot trick as the squash, for the same reason and one step
+     * further: wlr_scene is axis-aligned to its bones — node positions are
+     * ints and a scene buffer's only transform is one of the eight
+     * wl_output ones — so a genuinely tilted window cannot be expressed in
+     * the scene graph at all. What CAN be is an upright buffer whose CONTENT
+     * is a rotated picture, which is what this is: the window's subtree is
+     * flattened into `spin_src`, that gets drawn rotated into one of the two
+     * `spin_dst` buffers, and the scene shows the result.
+     *
+     * The cost is that the window is a still frame while it spins, so the
+     * snapshot is retaken a few times a second; the benefit is that damage,
+     * compositing and scanout keep working exactly as they always did. */
+    struct wlr_scene_buffer *spin_buf;
+    struct wlr_buffer *spin_src;      /* flattened window content, w x h */
+    struct wlr_texture *spin_tex;     /* ... imported once, reused every frame */
+    struct wlr_buffer *spin_dst[2];   /* rotated output, square, diagonal-sized */
+    int spin_flip;                    /* which of the two to draw into next */
+    int spin_border;                  /* were the borders shown before the spin */
+    int spin_w, spin_h;               /* window size the snapshot was taken at */
+    int spin_size;                    /* side of the spin_dst squares */
+    double spin_snap_t;               /* seconds since the last re-snapshot */
+    double spin_angle;                /* angle currently on screen, radians */
+
     /* wlr-foreign-toplevel handle: this window as external panels see it
      * (see foreign.h). NULL while unmapped. */
     struct wlr_foreign_toplevel_handle_v1 *ftl;
@@ -159,6 +184,16 @@ void view_update_border_geometry(FwmView *view);
 void view_start_squash(FwmView *view, double nx, double ny, double amount);
 void view_squash_tick(FwmView *view, double dt);
 void view_stop_squash(FwmView *view);
+
+/* Free rotation (see the spin_* fields above). view_spin_tick shows the window
+ * at `angle` radians, creating the snapshot machinery on the first call and
+ * refreshing it as it runs; view_stop_spin puts the live window back. Calling
+ * the tick every frame while the body spins is the whole contract — there is
+ * no separate "start". */
+void view_spin_tick(FwmView *view, double angle, double dt);
+void view_stop_spin(FwmView *view);
+/* Is this window currently showing a rotated snapshot? */
+bool view_is_spinning(FwmView *view);
 void view_set_border_color(FwmView *view, const float color[4]);
 void view_set_border_enabled(FwmView *view, int enabled);
 

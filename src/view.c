@@ -13,6 +13,7 @@
  */
 
 #include "view.h"
+#include "rotate.h"
 #include "theme.h"
 #include "server.h"
 #include "physics.h"
@@ -33,6 +34,10 @@
 #include <wlr/render/wlr_texture.h>
 #include <wlr/util/log.h>
 #include <drm_fourcc.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 static void handle_map(struct wl_listener *listener, void *data) {
     FwmView *view = wl_container_of(listener, view, map);
@@ -145,14 +150,27 @@ static void snapshot_add_buffer(struct wlr_scene_buffer *scene_buffer,
     wlr_texture_destroy(tex);
 }
 
-/* Returns a buffer holding the window as currently composited, or NULL. The
- * caller owns the reference that wlr_allocator_create_buffer hands back. */
-static struct wlr_buffer *view_snapshot_content(FwmView *view) {
-    FwmServer *server = view->server;
-    if (!server->wlr_allocator || !server->wlr_renderer || !view->scene_tree) return NULL;
+/* An empty ARGB8888 buffer the renderer can draw into. */
+static struct wlr_buffer *view_alloc_buffer(FwmServer *server, int w, int h) {
+    if (!server->wlr_allocator || w <= 0 || h <= 0) return NULL;
+    struct wlr_buffer *buf = NULL;
+    struct wlr_drm_format_set fmts = {0};
+    if (wlr_drm_format_set_add(&fmts, DRM_FORMAT_ARGB8888, DRM_FORMAT_MOD_INVALID)) {
+        const struct wlr_drm_format *fmt = wlr_drm_format_set_get(&fmts, DRM_FORMAT_ARGB8888);
+        if (fmt) buf = wlr_allocator_create_buffer(server->wlr_allocator, w, h, fmt);
+    }
+    wlr_drm_format_set_finish(&fmts);
+    return buf;
+}
 
-    int w = view->width, h = view->height;
-    if (w <= 0 || h <= 0) return NULL;
+/* Paint the window's subtree into `buf`, which must be the window's size.
+ * Split out of view_snapshot_content so the spin can refresh a snapshot it
+ * already owns instead of allocating a new buffer several times a second. */
+static bool view_snapshot_into(FwmView *view, struct wlr_buffer *buf) {
+    FwmServer *server = view->server;
+    if (!server->wlr_renderer || !view->scene_tree || !buf) return false;
+
+    int w = buf->width, h = buf->height;
 
     /* The borders are our own nodes and must not be baked in — view_place_borders
      * redraws them around the deformed box on every tick. */
@@ -164,22 +182,10 @@ static struct wlr_buffer *view_snapshot_content(FwmView *view) {
         }
     }
 
-    struct wlr_buffer *buf = NULL;
-    struct wlr_drm_format_set fmts = {0};
-    if (wlr_drm_format_set_add(&fmts, DRM_FORMAT_ARGB8888, DRM_FORMAT_MOD_INVALID)) {
-        const struct wlr_drm_format *fmt = wlr_drm_format_set_get(&fmts, DRM_FORMAT_ARGB8888);
-        if (fmt) buf = wlr_allocator_create_buffer(server->wlr_allocator, w, h, fmt);
-    }
-    wlr_drm_format_set_finish(&fmts);
-    if (!buf) goto restore;
-
+    bool ok = false;
     struct wlr_render_pass *pass =
         wlr_renderer_begin_buffer_pass(server->wlr_renderer, buf, NULL);
-    if (!pass) {
-        wlr_buffer_drop(buf);
-        buf = NULL;
-        goto restore;
-    }
+    if (!pass) goto restore;
 
     /* Start from transparent: a window whose content does not cover the whole
      * box must not pick up whatever the allocator handed us. */
@@ -197,15 +203,25 @@ static struct wlr_buffer *view_snapshot_content(FwmView *view) {
     };
     wlr_scene_node_for_each_buffer(&view->scene_tree->node, snapshot_add_buffer, &ctx);
 
-    if (!wlr_render_pass_submit(pass)) {
-        wlr_buffer_drop(buf);
-        buf = NULL;
-    }
+    ok = wlr_render_pass_submit(pass);
 
 restore:
     for (int i = 0; i < 4; i++) {
         if (view->border[i])
             wlr_scene_node_set_enabled(&view->border[i]->node, border_was_enabled[i]);
+    }
+    return ok;
+}
+
+/* Returns a buffer holding the window as currently composited, or NULL. The
+ * caller owns the reference that wlr_allocator_create_buffer hands back. */
+static struct wlr_buffer *view_snapshot_content(FwmView *view) {
+    if (!view->scene_tree) return NULL;
+    struct wlr_buffer *buf = view_alloc_buffer(view->server, view->width, view->height);
+    if (!buf) return NULL;
+    if (!view_snapshot_into(view, buf)) {
+        wlr_buffer_drop(buf);
+        return NULL;
     }
     return buf;
 }
@@ -221,6 +237,7 @@ static void view_set_content_enabled(FwmView *view, bool enabled) {
             if (view->border[i] && node == &view->border[i]->node) ours = true;
         }
         if (view->squash_buf && node == &view->squash_buf->node) ours = true;
+        if (view->spin_buf && node == &view->spin_buf->node) ours = true;
         if (!ours) wlr_scene_node_set_enabled(node, enabled);
     }
 }
@@ -242,6 +259,9 @@ void view_stop_squash(FwmView *view) {
 void view_start_squash(FwmView *view, double nx, double ny, double amount) {
     if (!view->scene_tree || !view->last_buffer) return;
     if (amount <= 0.001) return;
+    /* A spinning window already has the snapshot slot, and a deformation along
+     * a screen-axis normal would be visibly wrong on a tilted picture. */
+    if (view->spin_buf) return;
 
     if (view->squash_buf) {
         /* Already deforming: retarget rather than stacking a second snapshot,
@@ -316,6 +336,225 @@ void view_squash_tick(FwmView *view, double dt) {
     wlr_scene_buffer_set_dest_size(view->squash_buf, dw, dh);
     wlr_scene_node_set_position(&view->squash_buf->node, ox, oy);
     view_place_borders(view, ox, oy, dw, dh);
+}
+
+/* ── free rotation ────────────────────────────────────────────────────── */
+
+/* How often the frozen picture is replaced with a fresh one. A spinning window
+ * is a still frame between refreshes, so this is the whole "how live is it"
+ * knob: at 150ms a terminal's cursor still blinks and a video still moves,
+ * while the flatten-the-subtree pass runs 6-7 times a second instead of 60. */
+#define SPIN_REFRESH_S 0.15
+
+bool view_is_spinning(FwmView *view) {
+    return view->spin_buf != NULL;
+}
+
+/* The rotated snapshot is a square as wide as the window's diagonal, so left
+ * to itself it would swallow clicks in a fat transparent border around the
+ * window — including, at 45 degrees, most of a neighbouring window's corner.
+ * Rotating the point back and testing it against the upright rectangle gives
+ * the cursor the tilted window it can actually see. */
+static bool spin_accepts_input(struct wlr_scene_buffer *buffer, double *sx, double *sy) {
+    FwmView *view = buffer->node.data;
+    if (!view || !view->spin_buf) return true;
+
+    double half = view->spin_size / 2.0;
+    double lx = *sx - half, ly = *sy - half;   /* relative to the center */
+    double c = cos(-view->spin_angle), s = sin(-view->spin_angle);
+    double ux = c * lx - s * ly;
+    double uy = s * lx + c * ly;
+    return fabs(ux) <= view->spin_w / 2.0 && fabs(uy) <= view->spin_h / 2.0;
+}
+
+/* Tear down the machinery WITHOUT touching what it hid — view_stop_spin does
+ * that part, and a mid-spin resize deliberately does not. */
+static void view_spin_release(FwmView *view) {
+    if (view->spin_buf) {
+        wlr_scene_node_destroy(&view->spin_buf->node);
+        view->spin_buf = NULL;
+    }
+    if (view->spin_tex) {
+        wlr_texture_destroy(view->spin_tex);
+        view->spin_tex = NULL;
+    }
+    if (view->spin_src) {
+        wlr_buffer_unlock(view->spin_src);
+        view->spin_src = NULL;
+    }
+    for (int i = 0; i < 2; i++) {
+        if (view->spin_dst[i]) {
+            wlr_buffer_unlock(view->spin_dst[i]);
+            view->spin_dst[i] = NULL;
+        }
+    }
+    view->spin_w = view->spin_h = view->spin_size = 0;
+    view->spin_flip = 0;
+    view->spin_snap_t = 0.0;
+    view->spin_angle = 0.0;
+}
+
+void view_stop_spin(FwmView *view) {
+    if (!view->spin_buf) return;
+    int border = view->spin_border;
+    view_spin_release(view);
+    view_set_content_enabled(view, true);
+    if (border) view_set_border_enabled(view, 1);
+    view_update_border_geometry(view);
+}
+
+/* Build (or rebuild) the snapshot, the two rotation targets and the scene node.
+ * Called on the first tick and again whenever the window changes size. */
+static bool view_spin_setup(FwmView *view) {
+    FwmServer *server = view->server;
+    if (!view->scene_tree || !server->wlr_renderer) return false;
+
+    int w = view->width, h = view->height;
+    if (w <= 0 || h <= 0) return false;
+
+    bool restarting = view->spin_buf != NULL;
+    int border = restarting ? view->spin_border
+                            : (view->border[0] && view->border[0]->node.enabled);
+    view_spin_release(view);
+
+    /* The live content has to be visible to be photographed, so the snapshot
+     * comes first and the window is hidden only once it succeeded — a failed
+     * setup must leave the window on screen, not blank. */
+    if (restarting) view_set_content_enabled(view, true);
+
+    struct wlr_buffer *src = view_alloc_buffer(server, w, h);
+    if (!src) return false;
+    if (!view_snapshot_into(view, src)) {
+        wlr_buffer_drop(src);
+        return false;
+    }
+    view->spin_src = wlr_buffer_lock(src);
+    wlr_buffer_drop(src);
+
+    /* Imported once and kept: the rotation redraws from this texture every
+     * frame, and re-importing a dmabuf 60 times a second is pure waste. The
+     * refresh below renders into the same buffer, so the texture stays valid
+     * across snapshots too. */
+    view->spin_tex = wlr_texture_from_buffer(server->wlr_renderer, view->spin_src);
+    if (!view->spin_tex) goto fail;
+
+    /* A square of the diagonal holds the window at every angle, so the target
+     * never has to be reallocated as it turns. Two of them, used alternately:
+     * the scene may still be reading last frame's buffer while this one is
+     * drawn, and overwriting it in place would tear. */
+    int size = (int)ceil(hypot(w, h)) + 2;
+    for (int i = 0; i < 2; i++) {
+        struct wlr_buffer *d = view_alloc_buffer(server, size, size);
+        if (!d) goto fail;
+        view->spin_dst[i] = wlr_buffer_lock(d);
+        wlr_buffer_drop(d);
+    }
+
+    view->spin_buf = wlr_scene_buffer_create(view->scene_tree, NULL);
+    if (!view->spin_buf) goto fail;
+    wlr_scene_node_lower_to_bottom(&view->spin_buf->node);
+    /* view_at() walks up from the node's PARENT to find the view, so this is
+     * free for the hit test to use. */
+    view->spin_buf->node.data = view;
+    view->spin_buf->point_accepts_input = spin_accepts_input;
+
+    view->spin_w = w;
+    view->spin_h = h;
+    view->spin_size = size;
+    view->spin_snap_t = 0.0;
+    view->spin_border = border;
+
+    /* Everything the scene draws upright goes away: the client's own surfaces,
+     * and the border rects, which are scene rectangles and cannot be tilted at
+     * all (they are not even in the snapshot — it only collects buffers). */
+    view_set_content_enabled(view, false);
+    view_set_border_enabled(view, 0);
+    return true;
+
+fail:
+    view_spin_release(view);
+    view_set_content_enabled(view, true);
+    if (border) view_set_border_enabled(view, 1);
+    return false;
+}
+
+void view_spin_tick(FwmView *view, double angle, double dt) {
+    /* The squash owns the same snapshot slot and deforms an upright window;
+     * the two cannot both be showing. Rotation wins — it is the bigger, longer
+     * lasting effect, and an impact that arrives mid-spin already shows itself
+     * in the way the window tumbles. */
+    if (view->squash_buf) view_stop_squash(view);
+
+    bool redraw = false;
+
+    if (!view->spin_buf || view->spin_w != view->width || view->spin_h != view->height) {
+        if (!view_spin_setup(view)) {
+            view_stop_spin(view);
+            return;
+        }
+        redraw = true;   /* the node has no picture in it yet */
+    }
+
+    /* Refresh the frozen picture a few times a second. The live nodes have to
+     * come back for the length of the pass; nothing is presented in between,
+     * so the window never flashes upright. */
+    view->spin_snap_t += dt;
+    if (view->spin_snap_t >= SPIN_REFRESH_S) {
+        view->spin_snap_t = 0.0;
+        redraw = true;
+        view_set_content_enabled(view, true);
+        /* The rotated picture is itself a buffer in this subtree, and the
+         * snapshot pass collects every enabled buffer it finds — leave it on
+         * and each refresh bakes the previous tilted frame into the next one,
+         * one ghost image deeper every time. */
+        wlr_scene_node_set_enabled(&view->spin_buf->node, false);
+        view_snapshot_into(view, view->spin_src);
+        wlr_scene_node_set_enabled(&view->spin_buf->node, true);
+        view_set_content_enabled(view, false);
+    }
+
+    /* A window that has come to rest keeps the angle it stopped at, and the
+     * effect then costs nothing per frame: redrawing an unchanged rotation of
+     * an unchanged snapshot would just burn the GPU for an identical picture.
+     * (Half a milliradian is well under a pixel of travel at any window size.) */
+    if (fabs(angle - view->spin_angle) > 5e-4) redraw = true;
+    if (!redraw) return;
+
+    int size = view->spin_size;
+    struct wlr_buffer *dst = view->spin_dst[view->spin_flip];
+
+    if (rotate_blit(view->server->wlr_renderer, dst, view->spin_tex,
+                    view->spin_w, view->spin_h, angle)) {
+        view->spin_flip ^= 1;
+        wlr_scene_buffer_set_buffer(view->spin_buf, dst);
+        wlr_scene_buffer_set_dest_size(view->spin_buf, size, size);
+        wlr_scene_buffer_set_transform(view->spin_buf, WL_OUTPUT_TRANSFORM_NORMAL);
+        /* The target is centered on the window: half the slack on each side. */
+        wlr_scene_node_set_position(&view->spin_buf->node,
+                                    -(size - view->spin_w) / 2,
+                                    -(size - view->spin_h) / 2);
+    } else {
+        /* No arbitrary rotation available (a non-GLES2 renderer, a shader that
+         * would not build). Rather than dropping the effect entirely, show the
+         * snapshot at the nearest quarter turn — those four angles ARE
+         * expressible in the scene graph. The window then turns in steps
+         * instead of smoothly, which still reads as a window that rotates. */
+        int quarter = ((int)lround(angle / (M_PI / 2.0)) % 4 + 4) % 4;
+        static const enum wl_output_transform steps[4] = {
+            WL_OUTPUT_TRANSFORM_NORMAL, WL_OUTPUT_TRANSFORM_90,
+            WL_OUTPUT_TRANSFORM_180,    WL_OUTPUT_TRANSFORM_270,
+        };
+        /* A quarter turn swaps the window's width and height. */
+        int qw = (quarter % 2) ? view->spin_h : view->spin_w;
+        int qh = (quarter % 2) ? view->spin_w : view->spin_h;
+        wlr_scene_buffer_set_buffer(view->spin_buf, view->spin_src);
+        wlr_scene_buffer_set_transform(view->spin_buf, steps[quarter]);
+        wlr_scene_buffer_set_dest_size(view->spin_buf, qw, qh);
+        wlr_scene_node_set_position(&view->spin_buf->node,
+                                    (view->spin_w - qw) / 2,
+                                    (view->spin_h - qh) / 2);
+    }
+    view->spin_angle = angle;
 }
 
 /* ── shell-agnostic accessors ─────────────────────────────────────────── */
@@ -786,6 +1025,7 @@ void view_unmap(FwmView *view) {
     /* Before anything else: the snapshot lives in scene_tree, which is about to
      * go, and it holds a buffer lock the close ghost may want back. */
     view_stop_squash(view);
+    view_stop_spin(view);
 
     /* Which desktop to re-home the keyboard on, read before the body goes. */
     PhysicsBody *ub = physics_find_body(&view->server->physics, view->id);

@@ -217,6 +217,9 @@ sc_physics() {
     act toggle_nocollide_all
     act pin_window
     act calm_all
+    # Free rotation: on, let it turn (the snapshot is rebuilt several times a
+    # second while it does), off again.
+    act spin_window 1.0; act spin_window 0.5
     act fake_fullscreen 0.4; act fake_fullscreen 0.4
     act real_fullscreen 0.4; act real_fullscreen 0.4
 }

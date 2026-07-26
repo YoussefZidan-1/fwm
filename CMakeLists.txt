@@ -38,6 +38,11 @@ pkg_check_modules(GDK_PIXBUF REQUIRED gdk-pixbuf-2.0)
 # Used directly for pointer-constraint regions (pixman_region32_contains_point);
 # wlroots exposes pixman types in its API but does not link it for us.
 pkg_check_modules(PIXMAN REQUIRED pixman-1)
+# Arbitrary window rotation is the one effect wlroots' render pass API cannot
+# express, so src/rotate.c draws its quad with GLES2 on the renderer's own EGL
+# context (see the header for why). Nothing else in fwm touches GL.
+pkg_check_modules(EGL REQUIRED egl)
+pkg_check_modules(GLESV2 REQUIRED glesv2)
 # Video wallpaper decode. ffmpeg 6 on Void is the split libav* set + headers in
 # ffmpeg6-devel; the runtime is libav*6. Software decode only, so no libva pin.
 pkg_check_modules(LIBAV REQUIRED libavformat libavcodec libavutil libswscale)
@@ -57,6 +62,7 @@ set(SOURCES
     src/wallpaper.c
     src/video.c
     src/view.c
+    src/rotate.c
     src/layer.c
     src/lock.c
     src/foreign.c
@@ -114,6 +120,8 @@ target_include_directories(fwm PRIVATE
         ${PANGOCAIRO_INCLUDE_DIRS}
         ${GDK_PIXBUF_INCLUDE_DIRS}
         ${PIXMAN_INCLUDE_DIRS}
+        ${EGL_INCLUDE_DIRS}
+        ${GLESV2_INCLUDE_DIRS}
         ${LIBAV_INCLUDE_DIRS}
         src
         ${CMAKE_BINARY_DIR}
@@ -128,6 +136,8 @@ target_link_libraries(fwm PRIVATE
         ${PANGO_LIBRARIES}
         ${PANGOCAIRO_LIBRARIES}
         ${PIXMAN_LIBRARIES}
+        ${EGL_LIBRARIES}
+        ${GLESV2_LIBRARIES}
         ${GDK_PIXBUF_LIBRARIES}
         ${LIBAV_LIBRARIES}
         box2d::box2d

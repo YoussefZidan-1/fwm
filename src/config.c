@@ -63,7 +63,7 @@ static int action_is_known(const char *a) {
         "toggle_nocollide", "toggle_nocollide_all", "toggle_tiling_all",
         "toggle_floating", "toggle_floating_all",
         "calm_all", "fake_fullscreen", "real_fullscreen",
-        "launcher", "toggle_tray", NULL
+        "launcher", "toggle_tray", "spin_window", "spin_all", NULL
     };
     static const char *prefixes[] = {
         "spawn:", "view:", "move_camera:", "tile_focus:", "tile_move:",
@@ -321,6 +321,7 @@ static void load_effects(toml_table_t *root, EffectsConfig *e) {
      * which reads as intrusive during actual work. Opt in. */
     e->camera_shake = 0.0;
     e->squash = 1.0;
+    e->spin = 1.0;
     if (!root) return;
     toml_table_t *tbl = toml_table_in(root, "effects");
     if (!tbl) return;
@@ -330,6 +331,9 @@ static void load_effects(toml_table_t *root, EffectsConfig *e) {
     LOAD_DOUBLE(tbl, "squash", e->squash);
     if (e->squash < 0.0) e->squash = 0.0;
     if (e->squash > 2.0) e->squash = 2.0;
+    LOAD_DOUBLE(tbl, "spin", e->spin);
+    if (e->spin < 0.0) e->spin = 0.0;
+    if (e->spin > 4.0) e->spin = 4.0;
 }
 
 static void load_session(toml_table_t *root, SessionConfig *s, FwmConfig *cfg) {
@@ -368,6 +372,7 @@ static const struct { const char *bind; const char *action; } default_binds[] = 
     { "super+n",              "toggle_nocollide" },
     { "super+g",              "cycle_gravity"    },
     { "super+j",              "toggle_tray"      },
+    { "super+r",              "spin_window"      },
     { "super+s",              "toggle_split"     },
     { "super+w",              "group_toggle"     },
     { "super+Tab",            "group_next"       },
@@ -747,6 +752,7 @@ static const ConfigOption config_option_table[] = {
 
     { "effects.camera_shake",           CFG_OPT_DOUBLE, offsetof(FwmConfig, effects.camera_shake),            0.0,     4.0,    "impact shake; 0 disables" },
     { "effects.squash",                 CFG_OPT_DOUBLE, offsetof(FwmConfig, effects.squash),                  0.0,     4.0,    "impact squash & stretch; 0 disables" },
+    { "effects.spin",                   CFG_OPT_DOUBLE, offsetof(FwmConfig, effects.spin),                    0.0,     4.0,    "free rotation kick (experimental); 0 disables" },
 
     { "input.repeat_rate",              CFG_OPT_INT,    offsetof(FwmConfig, input.repeat_rate),               0.0,   200.0,    "key repeat, chars/s" },
     { "input.repeat_delay",             CFG_OPT_INT,    offsetof(FwmConfig, input.repeat_delay),              0.0,  5000.0,    "ms before repeat starts" },

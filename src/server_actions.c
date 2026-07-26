@@ -121,6 +121,24 @@ static BspNode *tile_neighbor(FwmServer *server, int desktop, BspNode *from, cha
 
 
 
+/* A body physics is free to turn. Every state on this list makes the body an
+ * immovable anchor in physics_step, so a "spinning" window in one of them
+ * would hold an angle of zero forever — and since the effect swaps the live
+ * window for a snapshot, that reads as the window having frozen. Refusing is
+ * the honest answer; the same test also ends a spin the moment a window is
+ * tiled or made fullscreen underneath it. */
+bool server_can_spin(const PhysicsBody *b) {
+    return b && !b->pinned && !b->fullscreen && !b->tiled && !b->floating;
+}
+
+/* Angular velocity a spin_window press hands the window, in rad/s. Deliberately
+ * a drift — a tenth of a turn a second, gone in a few seconds — because the
+ * press is not the effect: it is what puts the window in physics' hands. The
+ * spinning itself comes from what happens to the window afterwards: what it is
+ * thrown into, and stirring the mouse while dragging it. Scaled by
+ * effects.spin. */
+#define SPIN_KICK 0.6
+
 /* Shared setup for the tile_* actions: resolves the focused view's desktop,
  * checks it is tiling, and finds its leaf. Returns 0 if not applicable. */
 static int tile_action_ctx(FwmServer *server, int *out_d, BspNode **out_leaf) {
@@ -233,6 +251,53 @@ void server_dispatch_action(FwmServer *server, const char *action) {
             if (pb) {
                 pb->pinned ^= 1;
                 pb->vx = 0; pb->vy = 0; pb->flying = 0;
+            }
+        }
+    } else if (strcmp(action, "spin_window") == 0) {
+        /* Experimental. Frees the focused window's rotation and kicks it, or
+         * settles it back upright if it is already spinning. The kick's
+         * direction alternates so pressing the bind twice in a row on two
+         * windows does not produce a pair of synchronised clones. */
+        double strength = server->config.effects.spin;
+        if (strength > 0.0 && server->focused_view) {
+            PhysicsBody *pb = physics_find_body(&server->physics, server->focused_view->id);
+            if (pb && pb->spin) {
+                physics_unspin_body(&server->physics, server->focused_view->id);
+                view_stop_spin(server->focused_view);
+            } else if (pb && server_can_spin(pb)) {
+                static int flip = 0;
+                flip = !flip;
+                physics_spin_body(&server->physics, server->focused_view->id,
+                                  (flip ? 1.0 : -1.0) * SPIN_KICK * strength);
+            }
+        }
+    } else if (strcmp(action, "spin_all") == 0) {
+        /* Same rule as toggle_nocollide_all: uniform, not per-window XOR — the
+         * only predictable meaning of "all" is that after a press everything is
+         * in the same state. Spinning wins unless everything already spins.
+         * Alternating the direction per window keeps the desktop from looking
+         * like a set of gears turning in lockstep. */
+        double strength = server->config.effects.spin;
+        if (strength > 0.0) {
+            int all_spinning = 1;
+            for (int i = 0; i < server->physics.body_count; i++) {
+                const PhysicsBody *b = &server->physics.bodies[i];
+                if (b->active && server_can_spin(b) && !b->spin) { all_spinning = 0; break; }
+            }
+            int sign = 1;
+            for (int i = 0; i < server->physics.body_count; i++) {
+                PhysicsBody *b = &server->physics.bodies[i];
+                if (!b->active) continue;
+                if (all_spinning || !server_can_spin(b)) {
+                    if (b->spin) {
+                        physics_unspin_body(&server->physics, b->id);
+                        FwmView *sv = server_find_view(server, b->id);
+                        if (sv) view_stop_spin(sv);
+                    }
+                } else if (!b->spin) {
+                    physics_spin_body(&server->physics, b->id, sign * SPIN_KICK * strength);
+                    sign = -sign;
+                }
             }
         }
     } else if (strcmp(action, "toggle_nocollide") == 0) {

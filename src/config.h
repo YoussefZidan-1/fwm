@@ -105,6 +105,10 @@ typedef struct {
 typedef struct {
     double camera_shake;  /* impact shake strength; 0 disables, 1 = default */
     double squash;        /* impact squash & stretch; 0 disables, 1 = default */
+    /* Free window rotation (EXPERIMENTAL), strength of the spin_window kick.
+     * 0 makes the bind do nothing. Nothing rotates on its own: a window only
+     * ever spins because the bind told it to. */
+    double spin;
 } EffectsConfig;
 
 /* ── session ─────────────────────────────────────────────────────────── */

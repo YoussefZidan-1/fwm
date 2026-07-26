@@ -52,6 +52,10 @@ void server_reclaim_memory(void);
 void server_dispatch_action(FwmServer *server, const char *action);
 FwmView *server_find_view(FwmServer *server, uint32_t id);
 
+/* ── server_actions.c ─────────────────────────────────────────────────── */
+/* Whether physics is free to rotate this body (see spin_window). */
+bool server_can_spin(const PhysicsBody *b);
+
 /* ── server_config.c ──────────────────────────────────────────────────── */
 void server_config_path(char *buf, size_t cap);
 void server_close_errors_panel(FwmServer *server);

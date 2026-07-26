@@ -102,6 +102,8 @@ static const char *action_label(const char *a, char *buf, size_t cap) {
         { "calm_all",         "calm all windows" },
         { "cycle_gravity",    "cycle gravity" },
         { "toggle_tray",      "show/hide tray" },
+        { "spin_window",      "spin window (experimental)" },
+        { "spin_all",         "spin: all windows" },
         { "toggle_split",     "flip split" },
         { "group_toggle",     "tab-stack on/off" },
         { "group_next",       "next tab" },

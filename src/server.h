@@ -68,6 +68,31 @@ typedef struct {
     struct timespec hist_time[4];
     int hist_count;
     int collision_disabled;
+
+    /* Swirl: how the cursor's direction of travel is turning, which is what
+     * winds a spinning window up mid-drag (see server_pointer.c). `dir` is the
+     * angle of the velocity vector at the last sample; `acc`/`abs`/`span` are
+     * a leaky integral of how far it has turned, how much it turned either
+     * way, and over how long — so the rate is read from a fifth of a second of
+     * hand movement, and a wobble that nets out to nothing is told apart from
+     * a circle that does not. */
+    double swirl_dir;
+    struct timespec swirl_time;
+    double swirl_acc, swirl_abs, swirl_span;
+    int swirl_have;   /* a previous sample exists to compare against */
+
+    /* Where the drag took hold of the window, in the window's OWN frame
+     * (unrotated, relative to its center). A spinning window hangs from this
+     * point: grab it by a corner and it swings like a real object held there
+     * (server.c, server_drag_swing). Fixed for the length of the drag — the
+     * hand does not slide along the window. */
+    double grab_lx, grab_ly;
+    /* The grab point in world coordinates, and how fast it is moving, as of
+     * the last physics tick. The swing is driven by this point's
+     * ACCELERATION, so both are needed. */
+    double pivot_x, pivot_y;
+    double pivot_vx, pivot_vy;
+    int pivot_have;
     
     /* BSP resize */
     BspNode *bsp_node;

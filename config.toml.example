@@ -79,6 +79,10 @@ on_activate = "same_desktop"
 [effects]
 camera_shake = 0.0
 squash       = 1.0
+# Strength of the kick spin_window gives a window, 0..4. 0 disables the bind.
+# (Stirring the mouse while dragging a spinning window is not scaled by this —
+# there the window simply turns at the rate your hand does.)
+spin         = 1.0
 
 # When a restarted fwm should put your applications back. fwm records what is
 # running and on which desktop, and relaunches it — the applications restart,
@@ -108,6 +112,7 @@ repeat_delay = 600
 #                 pin_window, toggle_nocollide, toggle_nocollide_all,
 #                 toggle_tiling_all, toggle_floating, toggle_floating_all,
 #                 calm_all, cycle_gravity, toggle_tray,
+#                 spin_window, spin_all,
 #                 show_hints, show_errors, reload_config,
 #                 wallpaper_picker, launcher, EXIT
 # tiling:         toggle_split, tile_focus:l|r|u|d, tile_move:l|r|u|d
@@ -152,6 +157,22 @@ repeat_delay = 600
 # strip, so tiled and fake-fullscreen windows grow into the top of the
 # screen. Press again to bring it back.
 "super+j"            = "toggle_tray"
+# EXPERIMENTAL: set the focused window spinning — the picture turns and so does
+# its collision box, so it tumbles off walls and shoves neighbours with its
+# corners. The press itself is a gentle nudge: the spinning comes from what you
+# do with the window afterwards. While dragged it hangs from the point you took
+# hold of, like a real object held there — grab it by a corner and it swings
+# behind your hand (and hangs straight down if gravity is on); grab it dead
+# center and it does not swing at all. Stirring the mouse in circles winds it up
+# further, and it keeps whatever spin it had when you let go. Press again to settle it upright. While it spins the window
+# shows a snapshot refreshed a few times a second rather than live content, and
+# it is only as free to turn as the room around it: a window whose diagonal is
+# taller than the screen wedges against the floor and ceiling instead of
+# coming round.
+"super+r"            = "spin_window"
+# The same for every window at once. Unbound by default because the obvious key
+# for it (super+shift+r) is reload_config; pick one that suits you.
+#"super+shift+r"      = "spin_all"
 "super+shift+Escape" = "EXIT"
 # Bound to the physical "/" key, not to the "?" symbol: a symbol bind lands on
 # a different key per layout (US shift+/, RU shift+7), while "slash" resolves
