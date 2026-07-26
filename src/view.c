@@ -78,6 +78,26 @@ static void handle_commit(struct wl_listener *listener, void *data) {
             PhysicsBody *pb = physics_find_body(&view->server->physics, view->id);
             if (pb && pb->tiled) server_align_tiles(view->server, pb->desktop_id);
         }
+
+        /* Adopt the size the client actually took. A resize ASKS for a size;
+         * what the window ends up being is the client's answer, and terminals
+         * answer with the next size down that is a whole number of character
+         * cells. Until this, the compositor kept believing the number it asked
+         * for: the physics box stayed up to a cell taller and wider than the
+         * window drawn inside it, and since clients paint from their top-left
+         * corner, all of that slack showed as a gap along the bottom and right
+         * — a resized window came to rest visibly above the floor, while the
+         * top and left, where box and window still met, looked correct.
+         *
+         * Only our bookkeeping changes; the client is not configured back at
+         * its own size, which is how this stays a single exchange and not a
+         * loop. */
+        if (cw > 0 && ch > 0 && (cw != view->width || ch != view->height)) {
+            view->width = cw;
+            view->height = ch;
+            physics_sync_body(&view->server->physics, view->id, view->x, view->y,
+                              cw, ch, view->server->screen_width);
+        }
     }
 
     // Keep our own lock on the latest committed buffer: at unmap time the
