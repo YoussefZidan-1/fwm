@@ -120,6 +120,16 @@ typedef struct FwmView {
     double jelly_mx, jelly_my;        /* the mass, world px */
     double jelly_vx, jelly_vy;        /* its velocity, px/s */
     double jelly_px, jelly_py;        /* window position at the last tick */
+    /* How stretched each axis currently is, in lag px — an envelope that
+     * follows the lag's MAGNITUDE up quickly and down slowly, never the
+     * magnitude itself. A shaken jelly stays stretched along the shake; taking
+     * the magnitude straight collapses the window back to its resting shape at
+     * every zero crossing of the wobble, twice per shake. */
+    double jelly_ampx, jelly_ampy;
+    /* Where the deformed box is drawn, smoothed. Shaken faster than the spring
+     * can follow, the lag saturates into what is very nearly a square wave, and
+     * the picture would jump between its two extremes in single frames. */
+    double jelly_ox, jelly_oy;
     /* The spare snapshot. A drag lasts seconds, not the quarter second an
      * impact does, so the frozen picture is refreshed as the spin's is — into
      * this one while the scene is still showing the other, then the two swap.

@@ -130,25 +130,37 @@ static void view_border_box(FwmView *view, int *w, int *h);
  *
  * One mass on a spring, lagging behind the window (see the jelly_* fields).
  * K and C give sqrt(K) = 14.8 rad/s, the same ~2.4 Hz the impact squash rings
- * at, and a damping ratio of C/(2*sqrt(K)) = 0.47 — underdamped on purpose, so
- * shaking the window builds a wobble that outlives the hand by a beat instead
- * of dying the moment you stop.
+ * at, and a damping ratio of C/(2*sqrt(K)) = 0.61 — underdamped, so shaking the
+ * window builds a wobble that outlives the hand by a beat instead of dying the
+ * moment you stop, but not so lightly damped that shaking it AT that 2.4Hz
+ * pumps the spring up by resonance.
  *
- * Dragged at a steady speed the lag settles at C*v/K, i.e. 76px at a brisk
- * 1200 px/s, which STRAIN_PER_PX turns into a 12% stretch. Shaking the window
- * near the spring's own 2.4Hz drives the lag past 200px (measured), so the cap
- * is what an actual shake runs into and an ordinary drag stays well under it. */
+ * Dragged at a steady speed the lag settles at C*v/K, i.e. 98px at a brisk
+ * 1200 px/s. Everything drawn is a function of that lag and nothing else. */
 #define JELLY_K            220.0   /* 1/s^2 */
-#define JELLY_C            14.0    /* 1/s */
-#define JELLY_STRAIN_PER_PX 0.0016 /* lag px -> fraction of the window's size */
-#define JELLY_MAX_S        0.22    /* cap on the stretch, before the bulge */
+#define JELLY_C            18.0    /* 1/s */
+/* The lag is soft-saturated through tanh at this scale before anything is drawn
+ * from it, which is the whole defence against a violent shake. Hard caps were
+ * worse than no caps: the stretch, the trailing and the anchor each had their
+ * own threshold, so a shake big enough to peg all three left the picture
+ * slamming between the limits — and the harder the shake, the FASTER it crossed
+ * the unsaturated middle, one frame per transition. tanh has no threshold to
+ * cross: it is smooth everywhere, and its slope falls off as the lag grows, so
+ * shaking twice as hard past this scale moves the picture barely at all. */
+#define JELLY_LAG_SCALE_PX 90.0
+#define JELLY_STRAIN_PER_PX 0.0022 /* lag px -> fraction of the window's size */
+#define JELLY_MAX_S        0.22    /* backstop for effects.jelly above 1 */
 #define JELLY_BULGE        0.5     /* how much the other axis pinches in */
-/* How much of the lag the picture actually hangs back by, and the ceiling on
- * it. This is the part that reads as jelly; the stretch alone only pulsed. */
-#define JELLY_TRAIL        0.45
-#define JELLY_TRAIL_MAX_PX 60.0
-/* Lag at which the stretch has slid fully onto the trailing edge. */
-#define JELLY_ANCHOR_REF_PX 40.0
+/* How much of the (saturated) lag the picture hangs back by. This is the part
+ * that reads as jelly; the stretch alone only pulsed. */
+#define JELLY_TRAIL        0.5
+/* Time constants of the stretch envelope: it takes up a new peak almost at
+ * once and lets go of it slowly, so a fast shake holds the window stretched
+ * along the shake instead of pumping it flat and full ten times a second. */
+#define JELLY_ATTACK_S     0.04
+#define JELLY_RELEASE_S    0.22
+/* Smoothing on the drawn offset (see jelly_ox). */
+#define JELLY_SMOOTH_S     0.03
 /* Integration sub-step. Well under 2/sqrt(K), where forward Euler blows up. */
 #define JELLY_STEP_S       (1.0 / 240.0)
 #define JELLY_MAX_STEPS    64
@@ -315,6 +327,8 @@ void view_stop_squash(FwmView *view) {
     view->squash_amount = 0.0;
     view->jelly = 0;
     view->jelly_settling = 0;
+    view->jelly_ampx = view->jelly_ampy = 0.0;
+    view->jelly_ox = view->jelly_oy = 0.0;
     if (view->jelly_alt) {
         wlr_buffer_unlock(view->jelly_alt);
         view->jelly_alt = NULL;
@@ -425,10 +439,6 @@ void view_squash_tick(FwmView *view, double dt) {
 
 /* ── drag wobble ──────────────────────────────────────────────────────── */
 
-static double clampd(double v, double lo, double hi) {
-    return v < lo ? lo : (v > hi ? hi : v);
-}
-
 void view_jelly_begin(FwmView *view, double strength) {
     if (!view->scene_tree || !view->last_buffer) return;
     if (strength <= 0.0) return;
@@ -457,6 +467,8 @@ void view_jelly_begin(FwmView *view, double strength) {
     view->jelly_mx = view->jelly_px = view->x;
     view->jelly_my = view->jelly_py = view->y;
     view->jelly_vx = view->jelly_vy = 0.0;
+    view->jelly_ampx = view->jelly_ampy = 0.0;
+    view->jelly_ox = view->jelly_oy = 0.0;
 }
 
 /* Replace the frozen picture with a fresh one. Same dance as the spin's
@@ -538,8 +550,13 @@ void view_jelly_tick(FwmView *view, double strength, double dt) {
     double lx = view->jelly_mx - px;
     double ly = view->jelly_my - py;
 
+    /* The envelope is the last thing to let go — ending on the spring alone
+     * would snap a still-stretched window back to its resting shape in one
+     * frame. (Its own value is from the previous tick, which is all this needs:
+     * it only ever decays here.) */
     if (view->jelly_settling &&
         fabs(lx) < JELLY_REST_PX && fabs(ly) < JELLY_REST_PX &&
+        view->jelly_ampx < JELLY_REST_PX && view->jelly_ampy < JELLY_REST_PX &&
         fabs(view->jelly_vx) < JELLY_REST_VEL && fabs(view->jelly_vy) < JELLY_REST_VEL) {
         view_stop_squash(view);
         return;
@@ -549,8 +566,23 @@ void view_jelly_tick(FwmView *view, double strength, double dt) {
     view_border_box(view, &w, &h);
     if (w <= 0 || h <= 0) { view_stop_squash(view); return; }
 
-    double gx = fabs(lx) * JELLY_STRAIN_PER_PX * strength;
-    double gy = fabs(ly) * JELLY_STRAIN_PER_PX * strength;
+    /* Everything below is a function of the SATURATED lag: see the comment on
+     * JELLY_LAG_SCALE_PX. Shaking harder past that scale asks for almost
+     * nothing more, which is what stops a hard shake turning into convulsions. */
+    double ex = JELLY_LAG_SCALE_PX * tanh(lx / JELLY_LAG_SCALE_PX);
+    double ey = JELLY_LAG_SCALE_PX * tanh(ly / JELLY_LAG_SCALE_PX);
+
+    /* The stretch follows an envelope of |lag|, not |lag| itself: see the
+     * jelly_amp* fields. Exponential rather than a fixed fraction per frame so
+     * a slow frame does not change how fast it moves. */
+    double up = 1.0 - exp(-dt / JELLY_ATTACK_S);
+    double dn = 1.0 - exp(-dt / JELLY_RELEASE_S);
+    double ax = fabs(ex), ay = fabs(ey);
+    view->jelly_ampx += (ax - view->jelly_ampx) * (ax > view->jelly_ampx ? up : dn);
+    view->jelly_ampy += (ay - view->jelly_ampy) * (ay > view->jelly_ampy ? up : dn);
+
+    double gx = view->jelly_ampx * JELLY_STRAIN_PER_PX * strength;
+    double gy = view->jelly_ampy * JELLY_STRAIN_PER_PX * strength;
     if (gx > JELLY_MAX_S) gx = JELLY_MAX_S;
     if (gy > JELLY_MAX_S) gy = JELLY_MAX_S;
 
@@ -564,29 +596,33 @@ void view_jelly_tick(FwmView *view, double strength, double dt) {
     if (dw < 1) dw = 1;
     if (dh < 1) dh = 1;
 
-    /* The body trails: the picture itself hangs back along the lag, and the
-     * stretch grows out on the same side. Without this the window stayed
-     * exactly where it was and only its SIZE pulsed, which is a twitch, not a
-     * sway — the size is the small half of the effect and the trailing is what
-     * reads as weight. Capped so a hard shake cannot tear the picture off the
-     * box it belongs to. */
-    double tx = JELLY_TRAIL * lx, ty = JELLY_TRAIL * ly;
-    if (tx >  JELLY_TRAIL_MAX_PX) tx =  JELLY_TRAIL_MAX_PX;
-    if (tx < -JELLY_TRAIL_MAX_PX) tx = -JELLY_TRAIL_MAX_PX;
-    if (ty >  JELLY_TRAIL_MAX_PX) ty =  JELLY_TRAIL_MAX_PX;
-    if (ty < -JELLY_TRAIL_MAX_PX) ty = -JELLY_TRAIL_MAX_PX;
+    /* The body trails: the picture hangs back along the lag. Without this the
+     * window stayed exactly where it was and only its SIZE pulsed, which is a
+     * twitch, not a sway — the trailing is what reads as weight, the stretch is
+     * the small half of it.
+     *
+     * The stretch itself grows from the CENTRE, and that is the only choice
+     * with no sign in it. Growing it from whichever edge happens to be trailing
+     * means the anchor flips as the lag passes through zero, and the whole box
+     * teleports by (w - dw) every time it does — twice per wobble. Softening
+     * that flip into a slide only shrank the window it happened in: shaken hard
+     * the lag crosses the middle in a single frame and the slide is a jump
+     * again. Centred, there is nothing to cross; the trailing already puts the
+     * picture behind the window, which is what the edge anchor was reaching
+     * for. */
+    double want_ox = JELLY_TRAIL * ex + (w - dw) / 2.0;
+    double want_oy = JELLY_TRAIL * ey + (h - dh) / 2.0;
 
-    /* Which edge the stretch grows from, as a weight rather than a choice.
-     * Picking the edge outright — plant the left one while the lag is positive,
-     * the right one while it is negative — teleports the whole box by (w - dw)
-     * at every zero crossing of the wobble, several times a second. That jump
-     * WAS the twitch. At rest the weight is 0.5, i.e. the stretch is centred,
-     * and it slides to one edge as the lag builds. */
-    double ux = 0.5 - 0.5 * clampd(lx / JELLY_ANCHOR_REF_PX, -1.0, 1.0);
-    double uy = 0.5 - 0.5 * clampd(ly / JELLY_ANCHOR_REF_PX, -1.0, 1.0);
+    /* Rounds off the corners of that near-square wave. Short enough that an
+     * ordinary drag barely knows it is there (worst frame-to-frame movement
+     * 12px -> 10px, measured) and long enough to halve a frantic one (77px ->
+     * 36px) without eating the swing itself. */
+    double k = 1.0 - exp(-dt / JELLY_SMOOTH_S);
+    view->jelly_ox += (want_ox - view->jelly_ox) * k;
+    view->jelly_oy += (want_oy - view->jelly_oy) * k;
 
-    int ox = (int)lround(tx + (w - dw) * ux);
-    int oy = (int)lround(ty + (h - dh) * uy);
+    int ox = (int)lround(view->jelly_ox);
+    int oy = (int)lround(view->jelly_oy);
 
     wlr_scene_buffer_set_dest_size(view->squash_buf, dw, dh);
     wlr_scene_node_set_position(&view->squash_buf->node, ox, oy);
