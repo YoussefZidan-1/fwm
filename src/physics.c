@@ -620,9 +620,23 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
             bool spin_drag = (type == b2_kinematicBody && m->spin);
             b2Rot rot = spin_drag ? b2Body_GetRotation(s->body) : body_rot(m);
             b2Body_SetTransform(s->body, body_center_m(m), rot);
-            b2Vec2 v = (type == b2_kinematicBody)
-                           ? (b2Vec2){px2m(m->vx), px2m(m->vy)}
-                           : (b2Vec2){0.0f, 0.0f};
+            /* A dragged window's velocity has to be DERIVED from how far the
+             * mouse moved it since the last step. The mirror's vx/vy are not
+             * it: the drag writes only a position (physics_sync_body), and the
+             * grab zeroed the velocity, so handing Box2D m->vx/vy told it the
+             * window was standing still while the transform teleported it
+             * across the screen. A contact with a body that has no approach
+             * speed produces no hit event — which is why shoving one window
+             * into another never squashed either of them (they only got pushed
+             * apart by penetration resolution) while a thrown window bouncing
+             * off a wall, dynamic and honestly moving, always did. */
+            b2Vec2 v = {0.0f, 0.0f};
+            if (type == b2_kinematicBody && dt > 0.0) {
+                double dvx = (m->x - s->sx) / dt;
+                double dvy = (m->y - s->sy) / dt;
+                clamp_velocity(&dvx, &dvy, DRAG_PUSH_MAX_SPEED);
+                v = (b2Vec2){px2m(dvx), px2m(dvy)};
+            }
             b2Body_SetLinearVelocity(s->body, v);
             if (spin_drag) b2Body_SetAngularVelocity(s->body, (float)m->angvel);
         }

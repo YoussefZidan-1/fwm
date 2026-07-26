@@ -32,6 +32,15 @@
 /* Approach speed (px/s) a collision must reach before it counts as an impact
  * worth reacting to. Above resting jitter, below a short drop. */
 #define PHYSICS_HIT_MIN_SPEED   120.0
+/* Ceiling (px/s) on the momentum a DRAGGED window hands to what it runs into.
+ * The mouse can move a window far faster than any throw, and a dragged body is
+ * kinematic — infinitely heavy — so an uncapped shove launched the other window
+ * onto the next desktop. Kept well above PHYSICS_HIT_MIN_SPEED so a shove still
+ * squashes both windows, and below a full throw (MAX_THROW_SPEED *
+ * THROW_SPEED_MULTIPLIER) so brushing past never outruns a deliberate fling.
+ * Only the momentum is limited: the dragged window itself still tracks the
+ * cursor exactly, its position comes from the mirror, not from this. */
+#define DRAG_PUSH_MAX_SPEED     600.0
 #define GRAVITY  981.0   // px/s² (earth ~9.8 m/s² at 100 px/m)
 
 #endif /* FWM_DEFINES_H */
