@@ -117,6 +117,49 @@ static void server_animate(FwmServer *server) {
     if (dt > 0.25) dt = 0.25;
     server->last_anim = now;
 
+    /* ── effect frame diagnostics (FWM_DEBUG_EFFECTS) ──────────────────────
+     * Counted here because this is the one place that knows how much real time
+     * passed between the frames a viewer actually saw. Nothing below runs
+     * unless the variable was set at startup. */
+    if (server->fx_debug) {
+        bool busy = false;
+        FwmView *fv;
+        wl_list_for_each(fv, &server->views, link) {
+            if (view_is_spinning(fv) || fv->jelly) { busy = true; break; }
+        }
+        if (busy) {
+            if (!server->fx_frames) {
+                server->fx_since = now;
+                server->fx_dt_min = 1e9;
+                server->fx_dt_max = 0.0;
+                server->fx_omega_jump = 0.0;
+                server->fx_omega_have = 0;
+            }
+            server->fx_frames++;
+            if (dt < server->fx_dt_min) server->fx_dt_min = dt;
+            if (dt > server->fx_dt_max) server->fx_dt_max = dt;
+
+            double span = (double)(now.tv_sec - server->fx_since.tv_sec)
+                        + (double)(now.tv_nsec - server->fx_since.tv_nsec) / 1e9;
+            if (span >= 1.0) {
+                wlr_log(WLR_INFO,
+                        "effects: %d frames in %.2fs (%.1f fps), dt %.1f..%.1f ms, "
+                        "redraws %d, worst speed jump %.0f%%, "
+                        "composited snaps %d (%.2f ms each), live=%.0f",
+                        server->fx_frames, span, server->fx_frames / span,
+                        server->fx_dt_min * 1000.0, server->fx_dt_max * 1000.0,
+                        server->fx_moved, server->fx_omega_jump * 100.0,
+                        server->fx_snaps,
+                        server->fx_snaps ? server->fx_snap_us / server->fx_snaps / 1000.0 : 0.0,
+                        server->config.effects.live);
+                server->fx_frames = server->fx_snaps = server->fx_moved = 0;
+                server->fx_snap_us = 0.0;
+            }
+        } else if (server->fx_frames) {
+            server->fx_frames = server->fx_snaps = server->fx_moved = 0;
+        }
+    }
+
     /* Rate-limits itself to one write every few seconds, and only when the set
      * of running applications or their desktops actually changed. */
     session_maybe_save(server);

@@ -232,6 +232,14 @@ in for them: `FWM_TEST_ACTION`, `FWM_TEST_GRAVITY` (fwm boots in zero-g),
 wraps each in a flag. For anything you can express as an action, `fwmctl`
 (below) reaches a *running* nested instance and needs no restart at all.
 
+`FWM_DEBUG_EFFECTS=1` is for one specific question: whether a spin or a wobble
+is actually reaching the screen evenly. It logs, once a second while an effect
+runs, how many frames were presented, the shortest and longest gap between
+them, and how many composited re-photographs were taken and what each cost —
+which is how the 5ms-per-snapshot stall behind a juddering slow spin was found.
+It also says, once per effect, whether the window went down the live path or
+the composited one and why. Off, and free, unless the variable is set.
+
 ## Scripting — `fwmctl`
 
 fwm listens on a control socket, so you do not have to be a C programmer to

@@ -218,6 +218,8 @@ static struct wlr_buffer *view_alloc_buffer(FwmServer *server, int w, int h) {
 static bool view_snapshot_into(FwmView *view, struct wlr_buffer *buf) {
     FwmServer *server = view->server;
     if (!server->wlr_renderer || !view->scene_tree || !buf) return false;
+    struct timespec _t0;
+    if (server->fx_debug) clock_gettime(CLOCK_MONOTONIC, &_t0);
 
     int w = buf->width, h = buf->height;
 
@@ -258,6 +260,12 @@ restore:
     for (int i = 0; i < 4; i++) {
         if (view->border[i])
             wlr_scene_node_set_enabled(&view->border[i]->node, border_was_enabled[i]);
+    }
+    if (server->fx_debug) {
+        struct timespec t1;
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        server->fx_snap_us += (t1.tv_sec - _t0.tv_sec) * 1e6
+                            + (t1.tv_nsec - _t0.tv_nsec) / 1e3;
     }
     return ok;
 }
@@ -1054,11 +1062,35 @@ void view_spin_tick(FwmView *view, double angle, double dt) {
      * (Half a milliradian is well under a pixel of travel at any window size.) */
     if (fabs(angle - view->spin_angle) > 5e-4) redraw = true;
     if (!redraw) return;
+    view->server->fx_moved++;
+    if (view->server->fx_debug && dt > 0.0) {
+        /* Wrapped into (-pi, pi]: Box2D reports the angle wrapped, and a
+         * crossing is not a 355-degree step, it is a small one. */
+        double step = angle - view->spin_angle;
+        while (step >  M_PI) step -= 2.0 * M_PI;
+        while (step < -M_PI) step += 2.0 * M_PI;
+        double omega = step / dt;
+        FwmServer *srv = view->server;
+        if (srv->fx_omega_have) {
+            double ref = fabs(omega) > fabs(srv->fx_omega_prev)
+                       ? fabs(omega) : fabs(srv->fx_omega_prev);
+            if (ref > 0.05) {   /* below this it is a window at rest, not motion */
+                double jump = fabs(omega - srv->fx_omega_prev) / ref;
+                if (jump > srv->fx_omega_jump) srv->fx_omega_jump = jump;
+            }
+        }
+        srv->fx_omega_prev = omega;
+        srv->fx_omega_have = 1;
+    }
+    /* Nothing to draw from: a client between buffers, or a snapshot that could
+     * not be imported. Keep the last picture rather than blanking the window —
+     * the next tick is 16ms away and will very likely have one. */
+    if (!src) return;
 
     int size = view->spin_size;
     struct wlr_buffer *dst = view->spin_dst[view->spin_flip];
 
-    if (rotate_blit(view->server->wlr_renderer, dst, view->spin_tex,
+    if (rotate_blit(view->server->wlr_renderer, dst, src,
                     view->spin_w, view->spin_h, angle)) {
         view->spin_flip ^= 1;
         wlr_scene_buffer_set_buffer(view->spin_buf, dst);
