@@ -292,8 +292,10 @@ static void test_place_actual(void) {
     /* The upper window took 289 of its 295. */
     BspActual act[] = { {1, 100, 289}, {2, 100, 295} };
     bsp_place_actual(root, 0, 0, 100, 600, 10, act, 2);
-    CHECK_INT(root->left->ay, 0);
-    CHECK_INT(root->right->ay, 299);                /* 289 + 10, not 305 */
+    /* 594 of the 600 is taken, and the leftover 6 is split between the two
+     * edges rather than dumped below the last window: everything shifts by 3. */
+    CHECK_INT(root->left->ay, 3);
+    CHECK_INT(root->right->ay, 302);                /* 3 + 289 + 10, not 305 */
     /* Which is the whole point: the visible gap is the configured one. */
     CHECK_INT(root->right->ay - (root->left->ay + 289), 10);
     bsp_free(root);
@@ -325,8 +327,9 @@ static void test_place_actual(void) {
     bsp_recalc(root, 0, 0, 1000, 100, 10);
     BspActual h2[] = { {1, 480, 100}, {2, 495, 100} };   /* left is 15 short */
     bsp_place_actual(root, 0, 0, 1000, 100, 10, h2, 2);
-    CHECK_INT(root->left->ax, 0);
-    CHECK_INT(root->right->ax, 490);                     /* 480 + 10 */
+    CHECK_INT(root->left->ax, 7);                        /* 15 leftover, halved */
+    CHECK_INT(root->right->ax, 497);                     /* 7 + 480 + 10 */
+    CHECK_INT(root->right->ax - (root->left->ax + 480), 10);
     bsp_free(root);
 
     /* A subtree reports the space it occupies to its parent, gaps included.
@@ -346,11 +349,12 @@ static void test_place_actual(void) {
     BspActual nest[] = { {1, 200, 100}, {3, 200, 150}, {2, 200, 300} };
     bsp_place_actual(root, 0, 0, 200, 900, 10, nest, 3);
     BspNode *l1 = bsp_find(root, 1), *l3 = bsp_find(root, 3), *l2 = bsp_find(root, 2);
-    CHECK_INT(l1->ay, 0);
-    CHECK_INT(l3->ay, 110);             /* 100 + gap */
+    /* The column occupies 570 of 900, so the whole thing sits 165 lower. */
+    CHECK_INT(l1->ay, 165);
+    CHECK_INT(l3->ay, 275);             /* 100 + gap */
     /* leaf2 sits below the whole subtree: 100 + gap + 150, then one more gap.
      * Drop the gap from the subtree's reported height and this lands at 260. */
-    CHECK_INT(l2->ay, 270);
+    CHECK_INT(l2->ay, 435);
     bsp_free(root);
 
     CASE("the same for widths");
@@ -364,9 +368,9 @@ static void test_place_actual(void) {
     BspActual wide[] = { {1, 100, 200}, {3, 150, 200}, {2, 300, 200} };
     bsp_place_actual(root, 0, 0, 900, 200, 10, wide, 3);
     l1 = bsp_find(root, 1); l3 = bsp_find(root, 3); l2 = bsp_find(root, 2);
-    CHECK_INT(l1->ax, 0);
-    CHECK_INT(l3->ax, 110);
-    CHECK_INT(l2->ax, 270);
+    CHECK_INT(l1->ax, 165);
+    CHECK_INT(l3->ax, 275);
+    CHECK_INT(l2->ax, 435);
     bsp_free(root);
 
     /* The other half of the fix. Moving a window up to close an interior gap
@@ -440,6 +444,35 @@ static void test_place_actual(void) {
     CHECK_INT(root->right->ay, root->right->y);
     bsp_free(root);
 
+    /* The last window on each axis has no neighbour to absorb ITS leftover, so
+     * before this it all landed against the bottom/right edge: with a terminal
+     * short by most of a character cell the bottom gap read as roughly twice
+     * the top one. Splitting it centres the layout in its area instead. */
+    CASE("the final leftover is split between the two edges, not dumped at the end");
+    root = tree_of(1);
+    bsp_recalc(root, 0, 0, 100, 600, 10);
+    BspActual lone[] = { {1, 100, 560} };   /* client 40 short of the area */
+    bsp_place_actual(root, 0, 0, 100, 600, 10, lone, 1);
+    CHECK_INT(root->ay, 20);                /* 40 / 2 above, 40 / 2 below */
+    CHECK_INT(600 - (root->ay + 560), 20);  /* the two edges match */
+    bsp_free(root);
+
+    CASE("an odd leftover never pushes the layout out of its area");
+    root = tree_of(1);
+    bsp_recalc(root, 0, 0, 100, 600, 10);
+    BspActual odd[] = { {1, 100, 599} };
+    bsp_place_actual(root, 0, 0, 100, 600, 10, odd, 1);
+    CHECK_INT(root->ay, 0);                 /* half of 1 rounds down to 0 */
+    bsp_free(root);
+
+    CASE("a client that fills its area is not moved");
+    root = tree_of(1);
+    bsp_recalc(root, 0, 0, 100, 600, 10);
+    BspActual full[] = { {1, 100, 600} };
+    bsp_place_actual(root, 0, 0, 100, 600, 10, full, 1);
+    CHECK_INT(root->ay, 0);
+    bsp_free(root);
+
     CASE("origin is honoured");
     root = tree_of(2);
     root->split_h = 1;
@@ -447,8 +480,8 @@ static void test_place_actual(void) {
     BspActual off[] = { {1, 100, 289}, {2, 100, 295} };
     bsp_place_actual(root, 40, 70, 100, 600, 10, off, 2);
     CHECK_INT(root->left->ax, 40);
-    CHECK_INT(root->left->ay, 70);
-    CHECK_INT(root->right->ay, 70 + 289 + 10);
+    CHECK_INT(root->left->ay, 73);              /* origin + half the leftover */
+    CHECK_INT(root->right->ay, 73 + 289 + 10);
     bsp_free(root);
 }
 

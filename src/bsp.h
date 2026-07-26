@@ -62,7 +62,10 @@ BspNode *bsp_find_border(BspNode *root, int x, int y, int threshold);
  * neighbour really ended rather than past where its slot ended. And the last
  * child of every split is offered whatever its earlier siblings did not take,
  * so a short client's leftover is absorbed by the next window along instead of
- * accumulating into the edge of the layout. */
+ * accumulating into the edge of the layout. What the LAST child of each axis
+ * leaves over has no such neighbour, so the finished layout is centred in the
+ * area: that remainder is split between the two edges rather than piling up
+ * against the bottom and right ones. */
 void bsp_place_actual(BspNode *root, int x, int y, int w, int h, int gap,
                       const BspActual *actual, int n_actual);
 

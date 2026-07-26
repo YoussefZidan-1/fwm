@@ -212,10 +212,32 @@ static void place_rec(BspNode *n, int x, int y, int w, int h, int gap,
     }
 }
 
+static void shift_rec(BspNode *n, int dx, int dy) {
+    if (!n) return;
+    n->ax += dx;
+    n->ay += dy;
+    shift_rec(n->left, dx, dy);
+    shift_rec(n->right, dx, dy);
+}
+
 void bsp_place_actual(BspNode *root, int x, int y, int w, int h, int gap,
                       const BspActual *actual, int n_actual) {
     int ow, oh;
     place_rec(root, x, y, w, h, gap, actual, n_actual, &ow, &oh);
+
+    /* Interior leftovers are handed to the next window along, but the LAST one
+     * on each axis has no neighbour to hand its own to — so everything the
+     * layout did not take piles up against the bottom and right edges. A
+     * terminal short by most of a character cell makes the bottom gap read as
+     * roughly two gaps_out against a top gap of exactly one. Splitting the
+     * remainder between the two edges makes the layout sit centred in its area
+     * instead of anchored top-left. Most visible with the tray hidden, where
+     * the top gap is a plain gaps_out standing right next to it. */
+    int dx = (w - ow) / 2;
+    int dy = (h - oh) / 2;
+    if (dx < 0) dx = 0;
+    if (dy < 0) dy = 0;
+    if (dx || dy) shift_rec(root, dx, dy);
 }
 
 void bsp_free(BspNode *node) {
