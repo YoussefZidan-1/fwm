@@ -139,6 +139,27 @@ bool server_can_spin(const PhysicsBody *b) {
  * effects.spin. */
 #define SPIN_KICK 0.6
 
+/* The desktop an action's argument names: a number ("view:3"), or "next" /
+ * "prev" relative to where the camera is HEADED — which is what the user is
+ * aiming at when a gesture or a held key fires this twice in a row. Returns -1
+ * when it names nothing that exists, including the ends of the strip, so the
+ * caller does nothing rather than wrapping around. */
+static int resolve_desktop(FwmServer *server, const char *arg) {
+    int here = server->target_camera_x / server->screen_width;
+    int d;
+    if (strcmp(arg, "next") == 0) {
+        d = here + 1;
+    } else if (strcmp(arg, "prev") == 0) {
+        d = here - 1;
+    } else {
+        char *end;
+        long v = strtol(arg, &end, 10);
+        if (end == arg) return -1;
+        d = (int)v;
+    }
+    return (d >= 0 && d < 10) ? d : -1;
+}
+
 /* Shared setup for the tile_* actions: resolves the focused view's desktop,
  * checks it is tiling, and finds its leaf. Returns 0 if not applicable. */
 static int tile_action_ctx(FwmServer *server, int *out_d, BspNode **out_leaf) {
@@ -402,15 +423,19 @@ void server_dispatch_action(FwmServer *server, const char *action) {
         launcher_toggle(server->launcher);
         launcher_grab_sync(server, was_open);
     } else if (strncmp(action, "view:", 5) == 0) {
-        int desktop = atoi(action + 5);
-        if (desktop >= 0 && desktop < 10) {
+        int desktop = resolve_desktop(server, action + 5);
+        if (desktop >= 0) {
             server->target_camera_x = desktop * server->screen_width;
             server->cam_free = 0; // discrete jump: use the eased slide
         }
     } else if (strncmp(action, "move_to:", 8) == 0) {
-        server_move_view_to_desktop(server, server->focused_view, atoi(action + 8), 0);
+        int desktop = resolve_desktop(server, action + 8);
+        if (desktop >= 0)
+            server_move_view_to_desktop(server, server->focused_view, desktop, 0);
     } else if (strncmp(action, "move_to_view:", 13) == 0) {
-        server_move_view_to_desktop(server, server->focused_view, atoi(action + 13), 1);
+        int desktop = resolve_desktop(server, action + 13);
+        if (desktop >= 0)
+            server_move_view_to_desktop(server, server->focused_view, desktop, 1);
     }
 }
 

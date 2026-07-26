@@ -38,6 +38,9 @@ pkg_check_modules(GDK_PIXBUF REQUIRED gdk-pixbuf-2.0)
 # Used directly for pointer-constraint regions (pixman_region32_contains_point);
 # wlroots exposes pixman types in its API but does not link it for us.
 pkg_check_modules(PIXMAN REQUIRED pixman-1)
+# Touchpad settings (tap-to-click, scrolling, acceleration) are libinput's, not
+# wlroots': the backend hands out the libinput_device and fwm configures it.
+pkg_check_modules(LIBINPUT REQUIRED libinput)
 # Arbitrary window rotation is the one effect wlroots' render pass API cannot
 # express, so src/rotate.c draws its quad with GLES2 on the renderer's own EGL
 # context (see the header for why). Nothing else in fwm touches GL.
@@ -76,6 +79,8 @@ set(SOURCES
     src/server_output.c
     src/server_input.c
     src/server_pointer.c
+    src/gestures.c
+    src/server_gestures.c
     src/server_config.c
     src/server_desktop.c
     src/server_actions.c
@@ -121,6 +126,7 @@ target_include_directories(fwm PRIVATE
         ${PANGOCAIRO_INCLUDE_DIRS}
         ${GDK_PIXBUF_INCLUDE_DIRS}
         ${PIXMAN_INCLUDE_DIRS}
+        ${LIBINPUT_INCLUDE_DIRS}
         ${EGL_INCLUDE_DIRS}
         ${GLESV2_INCLUDE_DIRS}
         ${LIBAV_INCLUDE_DIRS}
@@ -137,6 +143,7 @@ target_link_libraries(fwm PRIVATE
         ${PANGO_LIBRARIES}
         ${PANGOCAIRO_LIBRARIES}
         ${PIXMAN_LIBRARIES}
+        ${LIBINPUT_LIBRARIES}
         ${EGL_LIBRARIES}
         ${GLESV2_LIBRARIES}
         ${GDK_PIXBUF_LIBRARIES}
@@ -192,9 +199,17 @@ if(FWM_TESTS)
     target_include_directories(test_wobble PRIVATE src tests)
     target_link_libraries(test_wobble PRIVATE m)
 
+    # Touchpad gestures are decided in gestures.c, which reaches no further
+    # than config.h's types — the wlroots half is server_gestures.c and stays
+    # out of it, so what a swipe means can be asserted without a touchpad.
+    add_executable(test_gestures tests/test_gestures.c src/gestures.c)
+    target_include_directories(test_gestures PRIVATE src tests ${XKBCOMMON_INCLUDE_DIRS})
+    target_link_libraries(test_gestures PRIVATE m)
+
     add_test(NAME bsp        COMMAND test_bsp)
     add_test(NAME config     COMMAND test_config)
     add_test(NAME input      COMMAND test_input)
     add_test(NAME ipc_events COMMAND test_ipc_events)
     add_test(NAME wobble     COMMAND test_wobble)
+    add_test(NAME gestures   COMMAND test_gestures)
 endif()

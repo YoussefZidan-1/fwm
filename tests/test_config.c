@@ -220,6 +220,125 @@ static void test_tilde_expansion(void) {
     drop_config();
 }
 
+static void test_input_touchpad(void) {
+    CASE("touchpad knobs default to libinput, except tap");
+    const char *p = write_config("[binds]\n\"super+q\" = \"killclient\"\n");
+    FwmConfig cfg;
+    config_load(&cfg, p);
+    /* -1 means "say nothing to libinput"; tap is the one fwm insists on, or a
+     * laptop with no mouse cannot click at all. */
+    CHECK_INT(cfg.input.tap, 1);
+    CHECK_INT(cfg.input.tap_drag, -1);
+    CHECK_INT(cfg.input.natural_scroll, -1);
+    CHECK_INT(cfg.input.dwt, -1);
+    CHECK_INT(cfg.input.left_handed, -1);
+    CHECK_DBL(cfg.input.accel_speed, INPUT_ACCEL_UNSET, 1e-9);
+    CHECK_STR(cfg.input.accel_profile, "");
+    CHECK_STR(cfg.input.scroll_method, "");
+    config_free(&cfg);
+    drop_config();
+
+    CASE("touchpad knobs are read, including turning tap off");
+    p = write_config(
+        "[input]\n"
+        "tap = false\n"
+        "natural_scroll = true\n"
+        "accel_speed = -0.3\n"
+        "accel_profile = \"flat\"\n"
+        "scroll_method = \"edge\"\n"
+        "click_method = \"clickfinger\"\n"
+        "[binds]\n\"super+q\" = \"killclient\"\n");
+    config_load(&cfg, p);
+    CHECK_INT(cfg.input.tap, 0);
+    CHECK_INT(cfg.input.natural_scroll, 1);
+    CHECK_DBL(cfg.input.accel_speed, -0.3, 1e-9);
+    CHECK_STR(cfg.input.accel_profile, "flat");
+    CHECK_STR(cfg.input.scroll_method, "edge");
+    CHECK_STR(cfg.input.click_method, "clickfinger");
+    CHECK_INT(cfg.error_count, 0);
+    config_free(&cfg);
+    drop_config();
+
+    CASE("bad touchpad values are reported and left at the default");
+    p = write_config(
+        "[input]\n"
+        "accel_speed = 4.0\n"            /* libinput's range is -1..1 */
+        "accel_profile = \"turbo\"\n"
+        "scroll_method = \"three_finger\"\n"
+        "[binds]\n\"super+q\" = \"killclient\"\n");
+    config_load(&cfg, p);
+    CHECK_DBL(cfg.input.accel_speed, INPUT_ACCEL_UNSET, 1e-9);
+    CHECK_STR(cfg.input.accel_profile, "");
+    CHECK_STR(cfg.input.scroll_method, "");
+    CHECK_INT(cfg.error_count, 3);
+    CHECK_INT(cfg.fallback_binds, 0);   /* still a working config */
+    config_free(&cfg);
+    drop_config();
+}
+
+/* Find a gesture bind the way gestures.c does, without linking it in. */
+static const char *gesture_action(const FwmConfig *cfg, int fingers, int dir) {
+    for (int i = 0; i < cfg->gestures.bind_count; i++)
+        if (cfg->gestures.binds[i].fingers == fingers &&
+            cfg->gestures.binds[i].dir == dir)
+            return cfg->gestures.binds[i].action;
+    return NULL;
+}
+
+static void test_gestures(void) {
+    CASE("no [gestures] section means no gestures at all");
+    /* Unlike [binds], nothing stands in: a gesture nobody asked for takes a
+     * swipe away from the application under the cursor. */
+    const char *p = write_config("[binds]\n\"super+q\" = \"killclient\"\n");
+    FwmConfig cfg;
+    config_load(&cfg, p);
+    CHECK_INT(cfg.gestures.bind_count, 0);
+    CHECK_NULL(gesture_action(&cfg, 3, GESTURE_SWIPE_LEFT));
+    /* The scalars still have their defaults, for whenever binds do arrive. */
+    CHECK_DBL(cfg.gestures.sensitivity, 1.0, 1e-9);
+    CHECK_INT(cfg.gestures.natural, 1);
+    config_free(&cfg);
+    drop_config();
+
+    CASE("a [gestures] section binds exactly what it lists");
+    p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[gestures]\n"
+        "sensitivity = 1.5\n"
+        "natural = false\n"
+        "\"swipe4+up\" = \"launcher\"\n"
+        "\"pinch3+in\" = \"calm_all\"\n");
+    config_load(&cfg, p);
+    CHECK_INT(cfg.gestures.bind_count, 2);
+    CHECK_STR(gesture_action(&cfg, 4, GESTURE_SWIPE_UP), "launcher");
+    CHECK_STR(gesture_action(&cfg, 3, GESTURE_PINCH_IN), "calm_all");
+    CHECK_NULL(gesture_action(&cfg, 3, GESTURE_SWIPE_LEFT)); /* never bound */
+    CHECK_DBL(cfg.gestures.sensitivity, 1.5, 1e-9);
+    CHECK_INT(cfg.gestures.natural, 0);
+    config_free(&cfg);
+    drop_config();
+
+    CASE("broken gesture lines are reported, not obeyed");
+    p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[gestures]\n"
+        "\"swipe9+left\" = \"launcher\"\n"    /* no such finger count */
+        "\"swipe3+sideways\" = \"launcher\"\n"/* no such direction */
+        "\"wave3+left\" = \"launcher\"\n"     /* no such gesture */
+        "\"swipe3+up\" = \"not_an_action\"\n" /* no such action */
+        "\"swipe3+down\" = \"pan_desktop\"\n" /* the strip is horizontal */
+        "\"swipe3+right\" = \"pan_desktop\"\n");
+    config_load(&cfg, p);
+    CHECK_INT(cfg.gestures.bind_count, 1);
+    CHECK_STR(gesture_action(&cfg, 3, GESTURE_SWIPE_RIGHT), GESTURE_ACTION_PAN);
+    CHECK(cfg.error_count >= 5);
+    /* A file this broken is still a working config: the keyboard is untouched. */
+    CHECK_INT(cfg.fallback_binds, 0);
+    CHECK(cfg.key_count > 0);
+    config_free(&cfg);
+    drop_config();
+}
+
 static void test_option_table(void) {
     CASE("the runtime option table");
     int count = 0;
@@ -245,6 +364,8 @@ int main(void) {
     test_bad_input();
     test_error_cap();
     test_tilde_expansion();
+    test_input_touchpad();
+    test_gestures();
     test_option_table();
     return t_report("config");
 }

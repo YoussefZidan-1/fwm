@@ -262,6 +262,12 @@ void server_apply_config(FwmServer *server, int rebuild_wallpaper) {
         keyboard_apply_input_config(server, kb->wlr_keyboard);
     }
 
+    /* Touchpads: tap, scrolling, acceleration. */
+    struct FwmPointer *pt;
+    wl_list_for_each(pt, &server->pointers, link) {
+        pointer_apply_input_config(server, pt->device);
+    }
+
     /* Borders: width and colours are read per view. */
     FwmView *view;
     wl_list_for_each(view, &server->views, link) {

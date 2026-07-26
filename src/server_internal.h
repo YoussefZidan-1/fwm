@@ -36,6 +36,16 @@ struct FwmOutput {
     struct wl_listener destroy;
 };
 
+/* Pointers are tracked only so a config reload can reach the touchpads that
+ * are already plugged in — wlr_cursor keeps its device list private, and the
+ * libinput settings are per device. */
+struct FwmPointer {
+    struct wl_list link;
+    FwmServer *server;
+    struct wlr_input_device *device;
+    struct wl_listener destroy;
+};
+
 struct FwmKeyboard {
     struct wl_list link;
     FwmServer *server;
@@ -51,6 +61,10 @@ void server_video_sync(FwmServer *server);
 void server_reclaim_memory(void);
 void server_dispatch_action(FwmServer *server, const char *action);
 FwmView *server_find_view(FwmServer *server, uint32_t id);
+void server_camera_settled(FwmServer *server);
+
+/* ── server_gestures.c ────────────────────────────────────────────────── */
+void server_gestures_register(FwmServer *server);
 
 /* ── server_actions.c ─────────────────────────────────────────────────── */
 /* Whether physics is free to rotate this body (see spin_window). */
@@ -73,6 +87,7 @@ uint32_t get_active_modifiers(FwmServer *server);
 void server_notify_activity(FwmServer *server);
 void launcher_grab_sync(FwmServer *server, bool was_open);
 void keyboard_apply_input_config(FwmServer *server, struct wlr_keyboard *kb);
+void pointer_apply_input_config(FwmServer *server, struct wlr_input_device *device);
 
 /* ── server_output.c ──────────────────────────────────────────────────── */
 void server_output_register(FwmServer *server);

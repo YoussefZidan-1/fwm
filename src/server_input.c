@@ -67,6 +67,7 @@ static int key_repeat_cb(void *data);
 #include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_pointer.h>
+#include <wlr/backend/libinput.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_buffer.h>
@@ -406,6 +407,100 @@ void keyboard_apply_input_config(FwmServer *server, struct wlr_keyboard *kb) {
     wlr_keyboard_set_repeat_info(kb, in->repeat_rate, in->repeat_delay);
 }
 
+/* Hand the [input] touchpad settings to one device.
+ *
+ * Every knob is asked for permission first, because these are per-device
+ * capabilities: a mouse has no tap and no disable-while-typing, and a config
+ * that mentions them must not become an error message about hardware the user
+ * cannot change. Anything the device cannot do is simply skipped, and anything
+ * the config did not mention is left at whatever libinput chose for the model.
+ *
+ * Shared by device hotplug and config reload, so a reloaded [input] reaches the
+ * touchpad that was already plugged in. */
+void pointer_apply_input_config(FwmServer *server, struct wlr_input_device *device) {
+    /* Only the real libinput backend has any of this; nested under another
+     * compositor the pointer is a Wayland protocol object with no knobs. */
+    if (!wlr_input_device_is_libinput(device)) return;
+    struct libinput_device *dev = wlr_libinput_get_device_handle(device);
+    if (!dev) return;
+
+    const InputConfig *in = &server->config.input;
+
+    if (libinput_device_config_tap_get_finger_count(dev) > 0) {
+        if (in->tap >= 0)
+            libinput_device_config_tap_set_enabled(dev, in->tap
+                ? LIBINPUT_CONFIG_TAP_ENABLED : LIBINPUT_CONFIG_TAP_DISABLED);
+        if (in->tap_drag >= 0)
+            libinput_device_config_tap_set_drag_enabled(dev, in->tap_drag
+                ? LIBINPUT_CONFIG_DRAG_ENABLED : LIBINPUT_CONFIG_DRAG_DISABLED);
+        if (in->drag_lock >= 0)
+            libinput_device_config_tap_set_drag_lock_enabled(dev, in->drag_lock
+                ? LIBINPUT_CONFIG_DRAG_LOCK_ENABLED
+                : LIBINPUT_CONFIG_DRAG_LOCK_DISABLED);
+    }
+
+    if (in->natural_scroll >= 0 && libinput_device_config_scroll_has_natural_scroll(dev))
+        libinput_device_config_scroll_set_natural_scroll_enabled(dev, in->natural_scroll);
+
+    if (in->dwt >= 0 && libinput_device_config_dwt_is_available(dev))
+        libinput_device_config_dwt_set_enabled(dev, in->dwt
+            ? LIBINPUT_CONFIG_DWT_ENABLED : LIBINPUT_CONFIG_DWT_DISABLED);
+
+    if (in->middle_emulation >= 0 && libinput_device_config_middle_emulation_is_available(dev))
+        libinput_device_config_middle_emulation_set_enabled(dev, in->middle_emulation
+            ? LIBINPUT_CONFIG_MIDDLE_EMULATION_ENABLED
+            : LIBINPUT_CONFIG_MIDDLE_EMULATION_DISABLED);
+
+    if (in->left_handed >= 0 && libinput_device_config_left_handed_is_available(dev))
+        libinput_device_config_left_handed_set(dev, in->left_handed);
+
+    if (in->accel_speed != INPUT_ACCEL_UNSET && libinput_device_config_accel_is_available(dev))
+        libinput_device_config_accel_set_speed(dev, in->accel_speed);
+
+    if (in->accel_profile[0]) {
+        enum libinput_config_accel_profile p =
+            strcmp(in->accel_profile, "flat") == 0 ? LIBINPUT_CONFIG_ACCEL_PROFILE_FLAT
+                                                   : LIBINPUT_CONFIG_ACCEL_PROFILE_ADAPTIVE;
+        if (libinput_device_config_accel_get_profiles(dev) & p)
+            libinput_device_config_accel_set_profile(dev, p);
+    }
+
+    if (in->scroll_method[0]) {
+        enum libinput_config_scroll_method m;
+        if      (!strcmp(in->scroll_method, "two_finger")) m = LIBINPUT_CONFIG_SCROLL_2FG;
+        else if (!strcmp(in->scroll_method, "edge"))       m = LIBINPUT_CONFIG_SCROLL_EDGE;
+        else if (!strcmp(in->scroll_method, "button"))     m = LIBINPUT_CONFIG_SCROLL_ON_BUTTON_DOWN;
+        else                                              m = LIBINPUT_CONFIG_SCROLL_NO_SCROLL;
+        /* NO_SCROLL is 0, so it is always "available" — the mask test is for
+         * the three real methods. */
+        if (m == LIBINPUT_CONFIG_SCROLL_NO_SCROLL ||
+            (libinput_device_config_scroll_get_methods(dev) & m))
+            libinput_device_config_scroll_set_method(dev, m);
+    }
+
+    if (in->click_method[0]) {
+        enum libinput_config_click_method m;
+        if      (!strcmp(in->click_method, "button_areas")) m = LIBINPUT_CONFIG_CLICK_METHOD_BUTTON_AREAS;
+        else if (!strcmp(in->click_method, "clickfinger"))  m = LIBINPUT_CONFIG_CLICK_METHOD_CLICKFINGER;
+        else                                               m = LIBINPUT_CONFIG_CLICK_METHOD_NONE;
+        if (m == LIBINPUT_CONFIG_CLICK_METHOD_NONE ||
+            (libinput_device_config_click_get_methods(dev) & m))
+            libinput_device_config_click_set_method(dev, m);
+    }
+
+    wlr_log(WLR_INFO, "input: %s — tap %s", device->name,
+            libinput_device_config_tap_get_finger_count(dev) == 0 ? "n/a"
+            : libinput_device_config_tap_get_enabled(dev) == LIBINPUT_CONFIG_TAP_ENABLED
+              ? "on" : "off");
+}
+
+static void handle_pointer_destroy(struct wl_listener *listener, void *data) {
+    struct FwmPointer *pointer = wl_container_of(listener, pointer, destroy);
+    wl_list_remove(&pointer->destroy.link);
+    wl_list_remove(&pointer->link);
+    free(pointer);
+}
+
 static void handle_new_input(struct wl_listener *listener, void *data) {
     FwmServer *server = wl_container_of(listener, server, new_input);
     struct wlr_input_device *device = data;
@@ -429,6 +524,16 @@ static void handle_new_input(struct wl_listener *listener, void *data) {
         wl_list_insert(&server->keyboards, &keyboard->link);
     } else if (device->type == WLR_INPUT_DEVICE_POINTER) {
         wlr_cursor_attach_input_device(server->cursor, device);
+        pointer_apply_input_config(server, device);
+
+        struct FwmPointer *pointer = calloc(1, sizeof(*pointer));
+        if (pointer) {
+            pointer->server = server;
+            pointer->device = device;
+            pointer->destroy.notify = handle_pointer_destroy;
+            wl_signal_add(&device->events.destroy, &pointer->destroy);
+            wl_list_insert(&server->pointers, &pointer->link);
+        }
     }
 
     uint32_t caps = WL_SEAT_CAPABILITY_POINTER;

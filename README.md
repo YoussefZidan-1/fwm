@@ -66,13 +66,22 @@ floor and ceiling instead of coming round.
 - **Keyboard control** — directional focus (`Super+Arrows`), move window (`Super+Shift+Arrows`), flip split orientation (`Super+S`).
 - **Mouse control** — drag BSP borders with `Super+RightDrag` (instant, no animation lag), swap tiles with `Super+Shift+Drag`.
 
+### Touchpad
+- **Tap-to-click on by default** — plus the rest of libinput's per-device settings in `[input]`: tap-and-drag, natural scrolling, disable-while-typing, pointer acceleration, scroll and click methods. Applied on hotplug and on `Super+Shift+R`, and silently skipped on a device that cannot do them.
+
+### Touchpad gestures (off until you bind them)
+- **Three fingers drag the world** — `pan_desktop`: swipe sideways and the camera goes with your fingers across the desktop strip, live; lift them and it settles on a desktop, or flick and it carries on to the next one.
+- **Any action, on any swipe or pinch** — `[gestures]` keys look like `"swipe3+up"` / `"pinch3+in"` and take everything `[binds]` takes, so three fingers up can open the launcher and four sideways can carry the focused window to the next desktop (the only pointer way out of a tiling layout).
+- **Nothing is bound by default** — an unclaimed gesture goes to the application under the cursor instead (pointer-gestures-v1), which is where a swipe or a pinch belongs until you say otherwise. The set worth starting from is written out, commented, in `config.toml.example`.
+- **Not every touchpad can** — libinput only reports gestures on pads that track each finger separately; look for `gesture` in the `Capabilities` line of `libinput list-devices`. Older semi-MT pads (many `SynPS/2`) show only `pointer` and will never send one. Two-finger scrolling is unaffected.
+
 ### Tab-stacks
 - **Hyprland-style groups** — stack windows into one slot with a chevron tab bar: `Super+W` toggles a stack, `Super+Shift+W` joins the window below, `Super+Tab` / `Super+Shift+Tab` cycle tabs.
 
 ### Built-in overlays
 - **App launcher** (`Super+Space`) — fuzzy search over desktop entries with icons, no external `rofi` needed. Launched windows drop into the world with physics.
 - **Wallpaper picker** (`Super+Shift+P`) — browse a folder and apply an image instantly; the choice is remembered without ever rewriting your config.
-- **Keybind cheat-sheet** (`Super+Shift+/`) — generated from your actual binds, not a static list.
+- **Keybind cheat-sheet** (`Super+Shift+/`) — generated from your actual binds and gestures, not a static list.
 - **Config never costs you the session** — a broken file falls back to built-in binds and reports the problem in a tray pill; fix it and press `Super+Shift+R` to reload live.
 - **Window rules** — `[[rule]]` matches `app_id` / `title` with regexes and decides where a window opens and whether physics touches it.
 - **A crash no longer costs your layout** — fwm records which applications are running and on which desktop, and the `fwm-session` wrapper brings them back after an unclean exit. They are relaunched, not resumed.
@@ -110,7 +119,7 @@ hidden for the duration, since a rectangle cannot bend along with it. The effect
 needs the GLES2 renderer.
 
 ### Desktop integration
-Runs the software you already use: **XWayland** (X11 apps as ordinary physics windows), **layer-shell** (waybar, mako, rofi, swaybg), **ext-session-lock** (hyprlock, swaylock), **idle protocols** (swayidle, no blanking during video), **xdg-activation**, **screencopy** (screenshots, screen share), **gamma-control** (wlsunset), **pointer constraints** (games and mouse-look), **foreign-toplevel** (taskbars), plus drag-and-drop and primary selection.
+Runs the software you already use: **XWayland** (X11 apps as ordinary physics windows), **layer-shell** (waybar, mako, rofi, swaybg), **ext-session-lock** (hyprlock, swaylock), **idle protocols** (swayidle, no blanking during video), **xdg-activation**, **screencopy** (screenshots, screen share), **gamma-control** (wlsunset), **pointer constraints** (games and mouse-look), **pointer-gestures** (touchpad swipes and pinches reach the app when fwm has no bind for them), **foreign-toplevel** (taskbars), plus drag-and-drop and primary selection.
 
 Known gaps: no HiDPI / fractional output scale, no multimonitor, no IME (xkb layouts do work).
 
@@ -375,6 +384,37 @@ kbd_options  = "grp:alt_shift_toggle"
 kbd_variant  = ""
 repeat_rate  = 25
 repeat_delay = 600
+# Touchpad, via libinput. Everything except `tap` keeps libinput's own
+# per-model default unless you set it; fwm turns tap-to-click ON because
+# libinput ships it off and a laptop with no mouse then cannot click at all.
+# A pad that cannot do one of these ignores it — `libinput list-devices` shows
+# which: "disabled" means it can, "n/a" means it cannot.
+tap = true
+#tap_drag         = true            # tap, then slide = drag
+#drag_lock        = false
+#natural_scroll   = false           # content follows the fingers
+#dwt              = true            # ignore the pad while typing
+#middle_emulation = false
+#left_handed      = false
+#accel_speed      = 0.0             # -1 (slow) .. 1 (fast)
+#accel_profile    = "adaptive"      # or "flat"
+#scroll_method    = "two_finger"    # or "edge", "button", "none"
+#click_method     = "button_areas"  # or "clickfinger", "none"
+
+# Touchpad gestures: "swipe<2..5>+left|right|up|down", "pinch<2..5>+in|out",
+# and any action [binds] accepts. Nothing is bound unless you bind it — without
+# this section fwm claims no gesture and every one reaches the application under
+# the cursor. This is the set worth starting from.
+[gestures]
+sensitivity    = 1.0   # camera px per finger px
+natural        = true  # the desktop strip follows your fingers, as on a phone
+"swipe3+left"  = "pan_desktop"      # live pan across the strip; bind BOTH
+"swipe3+right" = "pan_desktop"      # directions — it is one gesture
+"swipe3+up"    = "launcher"
+"swipe3+down"  = "toggle_tray"
+"swipe4+left"  = "move_to_view:prev"  # take the focused window one desktop over
+"swipe4+right" = "move_to_view:next"
+#"pinch3+in"   = "calm_all"          # leave two-finger pinch to the apps
 
 [tiling]
 gaps_in    = 6       # px between tiles
@@ -508,9 +548,10 @@ fit  = "pan"
 | `toggle_floating` | physics ⇄ floating (windows stay put and overlap) |
 | `fake_fullscreen` / `real_fullscreen` | fullscreen below the tray / whole output |
 | `move_camera:<px>` | scroll the camera (repeats while held) |
-| `view:<0-9>` | jump to desktop |
-| `move_to:<0-9>` | send the focused window to a desktop, camera stays |
-| `move_to_view:<0-9>` | send it there and follow, keeping it focused |
+| `view:<0-9>` | jump to desktop; `view:next` / `view:prev` for the one beside it |
+| `move_to:<0-9>` | send the focused window to a desktop, camera stays (`next`/`prev` too) |
+| `move_to_view:<0-9>` | send it there and follow, keeping it focused (`next`/`prev` too) |
+| `pan_desktop` | **gestures only:** pan across the strip with your fingers, settling on a desktop when they lift |
 | `tile_focus:l\|r\|u\|d` | focus tile in direction |
 | `tile_move:l\|r\|u\|d` | swap tile in direction |
 | `toggle_split` | flip split orientation of the focused tile |

@@ -273,12 +273,58 @@ static void load_decor(toml_table_t *root, FwmConfig *cfg) {
 
 /* ── input section ───────────────────────────────────────────────────── */
 
-static void load_input(toml_table_t *root, InputConfig *in) {
+/* A boolean the file may simply not mention. Leaves `*out` untouched then, so
+ * the tri-state -1 (or tap's 1) survives. */
+static void load_tristate(toml_table_t *tbl, const char *key, int *out) {
+    toml_datum_t d = toml_bool_in(tbl, key);
+    if (d.ok) *out = d.u.b ? 1 : 0;
+}
+
+/* One of a fixed set of words, copied verbatim so the applying code can map it
+ * to libinput's enum — config.c has no business including libinput.h. */
+static void load_enum(FwmConfig *cfg, toml_table_t *tbl, const char *key,
+                      const char *const *allowed, char *out, size_t cap) {
+    toml_datum_t d = toml_string_in(tbl, key);
+    if (!d.ok) return;
+    for (int i = 0; allowed[i]; i++) {
+        if (strcmp(d.u.s, allowed[i]) == 0) {
+            snprintf(out, cap, "%s", d.u.s);
+            free(d.u.s);
+            return;
+        }
+    }
+    /* Build the list for the message rather than repeating it at each call. */
+    char list[128] = "";
+    for (int i = 0; allowed[i]; i++) {
+        if (i) strncat(list, ", ", sizeof(list) - strlen(list) - 1);
+        strncat(list, allowed[i], sizeof(list) - strlen(list) - 1);
+    }
+    config_report_error(cfg, "[input] %s: unknown value \"%s\" (want %s) — ignored",
+                        key, d.u.s, list);
+    free(d.u.s);
+}
+
+static void load_input(toml_table_t *root, FwmConfig *cfg) {
+    InputConfig *in = &cfg->input;
     in->kbd_layout[0]  = '\0';
     in->kbd_variant[0] = '\0';
     in->kbd_options[0] = '\0';
     in->repeat_rate  = 25;
     in->repeat_delay = 600;
+
+    /* Everything libinput owns is left alone unless the file says otherwise —
+     * except tap, which fwm turns on (see InputConfig). */
+    in->tap              = 1;
+    in->tap_drag         = -1;
+    in->drag_lock        = -1;
+    in->natural_scroll   = -1;
+    in->dwt              = -1;
+    in->middle_emulation = -1;
+    in->left_handed      = -1;
+    in->accel_speed      = INPUT_ACCEL_UNSET;
+    in->accel_profile[0] = '\0';
+    in->scroll_method[0] = '\0';
+    in->click_method[0]  = '\0';
 
     if (!root) return;
     toml_table_t *tbl = toml_table_in(root, "input");
@@ -295,6 +341,33 @@ static void load_input(toml_table_t *root, InputConfig *in) {
     if (d.ok && d.u.i > 0) in->repeat_rate = (int)d.u.i;
     d = toml_int_in(tbl, "repeat_delay");
     if (d.ok && d.u.i > 0) in->repeat_delay = (int)d.u.i;
+
+    /* Touchpad. A device that cannot do one of these ignores it; see
+     * pointer_apply_input_config. */
+    load_tristate(tbl, "tap",              &in->tap);
+    load_tristate(tbl, "tap_drag",         &in->tap_drag);
+    load_tristate(tbl, "drag_lock",        &in->drag_lock);
+    load_tristate(tbl, "natural_scroll",   &in->natural_scroll);
+    load_tristate(tbl, "dwt",              &in->dwt);
+    load_tristate(tbl, "middle_emulation", &in->middle_emulation);
+    load_tristate(tbl, "left_handed",      &in->left_handed);
+
+    d = toml_double_in(tbl, "accel_speed");
+    if (d.ok) {
+        if (d.u.d >= -1.0 && d.u.d <= 1.0) in->accel_speed = d.u.d;
+        else config_report_error(cfg, "[input] accel_speed %.3f out of range "
+                                 "-1..1 — ignored", d.u.d);
+    }
+
+    static const char *const profiles[] = { "adaptive", "flat", NULL };
+    static const char *const scrolls[]  = { "two_finger", "edge", "button", "none", NULL };
+    static const char *const clicks[]   = { "button_areas", "clickfinger", "none", NULL };
+    load_enum(cfg, tbl, "accel_profile", profiles,
+              in->accel_profile, sizeof(in->accel_profile));
+    load_enum(cfg, tbl, "scroll_method", scrolls,
+              in->scroll_method, sizeof(in->scroll_method));
+    load_enum(cfg, tbl, "click_method", clicks,
+              in->click_method, sizeof(in->click_method));
 }
 
 static void load_focus(toml_table_t *root, FocusConfig *f, FwmConfig *cfg) {
@@ -499,6 +572,120 @@ static void load_binds(toml_table_t *root, FwmConfig *cfg) {
     if (idx == 0) {
         config_report_error(cfg, "no usable binds in [binds] — using built-in keybindings");
         apply_default_binds(cfg);
+    }
+}
+
+/* ── gestures section ────────────────────────────────────────────────── */
+
+/* The gesture vocabulary is [binds]' plus the one action that only a gesture
+ * can express. */
+static int gesture_action_is_known(const char *a) {
+    return action_is_known(a) || strcmp(a, GESTURE_ACTION_PAN) == 0;
+}
+
+/* "swipe3+left", "pinch2+in". Returns 0 on anything else. */
+static int parse_gesture_key(const char *str, int *fingers_out, int *dir_out) {
+    int swipe;
+    if      (strncmp(str, "swipe", 5) == 0) swipe = 1;
+    else if (strncmp(str, "pinch", 5) == 0) swipe = 0;
+    else return 0;
+
+    char *end;
+    long n = strtol(str + 5, &end, 10);
+    if (end == str + 5 || *end != '+') return 0;
+    /* libinput reports 2..5; a one-finger "swipe" is just pointer motion. */
+    if (n < 2 || n > 5) return 0;
+
+    const char *dir = end + 1;
+    int d;
+    if (swipe) {
+        if      (strcmp(dir, "left")  == 0) d = GESTURE_SWIPE_LEFT;
+        else if (strcmp(dir, "right") == 0) d = GESTURE_SWIPE_RIGHT;
+        else if (strcmp(dir, "up")    == 0) d = GESTURE_SWIPE_UP;
+        else if (strcmp(dir, "down")  == 0) d = GESTURE_SWIPE_DOWN;
+        else return 0;
+    } else {
+        if      (strcmp(dir, "in")  == 0) d = GESTURE_PINCH_IN;
+        else if (strcmp(dir, "out") == 0) d = GESTURE_PINCH_OUT;
+        else return 0;
+    }
+
+    *fingers_out = (int)n;
+    *dir_out     = d;
+    return 1;
+}
+
+static void add_gesture(GesturesConfig *g, int fingers, int dir, const char *action) {
+    if (g->bind_count >= CONFIG_MAX_GESTURES) return;
+    GestureBind *b = &g->binds[g->bind_count++];
+    b->fingers = fingers;
+    b->dir     = dir;
+    snprintf(b->action, sizeof(b->action), "%s", action);
+}
+
+static void load_gestures(toml_table_t *root, FwmConfig *cfg) {
+    GesturesConfig *g = &cfg->gestures;
+    g->sensitivity = 1.0;
+    g->natural     = 1;
+    g->bind_count  = 0;
+
+    /* No gestures unless the config asks for them, by name. Unlike [binds] —
+     * where an empty table would leave a compositor nobody can drive, so the
+     * built-ins step in — a gesture that nobody asked for is a surprise: it
+     * takes a swipe away from the application under the cursor, and on hardware
+     * that reports its fingers coarsely it can fire on a stray palm. The set
+     * worth copying is written out (commented) in config.toml.example. */
+    toml_table_t *tbl = root ? toml_table_in(root, "gestures") : NULL;
+    if (!tbl) return;
+
+    toml_datum_t s = toml_double_in(tbl, "sensitivity");
+    if (s.ok) {
+        if (s.u.d > 0.0 && s.u.d <= 10.0) g->sensitivity = s.u.d;
+        else config_report_error(cfg, "[gestures] sensitivity %.3f out of range 0..10 — using 1.0", s.u.d);
+    }
+    toml_datum_t nat = toml_bool_in(tbl, "natural");
+    if (nat.ok) g->natural = nat.u.b ? 1 : 0;
+
+    int n = toml_table_nkval(tbl);
+    for (int i = 0; i < n; i++) {
+        const char *key = toml_key_in(tbl, i);
+        if (!key) continue;
+        /* The two scalars share the table with the binds. */
+        if (strcmp(key, "sensitivity") == 0 || strcmp(key, "natural") == 0) continue;
+
+        int fingers, dir;
+        if (!parse_gesture_key(key, &fingers, &dir)) {
+            config_report_error(cfg, "[gestures] \"%s\": not a gesture "
+                                "(want e.g. \"swipe3+left\" or \"pinch2+in\")", key);
+            continue;
+        }
+        toml_datum_t val = toml_string_in(tbl, key);
+        if (!val.ok) {
+            config_report_error(cfg, "[gestures] \"%s\": value must be a quoted string", key);
+            continue;
+        }
+        if (!gesture_action_is_known(val.u.s)) {
+            config_report_error(cfg, "[gestures] \"%s\": unknown action \"%s\"", key, val.u.s);
+            free(val.u.s);
+            continue;
+        }
+        if (strcmp(val.u.s, GESTURE_ACTION_PAN) == 0 &&
+            dir != GESTURE_SWIPE_LEFT && dir != GESTURE_SWIPE_RIGHT) {
+            /* The desktop strip runs left to right; there is nothing above it
+             * to pan to. */
+            config_report_error(cfg, "[gestures] \"%s\": " GESTURE_ACTION_PAN
+                                " needs a horizontal swipe", key);
+            free(val.u.s);
+            continue;
+        }
+        if (g->bind_count >= CONFIG_MAX_GESTURES) {
+            config_report_error(cfg, "too many [gestures] entries — only the first %d are used",
+                                CONFIG_MAX_GESTURES);
+            free(val.u.s);
+            break;
+        }
+        add_gesture(g, fingers, dir, val.u.s);
+        free(val.u.s);
     }
 }
 
@@ -761,6 +948,9 @@ static const ConfigOption config_option_table[] = {
 
     { "input.repeat_rate",              CFG_OPT_INT,    offsetof(FwmConfig, input.repeat_rate),               0.0,   200.0,    "key repeat, chars/s" },
     { "input.repeat_delay",             CFG_OPT_INT,    offsetof(FwmConfig, input.repeat_delay),              0.0,  5000.0,    "ms before repeat starts" },
+
+    { "gestures.sensitivity",           CFG_OPT_DOUBLE, offsetof(FwmConfig, gestures.sensitivity),            0.1,    10.0,    "camera px per finger px" },
+    { "gestures.natural",               CFG_OPT_INT,    offsetof(FwmConfig, gestures.natural),                0.0,     1.0,    "1 = the strip follows the fingers" },
 };
 
 const ConfigOption *config_options(int *count) {
@@ -867,10 +1057,11 @@ void config_load(FwmConfig *cfg, const char *path) {
     cfg->error_total     = 0;
     cfg->fallback_binds  = 0;
     snprintf(cfg->source, sizeof(cfg->source), "%s", path ? path : "");
-    load_input(NULL, &cfg->input); /* defaults for the no-config-file path */
+    load_input(NULL, cfg); /* defaults for the no-config-file path */
     load_focus(NULL, &cfg->focus, cfg);
     load_effects(NULL, &cfg->effects);
     load_session(NULL, &cfg->session, cfg);
+    load_gestures(NULL, cfg);
 
     FILE *f = fopen(path, "r");
     if (!f) {
@@ -899,11 +1090,12 @@ void config_load(FwmConfig *cfg, const char *path) {
     load_tiling(root, &cfg->tiling);
     load_camera(root, &cfg->camera);
     load_decor(root, cfg);
-    load_input(root, &cfg->input);
+    load_input(root, cfg);
     load_focus(root, &cfg->focus, cfg);
     load_effects(root, &cfg->effects);
     load_session(root, &cfg->session, cfg);
     load_binds(root, cfg);
+    load_gestures(root, cfg);
     load_wallpaper(root, cfg);
     load_wallpaper_picker(root, cfg);
     load_rules(root, cfg);

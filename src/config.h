@@ -76,13 +76,43 @@ enum {
 
 /* ── input ───────────────────────────────────────────────────────────── */
 
+/*
+ * Keyboard, and the pointer/touchpad knobs libinput owns.
+ *
+ * The touchpad half is all TRI-STATE: -1 means "say nothing about it", and the
+ * device keeps whatever libinput itself decided. That matters because these
+ * settings are per-device capabilities — a mouse has no tap and no
+ * disable-while-typing — and because libinput's defaults are chosen per model,
+ * which is a better answer than a number in a config file.
+ *
+ * `tap` is the one exception: it defaults to ON. libinput ships tap-to-click
+ * disabled, and a laptop where touching the pad does not click is not a laptop
+ * anyone can work on. Set tap = false for libinput's own default back.
+ */
 typedef struct {
     char kbd_layout[64];   /* xkb layout list, e.g. "us,ru"; "" = environment */
     char kbd_variant[64];  /* xkb variant list, may be empty */
     char kbd_options[128]; /* xkb options, e.g. "grp:alt_shift_toggle" */
     int  repeat_rate;      /* key repeat, chars/s */
     int  repeat_delay;     /* ms before repeat starts */
+
+    /* Touchpad / pointer. -1 = leave libinput's default alone. */
+    int  tap;              /* tap-to-click (default 1, see above) */
+    int  tap_drag;         /* tap-and-drag: tap then slide moves */
+    int  drag_lock;        /* a dragged item stays held between slides */
+    int  natural_scroll;   /* content follows the fingers */
+    int  dwt;              /* disable the pad while typing */
+    int  middle_emulation; /* left+right together = middle click */
+    int  left_handed;      /* swap the buttons */
+    double accel_speed;    /* -1..1; 2.0 = untouched (out of libinput's range) */
+    char accel_profile[16];/* "adaptive" | "flat"; "" = untouched */
+    char scroll_method[16];/* "two_finger" | "edge" | "button" | "none"; "" = untouched */
+    char click_method[16]; /* "button_areas" | "clickfinger" | "none"; "" = untouched */
 } InputConfig;
+
+/* accel_speed value meaning "the file said nothing"; libinput's range is
+ * -1..1, so anything outside it can carry that. */
+#define INPUT_ACCEL_UNSET 2.0
 
 /* ── focus ───────────────────────────────────────────────────────────── */
 
@@ -153,6 +183,54 @@ typedef struct {
     xkb_keysym_t    key;
     char            action[256];
 } KeyBind;
+
+/* ── touchpad gestures ───────────────────────────────────────────────── */
+
+/*
+ * Gestures are binds like any other, keyed on how many fingers moved which
+ * way instead of on a keysym:
+ *
+ *   [gestures]
+ *   "swipe3+left"  = "pan_desktop"
+ *   "swipe3+up"    = "launcher"
+ *   "pinch2+in"    = "calm_all"
+ *
+ * The action vocabulary is the same one [binds] uses, plus `pan_desktop`,
+ * which only makes sense as a gesture: it hands the camera to the fingers and
+ * pans across the desktop strip live, settling on a desktop when they lift.
+ * Bind it to both horizontal directions — it is one gesture, not two.
+ *
+ * A finger count with nothing bound to it is left alone entirely, so a client
+ * that understands gestures itself (pinch-to-zoom in a browser or an image
+ * viewer) still gets them. See gestures.h for the state machine.
+ */
+
+enum {
+    GESTURE_SWIPE_LEFT = 0,
+    GESTURE_SWIPE_RIGHT,
+    GESTURE_SWIPE_UP,
+    GESTURE_SWIPE_DOWN,
+    GESTURE_PINCH_IN,
+    GESTURE_PINCH_OUT,
+};
+
+/* The one action that exists only as a gesture (see above). */
+#define GESTURE_ACTION_PAN "pan_desktop"
+
+#define CONFIG_MAX_GESTURES 32
+
+typedef struct {
+    int  fingers;      /* 2..5, as libinput reports them */
+    int  dir;          /* GESTURE_SWIPE_* / GESTURE_PINCH_* */
+    char action[256];
+} GestureBind;
+
+typedef struct {
+    double      sensitivity; /* px of camera travel per px of finger travel */
+    int         natural;     /* 1 = the desktop strip follows the fingers */
+    GestureBind binds[CONFIG_MAX_GESTURES];
+    int         bind_count;
+} GesturesConfig;
 
 /* ── wallpaper / parallax ────────────────────────────────────────────── */
 
@@ -285,6 +363,7 @@ typedef struct {
     FocusConfig     focus;
     EffectsConfig   effects;
     SessionConfig   session;
+    GesturesConfig  gestures;
     KeyBind        *keys;
     int             key_count;
     WallpaperLayer *wallpapers;

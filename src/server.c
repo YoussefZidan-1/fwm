@@ -56,6 +56,7 @@
 #include <wlr/render/color.h>
 #include <wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlr/types/wlr_relative_pointer_v1.h>
+#include <wlr/types/wlr_pointer_gestures_v1.h>
 #include <wlr/types/wlr_idle_inhibit_v1.h>
 #include <wlr/backend/session.h>
 #include <wlr/types/wlr_screencopy_v1.h>
@@ -489,6 +490,25 @@ static void server_drag_swing(FwmServer *server, double dt) {
     }
 }
 
+/* The camera has come to rest. Called from the tick when a slide or a pan
+ * finishes, and by anything that parks the camera without moving it (a gesture
+ * released on a desktop it was already standing on). */
+void server_camera_settled(FwmServer *server) {
+    FwmView *xv;
+    wl_list_for_each(xv, &server->views, link) view_sync_position(xv);
+
+    /* Arriving on a desktop should hand the keyboard to something there.
+     * Otherwise focus stays on the window you left behind and typing goes to a
+     * desktop you can no longer see. Covers every way of getting here — the
+     * view: binds, the tray, edge auto-scroll, a three-finger swipe. */
+    int arrived = server->camera_x / server->screen_width;
+    if (arrived != server->focus_desktop) {
+        server->focus_desktop = arrived;
+        server_refocus(server, arrived, NULL);
+        ipc_emit_desktop(server->ipc, arrived);
+    }
+}
+
 static int physics_tick_cb(void *data) {
     FwmServer *server = data;
     
@@ -563,22 +583,8 @@ static int physics_tick_cb(void *data) {
             }
         }
 
-        if (cam_settled) {
-            FwmView *xv;
-            wl_list_for_each(xv, &server->views, link) view_sync_position(xv);
+        if (cam_settled) server_camera_settled(server);
 
-            /* Arriving on a desktop should hand the keyboard to something
-             * there. Otherwise focus stays on the window you left behind and
-             * typing goes to a desktop you can no longer see. Covers every way
-             * of getting here — the view: binds, the tray, edge auto-scroll. */
-            int arrived = server->camera_x / server->screen_width;
-            if (arrived != server->focus_desktop) {
-                server->focus_desktop = arrived;
-                server_refocus(server, arrived, NULL);
-                ipc_emit_desktop(server->ipc, arrived);
-            }
-        }
-        
         // Sync non-dragged windows relative to camera
         FwmView *view;
         wl_list_for_each(view, &server->views, link) {
@@ -815,6 +821,7 @@ bool server_init(FwmServer *server) {
     wl_list_init(&server->ghosts);
     wl_list_init(&server->outputs);
     wl_list_init(&server->keyboards);
+    wl_list_init(&server->pointers);
     
     server->xdg_shell = wlr_xdg_shell_create(server->wl_display, 3); // xdg-shell v3/v6 depending on wlroots version (v3 is standard in 0.17+)
     layer_shell_init(server);
@@ -848,6 +855,10 @@ bool server_init(FwmServer *server) {
     server->relative_pointer = wlr_relative_pointer_manager_v1_create(server->wl_display);
     server->pointer_constraints = wlr_pointer_constraints_v1_create(server->wl_display);
 
+    /* Touchpad gestures. The global is what lets a gesture fwm has no bind for
+     * reach the client instead (see server_gestures.c). */
+    server->pointer_gestures = wlr_pointer_gestures_v1_create(server->wl_display);
+
     server->output_power = wlr_output_power_manager_v1_create(server->wl_display);
     server->gamma_control = wlr_gamma_control_manager_v1_create(server->wl_display);
     if (server->gamma_control) {
@@ -872,6 +883,7 @@ bool server_init(FwmServer *server) {
      * stay private to the file that implements them. */
     server_shell_register(server);
     server_pointer_register(server);
+    server_gestures_register(server);
     server_output_register(server);
     server_input_register(server);
     
@@ -1028,6 +1040,14 @@ void server_destroy(FwmServer *server) {
     server_remove_listener(&server->cursor_button);
     server_remove_listener(&server->cursor_axis);
     server_remove_listener(&server->cursor_frame);
+    server_remove_listener(&server->cursor_swipe_begin);
+    server_remove_listener(&server->cursor_swipe_update);
+    server_remove_listener(&server->cursor_swipe_end);
+    server_remove_listener(&server->cursor_pinch_begin);
+    server_remove_listener(&server->cursor_pinch_update);
+    server_remove_listener(&server->cursor_pinch_end);
+    server_remove_listener(&server->cursor_hold_begin);
+    server_remove_listener(&server->cursor_hold_end);
     server_remove_listener(&server->request_cursor);
     server_remove_listener(&server->seat_request_set_selection);
     server_remove_listener(&server->seat_request_set_primary_selection);

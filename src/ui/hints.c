@@ -158,6 +158,64 @@ static void groups_add(struct Group *groups, int ngroups, const KeyBind *kb,
     }
 }
 
+/* ── gestures ────────────────────────────────────────────────────────── */
+
+/* Gestures are the one part of the config nothing on screen ever hints at: no
+ * key to hunt for, no menu item. Listing them here is the only place a user
+ * finds out that three fingers do anything at all. */
+static const char *gesture_label(const char *a, char *buf, size_t cap) {
+    if (!strcmp(a, GESTURE_ACTION_PAN))     return "pan desktops";
+    if (!strcmp(a, "move_to_view:next") ||
+        !strcmp(a, "move_to_view:prev"))    return "take window across";
+    if (!strncmp(a, "view:", 5))            return "switch desktop";
+    return action_label(a, buf, cap);
+}
+
+/* "3 ←", and the arrow a second bind with the same meaning folds into. */
+static const char *dir_arrow(int dir) {
+    switch (dir) {
+    case GESTURE_SWIPE_LEFT:  return "\xe2\x86\x90"; /* ← */
+    case GESTURE_SWIPE_RIGHT: return "\xe2\x86\x92"; /* → */
+    case GESTURE_SWIPE_UP:    return "\xe2\x86\x91"; /* ↑ */
+    case GESTURE_SWIPE_DOWN:  return "\xe2\x86\x93"; /* ↓ */
+    case GESTURE_PINCH_IN:    return "in";
+    default:                  return "out";
+    }
+}
+
+static void gestures_build(const FwmConfig *cfg, struct HintsCtx *ctx) {
+    for (int i = 0; i < cfg->gestures.bind_count && ctx->count < HINTS_MAX; i++) {
+        const GestureBind *gb = &cfg->gestures.binds[i];
+        char labelbuf[64];
+        const char *label = gesture_label(gb->action, labelbuf, sizeof(labelbuf));
+        if (!label) continue;
+
+        int pinch = gb->dir == GESTURE_PINCH_IN || gb->dir == GESTURE_PINCH_OUT;
+        char key[96];
+        snprintf(key, sizeof(key), "%s%d %s", pinch ? "pinch" : "swipe",
+                 gb->fingers, dir_arrow(gb->dir));
+
+        /* One meaning, one row: the pan is bound left AND right, and it would
+         * be odd to see it listed twice. */
+        struct HintRow *row = NULL;
+        for (int r = 0; r < ctx->count; r++) {
+            if (!strcmp(ctx->rows[r].action, label) &&
+                !strncmp(ctx->rows[r].key, key, strlen(key) - strlen(dir_arrow(gb->dir)))) {
+                row = &ctx->rows[r];
+                break;
+            }
+        }
+        if (row) {
+            strncat(row->key, dir_arrow(gb->dir),
+                    sizeof(row->key) - strlen(row->key) - 1);
+            continue;
+        }
+        row = &ctx->rows[ctx->count++];
+        snprintf(row->key, sizeof(row->key), "%s", key);
+        snprintf(row->action, sizeof(row->action), "%s", label);
+    }
+}
+
 static void hints_build(const FwmConfig *cfg, struct HintsCtx *ctx) {
     struct Group groups[] = {
         { "view:",        "switch desktop", 0, "", 0 },
@@ -202,6 +260,8 @@ static void hints_build(const FwmConfig *cfg, struct HintsCtx *ctx) {
         }
         snprintf(row->action, sizeof(row->action), "%s", groups[g].label);
     }
+
+    gestures_build(cfg, ctx);
 }
 
 static void draw_hints_content(cairo_t *cr, int w, int h, void *user_data) {

@@ -114,6 +114,29 @@ kbd_options = "grp:alt_shift_toggle"
 repeat_rate  = 25
 repeat_delay = 600
 
+# Touchpad. Everything here is libinput's, and everything except `tap` is left
+# at whatever libinput chose for your model unless you say otherwise — those
+# defaults are per-device and usually better than a number in a config file.
+#
+# tap is the exception: fwm turns tap-to-click ON, because libinput ships it off
+# and a laptop where touching the pad does not click is unusable without a
+# mouse. Set tap = false to get libinput's own default back.
+#
+# A pad that cannot do one of these ignores it (a mouse has no tap and no
+# disable-while-typing). `libinput list-devices` shows what yours supports:
+# "disabled" means it can and is off, "n/a" means it cannot at all.
+tap = true
+#tap_drag         = true    # tap, then slide = drag
+#drag_lock        = false   # a drag survives lifting the finger briefly
+#natural_scroll   = false   # content follows the fingers
+#dwt              = true    # ignore the pad while typing
+#middle_emulation = false   # left+right together = middle click
+#left_handed      = false
+#accel_speed      = 0.0     # -1 (slow) .. 1 (fast)
+#accel_profile    = "adaptive"    # or "flat" (no acceleration)
+#scroll_method    = "two_finger"  # or "edge", "button", "none"
+#click_method     = "button_areas" # or "clickfinger", "none"
+
 [binds]
 # format: "mod+key" = "action"
 # mod keys: super, alt, shift, ctrl
@@ -132,9 +155,10 @@ repeat_delay = 600
 # keeps running. Fix the file and press super+shift+r to reload.
 # spawn actions:  spawn:command arg1 arg2 ...
 # camera:         move_camera:-50  move_camera:50
-# workspace:      view:0 .. view:9
+# workspace:      view:0 .. view:9              (also view:next / view:prev)
 # move a window:  move_to:0 .. move_to:9        (send it there, stay put)
 #                 move_to_view:0 .. :9         (send it there and follow)
+#                 both take next/prev too, relative to the desktop on screen
 # In physics and floating modes you can also just drag a window across the
 # desktop edge; in tiling you cannot, because the layout owns its geometry —
 # these actions are the way to move a tiled window out.
@@ -229,6 +253,46 @@ repeat_delay = 600
 "super+8"            = "view:7"
 "super+9"            = "view:8"
 "super+0"            = "view:9"
+
+# Touchpad gestures. OFF by default — nothing is bound until you bind it, and a
+# gesture fwm has not claimed goes to the application under the cursor, which is
+# where a swipe or a pinch belongs until you say otherwise. Uncomment the block
+# below to get the set worth starting from.
+#
+# Same actions as [binds], keyed on how many fingers went which way:
+# "swipe<2..5>+left|right|up|down" and "pinch<2..5>+in|out".
+#
+# Two extras only a gesture can use:
+#   pan_desktop        hands the camera to your fingers and pans across the
+#                      desktop strip live, settling on a desktop when they
+#                      lift — a flick carries on to the next one. Bind it to
+#                      BOTH horizontal directions; it is one gesture.
+#   view:next|prev     and move_to:next|prev, move_to_view:next|prev — the
+#                      desktop beside the one you are looking at. These work in
+#                      [binds] too.
+#
+# sensitivity: camera px per finger px (default 1.0).
+# natural:     true (default) = the strip follows your fingers, as on a phone.
+#
+# A finger count with NOTHING bound to it is left entirely alone, so the app
+# under the cursor still gets it. Leave the two-finger pinch unbound for that
+# reason — it belongs to your browser and image viewer.
+#
+# Not every touchpad can do this. libinput only reports swipes and pinches on
+# devices that track each finger separately: check for "gesture" in the
+# Capabilities line of `libinput list-devices`. Older semi-MT pads (many
+# SynPS/2) have only "pointer", and no gesture will ever arrive from them —
+# two-finger scrolling still works, since that needs no per-finger positions.
+#[gestures]
+#sensitivity    = 1.0
+#natural        = true
+#"swipe3+left"  = "pan_desktop"
+#"swipe3+right" = "pan_desktop"
+#"swipe3+up"    = "launcher"
+#"swipe3+down"  = "toggle_tray"
+#"swipe4+left"  = "move_to_view:prev"
+#"swipe4+right" = "move_to_view:next"
+#"pinch3+in"    = "calm_all"
 
 # Built-in wallpaper picker: which folder to browse (flat, no recursion).
 # The pick is remembered in ~/.local/state/fwm/wallpaper and overrides the

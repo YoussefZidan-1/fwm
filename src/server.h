@@ -33,6 +33,7 @@
 #include "physics.h"
 #include "bsp.h"
 #include "config.h"
+#include "gestures.h"
 
 #define DESKTOP_MODE_PHYSICS 0
 #define DESKTOP_MODE_TILING  1
@@ -166,6 +167,22 @@ typedef struct FwmServer {
     struct wl_listener seat_request_set_selection;
     struct wl_listener seat_request_set_primary_selection;
 
+    /* Touchpad gestures. The state machine is gestures.c; the wiring, and what
+     * each resolved gesture does, is server_gestures.c. A gesture fwm has
+     * nothing bound to is forwarded to the client through pointer_gestures
+     * instead, so in-app pinch-zoom keeps working. */
+    struct wlr_pointer_gestures_v1 *pointer_gestures;
+    GestureState gesture;
+    int gesture_base_camera; /* camera the live desktop pan started from */
+    struct wl_listener cursor_swipe_begin;
+    struct wl_listener cursor_swipe_update;
+    struct wl_listener cursor_swipe_end;
+    struct wl_listener cursor_pinch_begin;
+    struct wl_listener cursor_pinch_update;
+    struct wl_listener cursor_pinch_end;
+    struct wl_listener cursor_hold_begin;
+    struct wl_listener cursor_hold_end;
+
     /* Drag and drop. The data transfer itself is handled entirely by
      * wlr_data_device; all we own is the icon drawn under the cursor. */
     struct wl_listener seat_request_start_drag;
@@ -229,6 +246,7 @@ typedef struct FwmServer {
     
     /* Keyboard input */
     struct wl_list keyboards;
+    struct wl_list pointers;   /* struct FwmPointer; see server_internal.h */
     struct wl_listener new_xdg_toplevel;
     struct wl_listener new_xdg_popup;
     struct wl_listener new_toplevel_decoration;
