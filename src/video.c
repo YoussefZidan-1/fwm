@@ -47,9 +47,10 @@
  * intervals, so early frames cost nothing but a fraction of a refresh. */
 #define PRESENT_SLACK 0.004
 
-/* One decoded frame handed thread -> compositor: plain malloc'd BGRA, sized to
- * the cover buffer. The decode thread produces only this — never a wlr_buffer,
- * so all of wlroots stays single-threaded on the main loop. */
+/* One queue slot: a cover-sized BGRA image, allocated once in video_create and
+ * owned by the slot for the life of the video rather than per frame. The decode
+ * thread produces only this — never a wlr_buffer, so all of wlroots stays
+ * single-threaded on the main loop. */
 struct VideoFrame {
     uint8_t *data;
 };
@@ -124,30 +125,28 @@ static void apply_colorspace(FwmVideo *v, const AVFrame *frame) {
                              0, 1 << 16, 1 << 16);
 }
 
-/* Scale one decoded frame into a fresh cover-sized BGRA buffer. BGRA in memory
+/* Scale one decoded frame into a cover-sized BGRA buffer owned by the caller —
+ * one of the queue slots, never a fresh allocation. BGRA in memory
  * (B,G,R,A) is byte-identical to DRM_FORMAT_ARGB8888 on little-endian, which is
  * what the scene buffer wants, so no further conversion happens on upload.
  * Runs on the decode thread. */
-static uint8_t *scale_to_cover(FwmVideo *v, AVFrame *frame) {
+static bool scale_to_cover(FwmVideo *v, AVFrame *frame, uint8_t *buf) {
     struct SwsContext *prev = v->sws;
     v->sws = sws_getCachedContext(v->sws,
                                   frame->width, frame->height,
                                   (enum AVPixelFormat)frame->format,
                                   v->cover_w, v->cover_h, AV_PIX_FMT_BGRA,
                                   v->sws_flags, NULL, NULL, NULL);
-    if (!v->sws) return NULL;
+    if (!v->sws) return false;
     /* A cached context is only re-created when the frame geometry or format
      * changes; the colour setup has to be re-applied when it is. */
     if (v->sws != prev) apply_colorspace(v, frame);
-
-    uint8_t *buf = malloc((size_t)v->cover_w * v->cover_h * 4);
-    if (!buf) return NULL;
 
     uint8_t *dst[4]     = { buf, NULL, NULL, NULL };
     int      dstride[4] = { v->cover_w * 4, 0, 0, 0 };
     sws_scale(v->sws, (const uint8_t *const *)frame->data, frame->linesize,
               0, frame->height, dst, dstride);
-    return buf;
+    return true;
 }
 
 static void *decode_thread(void *arg) {
@@ -203,19 +202,27 @@ static void *decode_thread(void *arg) {
                 }
             }
 
-            uint8_t *buf = scale_to_cover(v, frame);
-            av_frame_unref(frame);
-            if (!buf) continue;
-
+            /* Reserve the slot BEFORE scaling and scale straight into the
+             * buffer that lives in it. The tail index (head + count) does not
+             * move when the compositor pops a frame, so it stays valid across
+             * the unlock, and a slot is only released once the compositor has
+             * finished reading it — so nothing else can touch these pixels. */
             pthread_mutex_lock(&v->lock);
             while (v->count == VIDEO_QUEUE_CAP && !v->stop)
                 pthread_cond_wait(&v->not_full, &v->lock);
             if (v->stop) {
                 pthread_mutex_unlock(&v->lock);
-                free(buf);
+                av_frame_unref(frame);
                 goto out;
             }
-            v->queue[(v->head + v->count) % VIDEO_QUEUE_CAP].data = buf;
+            uint8_t *buf = v->queue[(v->head + v->count) % VIDEO_QUEUE_CAP].data;
+            pthread_mutex_unlock(&v->lock);
+
+            bool ok = scale_to_cover(v, frame, buf);
+            av_frame_unref(frame);
+            if (!ok) continue;
+
+            pthread_mutex_lock(&v->lock);
             v->count++;
             pthread_cond_signal(&v->not_empty);
             pthread_mutex_unlock(&v->lock);
@@ -230,18 +237,23 @@ out:
     return NULL;
 }
 
-static bool pop_frame(FwmVideo *v, uint8_t **out) {
+/* Borrow the oldest queued frame without releasing its slot. The slot owns the
+ * buffer for the whole life of the video, so it has to stay reserved until the
+ * pixels have been copied out — see frame_release. */
+static uint8_t *frame_peek(FwmVideo *v) {
     pthread_mutex_lock(&v->lock);
-    if (v->count == 0) {
-        pthread_mutex_unlock(&v->lock);
-        return false;
-    }
-    *out = v->queue[v->head].data;
+    uint8_t *buf = v->count == 0 ? NULL : v->queue[v->head].data;
+    pthread_mutex_unlock(&v->lock);
+    return buf;
+}
+
+/* Hand the slot back to the decode thread, now that we are done reading it. */
+static void frame_release(FwmVideo *v) {
+    pthread_mutex_lock(&v->lock);
     v->head = (v->head + 1) % VIDEO_QUEUE_CAP;
     v->count--;
     pthread_cond_signal(&v->not_full);
     pthread_mutex_unlock(&v->lock);
-    return true;
 }
 
 static double now_sec(void) {
@@ -263,11 +275,11 @@ static void present(FwmVideo *v, bool force) {
      * a refresh early is invisible; being one late is the judder. */
     if (!force && v->primed && now < v->next_deadline - PRESENT_SLACK) return;
 
-    uint8_t *buf;
-    if (!pop_frame(v, &buf)) return; /* decoder has not caught up: keep last frame */
+    uint8_t *buf = frame_peek(v);
+    if (!buf) return; /* decoder has not caught up: keep last frame */
 
     cairo_overlay_blit_bgra(v->scene_buffer, buf, v->cover_w * 4, v->crop_x, v->crop_y);
-    free(buf);
+    frame_release(v);
 
     /* Advance the deadline by one interval, so presenting a little early or a
      * little late does not shift every frame after it. Resync outright when we
@@ -406,6 +418,24 @@ FwmVideo *video_create(struct wlr_scene_tree *parent, const char *path,
     int skip_nonref = fps <= src_fps * 0.55;
     if (skip_nonref) v->codec->skip_frame = AVDISCARD_NONREF;
 
+    /* One permanent buffer per queue slot, allocated once here.
+     *
+     * Allocating a cover-sized image per frame instead was by far the most
+     * expensive thing a video wallpaper did, and the cost was invisible in a
+     * profile of our own code: main() pins M_MMAP_THRESHOLD at 256 KB, so each
+     * of these multi-megabyte buffers was an mmap on malloc and an munmap on
+     * free. That is a page fault for every page of the image on every frame
+     * (the kernel hands back fresh zeroed pages, so the scaler's writes all
+     * fault) plus a TLB-shootdown IPI to every core on every free. The
+     * shootdown cost scales with core count, which is why a machine with MORE
+     * cores felt worse rather than better. Reusing the slots costs the same
+     * resident memory as before and none of the churn. */
+    size_t frame_bytes = (size_t)v->cover_w * v->cover_h * 4;
+    for (int i = 0; i < VIDEO_QUEUE_CAP; i++) {
+        v->queue[i].data = malloc(frame_bytes);
+        if (!v->queue[i].data) goto fail;
+    }
+
     v->scene_buffer = cairo_overlay_create(parent, screen_w, screen_h);
     if (!v->scene_buffer) goto fail;
 
@@ -443,6 +473,7 @@ FwmVideo *video_create(struct wlr_scene_tree *parent, const char *path,
     return v;
 
 fail:
+    for (int i = 0; i < VIDEO_QUEUE_CAP; i++) free(v->queue[i].data);
     if (v->sws) sws_freeContext(v->sws);
     if (v->codec) avcodec_free_context(&v->codec);
     if (v->fmt) avformat_close_input(&v->fmt);
@@ -582,8 +613,8 @@ void video_destroy(FwmVideo *v) {
         pthread_cond_destroy(&v->not_empty);
     }
 
-    for (int i = 0; i < v->count; i++)
-        free(v->queue[(v->head + i) % VIDEO_QUEUE_CAP].data);
+    for (int i = 0; i < VIDEO_QUEUE_CAP; i++)
+        free(v->queue[i].data);
 
     if (v->scene_buffer) cairo_overlay_destroy(v->scene_buffer);
     if (v->sws) sws_freeContext(v->sws);

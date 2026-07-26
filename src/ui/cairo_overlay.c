@@ -44,6 +44,16 @@ struct CairoOverlayInfo {
     int width, height;
     struct wlr_buffer *current; /* held alive by one lock we own */
 
+    /* Recycling pool, used only by the per-frame blit path (video wallpaper).
+     * Drawing a new overlay every frame used to allocate a screen-sized cairo
+     * surface each time; with M_MMAP_THRESHOLD pinned in main() that is an
+     * mmap/munmap pair per frame — the whole surface re-faulted on every write
+     * and a TLB shootdown across every core on every free. Two buffers are the
+     * minimum (the scene still holds a lock on the one on screen); a third
+     * absorbs a frame the renderer is slow to release. */
+    struct CairoOverlayBuffer *pool[3];
+    int pool_n;
+
     /* Appear animation, driven by cairo_overlay_tick. Purely scene-node work
      * (opacity + position), so it costs nothing per frame and works on static
      * overlays that can never be redrawn. */
@@ -67,6 +77,16 @@ static void anims_init(void) {
         wl_list_init(&g_anims);
         g_anims_ready = 1;
     }
+}
+
+/* Is this buffer one the recycling pool owns? Pool buffers keep their single
+ * lock until the overlay is destroyed, so the ordinary "unlock the previous
+ * frame" paths have to skip them. */
+static bool overlay_pool_holds(struct CairoOverlayInfo *info, struct wlr_buffer *buf) {
+    for (int i = 0; i < info->pool_n; i++) {
+        if (&info->pool[i]->base == buf) return true;
+    }
+    return false;
 }
 
 static void anim_stop(struct CairoOverlayInfo *info) {
@@ -188,13 +208,33 @@ void cairo_overlay_update(struct wlr_scene_buffer *scene_buffer,
 void cairo_overlay_make_static(struct wlr_scene_buffer *scene_buffer) {
     if (!scene_buffer) return;
     struct CairoOverlayInfo *info = scene_buffer->node.data;
-    if (info && info->current) {
+    if (info && info->current && !overlay_pool_holds(info, info->current)) {
         // The scene holds its own lock until the texture is uploaded, so
         // dropping ours frees the CPU-side pixels right after that upload;
         // the renderer's cached texture keeps the content on screen.
         wlr_buffer_unlock(info->current);
         info->current = NULL;
     }
+}
+
+/* A pooled buffer is safe to overwrite when the only lock left on it is ours
+ * and it is not the one the scene node currently points at (re-setting the same
+ * buffer is a no-op, so the frame would never change). Grows the pool on demand
+ * and returns NULL when every buffer is still in flight — the caller falls back
+ * to a one-shot allocation rather than dropping the frame. */
+static struct CairoOverlayBuffer *overlay_pool_acquire(struct CairoOverlayInfo *info) {
+    for (int i = 0; i < info->pool_n; i++) {
+        struct CairoOverlayBuffer *b = info->pool[i];
+        if (b->base.n_locks == 1 && &b->base != info->current) return b;
+    }
+    if (info->pool_n < (int)(sizeof(info->pool) / sizeof(info->pool[0]))) {
+        struct CairoOverlayBuffer *b = overlay_buffer_alloc(info->width, info->height);
+        if (!b) return NULL;
+        overlay_buffer_own(b); /* the pool keeps this lock until destroy */
+        info->pool[info->pool_n++] = b;
+        return b;
+    }
+    return NULL;
 }
 
 void cairo_overlay_blit_bgra(struct wlr_scene_buffer *scene_buffer,
@@ -204,8 +244,12 @@ void cairo_overlay_blit_bgra(struct wlr_scene_buffer *scene_buffer,
     struct CairoOverlayInfo *info = scene_buffer->node.data;
     if (!info || info->width <= 0 || info->height <= 0) return;
 
-    struct CairoOverlayBuffer *buffer = overlay_buffer_alloc(info->width, info->height);
-    if (!buffer) return;
+    struct CairoOverlayBuffer *buffer = overlay_pool_acquire(info);
+    if (!buffer) {
+        buffer = overlay_buffer_alloc(info->width, info->height);
+        if (!buffer) return;
+        overlay_buffer_own(buffer);
+    }
 
     unsigned char *dst = cairo_image_surface_get_data(buffer->surface);
     int dst_stride = cairo_image_surface_get_stride(buffer->surface);
@@ -216,9 +260,12 @@ void cairo_overlay_blit_bgra(struct wlr_scene_buffer *scene_buffer,
     }
     cairo_surface_mark_dirty(buffer->surface);
 
-    struct wlr_buffer *buf = overlay_buffer_own(buffer);
+    struct wlr_buffer *buf = &buffer->base;
     wlr_scene_buffer_set_buffer_with_damage(scene_buffer, buf, NULL);
-    if (info->current) {
+
+    /* Drop the previous frame's lock unless the pool owns it — a pooled buffer
+     * keeps its single lock forever, and that lock is what marks it reusable. */
+    if (info->current && !overlay_pool_holds(info, info->current)) {
         wlr_buffer_unlock(info->current);
     }
     info->current = buf;
@@ -330,8 +377,13 @@ void cairo_overlay_destroy(struct wlr_scene_buffer *scene_buffer) {
     anim_stop(info);
     wlr_scene_node_destroy(&scene_buffer->node);
     if (info) {
-        if (info->current) {
+        /* A pooled buffer's lock is released with the pool, so only unlock
+         * `current` when it is a one-shot buffer the pool never took over. */
+        if (info->current && !overlay_pool_holds(info, info->current)) {
             wlr_buffer_unlock(info->current);
+        }
+        for (int i = 0; i < info->pool_n; i++) {
+            wlr_buffer_unlock(&info->pool[i]->base);
         }
         free(info);
     }
