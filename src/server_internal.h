@@ -62,6 +62,13 @@ void server_reclaim_memory(void);
 void server_dispatch_action(FwmServer *server, const char *action);
 FwmView *server_find_view(FwmServer *server, uint32_t id);
 void server_camera_settled(FwmServer *server);
+/* Place a spinning window that is being dragged under its grab point. Called
+ * once per frame as well as from the physics tick — see the definition. */
+void server_drag_swing_place(FwmServer *server);
+/* The angle a body should be DRAWN at right now: its simulated angle advanced
+ * to this instant. See the definition — this is what keeps a slow rotation from
+ * juddering against the display's clock. */
+double server_render_angle(FwmServer *server, const PhysicsBody *b);
 
 /* ── server_gestures.c ────────────────────────────────────────────────── */
 void server_gestures_register(FwmServer *server);

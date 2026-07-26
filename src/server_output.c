@@ -121,6 +121,11 @@ static void server_animate(FwmServer *server) {
      * of running applications or their desktops actually changed. */
     session_maybe_save(server);
 
+    /* A window being dragged by a corner while it spins is placed HERE as well
+     * as on the physics tick: the hand moves it, and the hand is not on the
+     * timer's clock. See server_drag_swing_place. */
+    server_drag_swing_place(server);
+
     server_shake_tick(server, dt);
 
     /* Squash rides frame time with the other visual ramps. */

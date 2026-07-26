@@ -395,6 +395,62 @@ void server_video_sync(FwmServer *server) {
 #define SWING_MAX_ACCEL 20000.0   /* px/s^2 */
 #define SWING_MAX_SPEED    12.0   /* rad/s */
 
+/* Time constants for the two filters between the cursor and that acceleration.
+ *
+ * Differentiating a hand-driven point twice is the noisiest thing in the whole
+ * compositor: the pointer arrives in bursts, so at 60Hz some ticks see two
+ * events and some none, and the raw second difference alternates hard enough
+ * to saturate the clamp above on ordinary movement. Saturating in alternating
+ * directions is not a big swing, it is a shudder — worse the further from the
+ * centre the window is held, because the torque scales with the lever arm, and
+ * worse again with gravity on, because then there is a real swing underneath
+ * for the noise to ride on.
+ *
+ * Expressed as seconds rather than as per-tick blend factors so the filtering
+ * means the same thing whatever the tick rate is.
+ *
+ * Chosen against both things that matter at once, for a hand moving at a steady
+ * 300 px/s with pointer events arriving unevenly, and for a genuine flick:
+ *
+ *   vel/acc tau      noise      peak on a flick
+ *   none             12000        20000  (clamped)
+ *   0.030 / 0.060      373        15464
+ *   0.040 / 0.080      327        12128   <- here
+ *   0.060 / 0.150      417         7162
+ *
+ * Past this the noise stops improving and only the flick gets weaker, so this
+ * is where the two curves cross. */
+#define SWING_VEL_TAU 0.040   /* s — smooths the pivot's velocity */
+#define SWING_ACC_TAU 0.080   /* s — and then its acceleration */
+
+/* The angle to DRAW a body at, as opposed to the one it was last simulated at.
+ *
+ * The simulation runs on a timer and the screen presents on vsync, and the two
+ * are not the same clock — the timer is armed in whole milliseconds, so a "60Hz"
+ * tick is really 16ms and 62.5Hz. Nothing keeps them in phase: over about half
+ * a second they drift a whole tick apart, so a run of frames each show the
+ * angle one step further on, then one frame shows the same angle twice or skips
+ * a step. That is a judder you can see whenever the rotation is slow enough to
+ * follow — and a window held by its edge shows it most, because there the same
+ * step of angle is the largest movement in pixels.
+ *
+ * So draw where the body IS at this instant, not where it was when the last
+ * step ended: advance it by its own angular velocity over the time since. The
+ * lag is capped at a tick and a half, past which the compositor has stalled and
+ * extrapolating further would only invent a spin nobody performed. */
+double server_render_angle(FwmServer *server, const PhysicsBody *b) {
+    if (!b->spin || b->angvel == 0.0) return b->angle;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double lag = server->sim_accum
+               + (double)(now.tv_sec - server->last_tick.tv_sec)
+               + (double)(now.tv_nsec - server->last_tick.tv_nsec) / 1e9;
+    if (lag < 0.0) lag = 0.0;
+    double cap = 1.5 / PHYSICS_TICK_RATE;
+    if (lag > cap) lag = cap;
+    return b->angle + b->angvel * lag;
+}
+
 /* A window being dragged hangs from the point it was grabbed by.
  *
  * Physically this is a compound pendulum whose pivot is the cursor: the window
@@ -432,14 +488,20 @@ static void server_drag_swing(FwmServer *server, double dt) {
         return;   /* no history yet: nothing to differentiate */
     }
 
-    /* Velocity of the pivot, lightly smoothed, and its change — the pointer
-     * arrives in bursts and raw double differentiation of it is all spikes. */
+    /* Velocity of the pivot, smoothed, then its change, smoothed again. Both
+     * stages are needed: one filter on the velocity still leaves an
+     * acceleration that alternates sign every tick (see SWING_*_TAU). */
     double nvx = (px - server->interactive.pivot_x) / dt;
     double nvy = (py - server->interactive.pivot_y) / dt;
-    double svx = server->interactive.pivot_vx * 0.6 + nvx * 0.4;
-    double svy = server->interactive.pivot_vy * 0.6 + nvy * 0.4;
-    double ax = (svx - server->interactive.pivot_vx) / dt;
-    double ay = (svy - server->interactive.pivot_vy) / dt;
+    double kv = dt / (dt + SWING_VEL_TAU);
+    double svx = server->interactive.pivot_vx + (nvx - server->interactive.pivot_vx) * kv;
+    double svy = server->interactive.pivot_vy + (nvy - server->interactive.pivot_vy) * kv;
+
+    double rax = (svx - server->interactive.pivot_vx) / dt;
+    double ray = (svy - server->interactive.pivot_vy) / dt;
+    double ka = dt / (dt + SWING_ACC_TAU);
+    double ax = server->interactive.pivot_ax + (rax - server->interactive.pivot_ax) * ka;
+    double ay = server->interactive.pivot_ay + (ray - server->interactive.pivot_ay) * ka;
     if (ax >  SWING_MAX_ACCEL) ax =  SWING_MAX_ACCEL;
     if (ax < -SWING_MAX_ACCEL) ax = -SWING_MAX_ACCEL;
     if (ay >  SWING_MAX_ACCEL) ay =  SWING_MAX_ACCEL;
@@ -448,6 +510,8 @@ static void server_drag_swing(FwmServer *server, double dt) {
     server->interactive.pivot_y = py;
     server->interactive.pivot_vx = svx;
     server->interactive.pivot_vy = svy;
+    server->interactive.pivot_ax = ax;
+    server->interactive.pivot_ay = ay;
 
     /* Grab point -> center, with the window's current rotation applied. */
     double c = cos(b->angle), s = sin(b->angle);
@@ -468,9 +532,40 @@ static void server_drag_swing(FwmServer *server, double dt) {
     if (b->angvel >  SWING_MAX_SPEED) b->angvel =  SWING_MAX_SPEED;
     if (b->angvel < -SWING_MAX_SPEED) b->angvel = -SWING_MAX_SPEED;
 
-    /* Hang the window off the pivot. The clamp is the same one the drag itself
-     * uses: a kinematic body passes straight through the play-area walls, so
-     * nothing else keeps a swinging window on screen. */
+    server_drag_swing_place(server);
+}
+
+/* Hang the window off the pivot: as it turns, its centre orbits the cursor.
+ *
+ * Split out of the integration above and called once per FRAME as well,
+ * because where the window is drawn must follow the hand, not the physics
+ * timer. The timer is free-running 60Hz and the output presents on its own
+ * vsync; a position written only on the tick arrives on screen twice in one
+ * frame and not at all in the next, which is a judder no amount of smoothing
+ * in the pendulum can fix. Everything here is a function of the cursor and the
+ * current angle, so running it more often is free and always correct — it is
+ * the integration that needs a fixed step, not the placement.
+ *
+ * The clamp is the same one the drag itself uses: a kinematic body passes
+ * straight through the play-area walls, so nothing else keeps a swinging
+ * window on screen. */
+void server_drag_swing_place(FwmServer *server) {
+    if (server->interactive.action != FWM_ACTION_MOVE || !server->interactive.view) return;
+    FwmView *view = server->interactive.view;
+    PhysicsBody *b = physics_find_body(&server->physics, view->id);
+    if (!b || !b->spin || !server->interactive.pivot_have) return;
+
+    double px = server->cursor->x + server->camera_x;
+    double py = server->cursor->y;
+
+    /* The angle as it is being DRAWN this frame, not as of the last step: the
+     * window hangs off the pivot at whatever angle the viewer can see, or the
+     * picture and the place it is drawn disagree by a tick. */
+    double a = server_render_angle(server, b);
+    double c = cos(a), s = sin(a);
+    double rx = -(c * server->interactive.grab_lx - s * server->interactive.grab_ly);
+    double ry = -(s * server->interactive.grab_lx + c * server->interactive.grab_ly);
+
     double cx = px + rx, cy = py + ry;
     double nx = cx - b->width / 2.0, ny = cy - b->height / 2.0;
     double max_x = 10.0 * server->screen_width - b->width;

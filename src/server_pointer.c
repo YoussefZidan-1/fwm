@@ -717,8 +717,10 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
                             server->interactive.grab_lx = c * ox - s * oy;
                             server->interactive.grab_ly = s * ox + c * oy;
                             server->interactive.pivot_have = 0;
+                            server->interactive.pivot_ax = 0.0;
+                            server->interactive.pivot_ay = 0.0;
                         }
-                        server->interactive.collision_disabled = (active_mods & FWM_MOD_SHIFT) ? 1 : 0;
+                        server->interactive.collision_disabled = is_move_nc;
 
                         /* The window goes soft for as long as it is held, and
                          * the sheet is held at the point the cursor took hold
