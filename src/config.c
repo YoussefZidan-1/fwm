@@ -76,7 +76,7 @@ static int action_is_known(const char *a) {
     };
     static const char *prefixes[] = {
         "spawn:", "view:", "move_camera:", "tile_focus:", "tile_move:",
-        "move_to:", "move_to_view:", NULL
+        "move_to:", "move_to_view:", FWM_MODE_ACTION, NULL
     };
     for (int i = 0; exact[i]; i++)
         if (strcmp(a, exact[i]) == 0) return 1;
@@ -666,6 +666,276 @@ static void load_binds(toml_table_t *root, FwmConfig *cfg) {
     }
 }
 
+/* ── modes (submaps) ─────────────────────────────────────────────────── */
+
+int config_mode_find(const FwmConfig *cfg, const char *name) {
+    if (!name) return -1;
+    /* Callers hold either "mode:resize" or "resize"; accept both rather than
+     * making every one of them skip the prefix itself. */
+    if (strncmp(name, FWM_MODE_ACTION, strlen(FWM_MODE_ACTION)) == 0)
+        name += strlen(FWM_MODE_ACTION);
+    for (int i = 0; i < cfg->mode_count; i++)
+        if (strcmp(cfg->modes[i].name, name) == 0) return i;
+    return -1;
+}
+
+const KeyBind *config_match_mode_bind(const FwmConfig *cfg, int mode,
+                                      xkb_keysym_t sym, unsigned int mods) {
+    if (mode < 0 || mode >= cfg->mode_count) return NULL;
+    const ConfigMode *m = &cfg->modes[mode];
+    xkb_keysym_t lower = xkb_keysym_to_lower(sym);
+    for (int i = 0; i < m->key_count; i++) {
+        if (m->keys[i].mod != mods) continue;
+        if (m->keys[i].key == sym || m->keys[i].key == lower) return &m->keys[i];
+    }
+    return NULL;
+}
+
+/* One [mode.<name>] table: its binds, plus the two words that are settings
+ * rather than binds. */
+static void load_mode(FwmConfig *cfg, toml_table_t *tbl, const char *name) {
+    if (cfg->mode_count >= CONFIG_MAX_MODES) {
+        config_report_error(cfg, "[mode.%s]: too many modes (max %d) — ignored",
+                            name, CONFIG_MAX_MODES);
+        return;
+    }
+    ConfigMode *m = &cfg->modes[cfg->mode_count];
+    memset(m, 0, sizeof(*m));
+    snprintf(m->name, sizeof(m->name), "%s", name);
+
+    toml_datum_t st = toml_bool_in(tbl, "sticky");
+    if (st.ok) m->sticky = st.u.b ? 1 : 0;
+
+    int n = toml_table_nkval(tbl);
+    m->keys = calloc(n > 0 ? n : 1, sizeof(KeyBind));
+    if (!m->keys) { perror("calloc"); return; }
+
+    for (int i = 0; i < n; i++) {
+        const char *key = toml_key_in(tbl, i);
+        if (!key) continue;
+        if (strcmp(key, "sticky") == 0) continue;
+
+        toml_datum_t val = toml_string_in(tbl, key);
+        if (!val.ok) {
+            config_report_error(cfg, "[mode.%s] \"%s\": value must be a quoted string",
+                                name, key);
+            continue;
+        }
+
+        /* `enter` is not a bind of the mode but a bind INTO it, so it goes into
+         * the root map — appended after [binds] has been read, below. */
+        if (strcmp(key, "enter") == 0) { free(val.u.s); continue; }
+
+        unsigned int mod;
+        xkb_keysym_t sym;
+        if (!parse_bind_key(key, &mod, &sym)) {
+            config_report_error(cfg, "[mode.%s] \"%s\": unknown key or modifier", name, key);
+            free(val.u.s);
+            continue;
+        }
+        if (!action_is_known(val.u.s)) {
+            config_report_error(cfg, "[mode.%s] \"%s\": unknown action \"%s\"",
+                                name, key, val.u.s);
+            free(val.u.s);
+            continue;
+        }
+        m->keys[m->key_count].mod = mod;
+        m->keys[m->key_count].key = sym;
+        snprintf(m->keys[m->key_count].action, sizeof(m->keys[m->key_count].action),
+                 "%s", val.u.s);
+        m->key_count++;
+        free(val.u.s);
+    }
+
+    if (m->key_count == 0) {
+        /* A mode with nothing in it can still be entered, and then only Escape
+         * gets you out — a trap rather than a feature. */
+        config_report_error(cfg, "[mode.%s]: no binds — mode ignored", name);
+        free(m->keys);
+        m->keys = NULL;
+        return;
+    }
+    cfg->mode_count++;
+}
+
+/* Append one bind to the root map. Used for each mode's `enter` key, which is
+ * written inside the mode but belongs to the map you press it from. */
+static void add_root_bind(FwmConfig *cfg, unsigned int mod, xkb_keysym_t key,
+                          const char *action) {
+    KeyBind *grown = realloc(cfg->keys, (size_t)(cfg->key_count + 1) * sizeof(KeyBind));
+    if (!grown) { perror("realloc"); return; }
+    cfg->keys = grown;
+    KeyBind *b = &cfg->keys[cfg->key_count++];
+    memset(b, 0, sizeof(*b));
+    b->mod = mod;
+    b->key = key;
+    snprintf(b->action, sizeof(b->action), "%s", action);
+}
+
+static void load_modes(toml_table_t *root, FwmConfig *cfg) {
+    cfg->mode_count = 0;
+    toml_table_t *tbl = root ? toml_table_in(root, "mode") : NULL;
+    if (!tbl) return;
+
+    for (int i = 0; ; i++) {
+        const char *name = toml_key_in(tbl, i);
+        if (!name) break;
+        toml_table_t *sub = toml_table_in(tbl, name);
+        if (!sub) {
+            config_report_error(cfg, "[mode] \"%s\": modes are tables, e.g. [mode.%s]",
+                                name, name);
+            continue;
+        }
+        load_mode(cfg, sub, name);
+    }
+
+    /* Now that every mode exists and [binds] has been read, wire up the keys
+     * that step into them. Done second so `enter` can be reported against a
+     * mode that was itself dropped for being empty. */
+    for (int i = 0; ; i++) {
+        const char *name = toml_key_in(tbl, i);
+        if (!name) break;
+        toml_table_t *sub = toml_table_in(tbl, name);
+        if (!sub) continue;
+        toml_datum_t e = toml_string_in(sub, "enter");
+        if (!e.ok) continue;
+
+        if (config_mode_find(cfg, name) < 0) {
+            free(e.u.s);
+            continue;   /* the mode was dropped; it already said why */
+        }
+        unsigned int mod;
+        xkb_keysym_t sym;
+        if (!parse_bind_key(e.u.s, &mod, &sym)) {
+            config_report_error(cfg, "[mode.%s] enter = \"%s\": unknown key or modifier",
+                                name, e.u.s);
+            free(e.u.s);
+            continue;
+        }
+        char action[64];
+        snprintf(action, sizeof(action), FWM_MODE_ACTION "%s", name);
+        add_root_bind(cfg, mod, sym, action);
+        free(e.u.s);
+    }
+}
+
+/* ── mouse section ───────────────────────────────────────────────────── */
+
+/* "super+shift+left" -> mods + FWM_BTN_*. Shares parse_mod_token with the
+ * keyboard, so the modifier spelling is the same in both tables. */
+static int parse_mouse_key(const char *str, unsigned int *mod_out, int *btn_out) {
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%s", str);
+
+    char *tokens[8];
+    int n = 0;
+    char *save = NULL;
+    for (char *t = strtok_r(buf, "+", &save); t && n < 8; t = strtok_r(NULL, "+", &save))
+        tokens[n++] = t;
+    if (n == 0) return 0;
+
+    *mod_out = 0;
+    for (int i = 0; i < n - 1; i++) {
+        unsigned int m = parse_mod_token(tokens[i]);
+        if (!m) return 0;   /* an unknown word here is a typo, not a button */
+        *mod_out |= m;
+    }
+
+    const char *b = tokens[n - 1];
+    if      (strcmp(b, "left")   == 0) *btn_out = FWM_BTN_LEFT;
+    else if (strcmp(b, "right")  == 0) *btn_out = FWM_BTN_RIGHT;
+    else if (strcmp(b, "middle") == 0) *btn_out = FWM_BTN_MIDDLE;
+    else if (strcmp(b, "side")   == 0) *btn_out = FWM_BTN_SIDE;
+    else if (strcmp(b, "extra")  == 0) *btn_out = FWM_BTN_EXTRA;
+    else return 0;
+    return 1;
+}
+
+int config_action_is_drag(const char *action) {
+    return strcmp(action, FWM_MOUSE_MOVE) == 0
+        || strcmp(action, FWM_MOUSE_MOVE_NOCOLLIDE) == 0
+        || strcmp(action, FWM_MOUSE_RESIZE) == 0
+        || strcmp(action, FWM_MOUSE_SWAP) == 0
+        || strcmp(action, FWM_MOUSE_TWIST) == 0;
+}
+
+static void add_mouse_bind(MouseConfig *mc, unsigned int mod, int button, const char *action) {
+    if (mc->bind_count >= CONFIG_MAX_MOUSE) return;
+    MouseBind *b = &mc->binds[mc->bind_count++];
+    b->mod    = mod;
+    b->button = button;
+    snprintf(b->action, sizeof(b->action), "%s", action);
+}
+
+/* What the button handler did before any of this was configurable. Also what
+ * you get back by deleting the [mouse] section. */
+static const struct { const char *bind; const char *action; } default_mouse[] = {
+    { "super+left",       FWM_MOUSE_MOVE },
+    { "super+shift+left", FWM_MOUSE_MOVE_NOCOLLIDE },
+    { "super+right",      FWM_MOUSE_RESIZE },
+};
+
+static void apply_default_mouse(FwmConfig *cfg) {
+    cfg->mouse.bind_count = 0;
+    for (size_t i = 0; i < sizeof(default_mouse) / sizeof(default_mouse[0]); i++) {
+        unsigned int mod;
+        int btn;
+        if (!parse_mouse_key(default_mouse[i].bind, &mod, &btn)) continue;
+        add_mouse_bind(&cfg->mouse, mod, btn, default_mouse[i].action);
+    }
+}
+
+static void load_mouse(toml_table_t *root, FwmConfig *cfg) {
+    toml_table_t *tbl = root ? toml_table_in(root, "mouse") : NULL;
+    if (!tbl) { apply_default_mouse(cfg); return; }
+
+    cfg->mouse.bind_count = 0;
+    int n = toml_table_nkval(tbl);
+    for (int i = 0; i < n; i++) {
+        const char *key = toml_key_in(tbl, i);
+        if (!key) continue;
+
+        unsigned int mod;
+        int btn;
+        if (!parse_mouse_key(key, &mod, &btn)) {
+            config_report_error(cfg, "[mouse] \"%s\": not a button "
+                                "(want e.g. \"super+left\" or \"super+shift+right\")", key);
+            continue;
+        }
+        toml_datum_t val = toml_string_in(tbl, key);
+        if (!val.ok) {
+            config_report_error(cfg, "[mouse] \"%s\": value must be a quoted string", key);
+            continue;
+        }
+        if (!config_action_is_drag(val.u.s) && !action_is_known(val.u.s)) {
+            config_report_error(cfg, "[mouse] \"%s\": unknown action \"%s\"", key, val.u.s);
+            free(val.u.s);
+            continue;
+        }
+        if (cfg->mouse.bind_count >= CONFIG_MAX_MOUSE) {
+            config_report_error(cfg, "too many [mouse] entries — only the first %d are used",
+                                CONFIG_MAX_MOUSE);
+            free(val.u.s);
+            break;
+        }
+        add_mouse_bind(&cfg->mouse, mod, btn, val.u.s);
+        free(val.u.s);
+    }
+
+    /* An empty or wholly broken [mouse] table leaves a compositor whose windows
+     * cannot be moved with the mouse at all. That is a legitimate thing to want
+     * — someone may drive everything from the keyboard — so it is honoured
+     * rather than overridden; the errors above say what went wrong. */
+}
+
+const MouseBind *config_match_mouse(const FwmConfig *cfg, int button, unsigned int mods) {
+    for (int i = 0; i < cfg->mouse.bind_count; i++) {
+        const MouseBind *b = &cfg->mouse.binds[i];
+        if (b->button == button && b->mod == mods) return b;
+    }
+    return NULL;
+}
+
 /* ── gestures section ────────────────────────────────────────────────── */
 
 /* The gesture vocabulary is [binds]' plus the one action that only a gesture
@@ -1176,6 +1446,7 @@ void config_load(FwmConfig *cfg, const char *path) {
     cfg->decor.tint_strength = 0.4;
     cfg->keys            = NULL;
     cfg->key_count       = 0;
+    cfg->mode_count      = 0;
     cfg->wallpapers      = NULL;
     cfg->wallpaper_count = 0;
     cfg->rules           = NULL;
@@ -1189,6 +1460,7 @@ void config_load(FwmConfig *cfg, const char *path) {
     load_effects(NULL, &cfg->effects);
     load_session(NULL, &cfg->session, cfg);
     load_gestures(NULL, cfg);
+    load_mouse(NULL, cfg);   /* the built-in drag verbs, for every early-out below */
 
     FILE *f = fopen(path, "r");
     if (!f) {
@@ -1222,6 +1494,8 @@ void config_load(FwmConfig *cfg, const char *path) {
     load_effects(root, &cfg->effects);
     load_session(root, &cfg->session, cfg);
     load_binds(root, cfg);
+    load_modes(root, cfg);   /* after [binds]: each mode's `enter` key joins the root map */
+    load_mouse(root, cfg);
     load_gestures(root, cfg);
     load_wallpaper(root, cfg);
     load_wallpaper_picker(root, cfg);
@@ -1234,6 +1508,8 @@ void config_free(FwmConfig *cfg) {
     free(cfg->keys);
     cfg->keys      = NULL;
     cfg->key_count = 0;
+    for (int i = 0; i < cfg->mode_count; i++) free(cfg->modes[i].keys);
+    cfg->mode_count = 0;
     free(cfg->wallpapers);
     cfg->wallpapers      = NULL;
     cfg->wallpaper_count = 0;

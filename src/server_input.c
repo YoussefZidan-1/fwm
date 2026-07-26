@@ -164,6 +164,40 @@ static int key_repeat_cb(void *data) {
     return 0;
 }
 
+/* Inside a [mode.<name>] submap the keyboard belongs to the mode entirely:
+ * its own binds fire, Escape leaves, and every other key is swallowed rather
+ * than reaching the focused client. Swallowing is what makes a bare "g" safe
+ * to bind, and it is why Escape is unconditional — a mode you cannot leave
+ * without knowing its binds would be a trap.
+ *
+ * Returns 1 when the key was consumed here, which in a mode is always. */
+static int try_mode_binds(FwmServer *server, struct wlr_keyboard_key_event *event,
+                          const xkb_keysym_t *syms, int num_syms, uint32_t active_mods) {
+    if (event->keycode < sizeof(server->key_consumed))
+        server->key_consumed[event->keycode] = 1;
+    key_repeat_stop(server);   /* a mode's keys are one-shot, never held */
+
+    for (int i = 0; i < num_syms; i++) {
+        if (syms[i] == XKB_KEY_Escape) {
+            server->key_mode = -1;
+            server_request_tray_redraw(server);
+            return 1;
+        }
+        const KeyBind *bind = config_match_mode_bind(&server->config, server->key_mode,
+                                                     syms[i], active_mods);
+        if (!bind) continue;
+
+        /* Leave BEFORE dispatching, not after: the action may be "mode:other",
+         * and stepping out of a mode we have already left would undo that. */
+        int sticky = server->config.modes[server->key_mode].sticky;
+        if (!sticky) server->key_mode = -1;
+        server_dispatch_action(server, bind->action);
+        server_request_tray_redraw(server);
+        return 1;
+    }
+    return 1;
+}
+
 /* Try to match+dispatch a bind for any of `syms`. Returns 1 when consumed. */
 static int try_binds(FwmServer *server, struct wlr_keyboard_key_event *event,
                      const xkb_keysym_t *syms, int num_syms, uint32_t active_mods) {
@@ -327,6 +361,12 @@ static void handle_keyboard_key(struct wl_listener *listener, void *data) {
     struct xkb_keymap *kmap = keyboard->wlr_keyboard->keymap;
     if (kmap && xkb_keymap_num_layouts(kmap) > 1) {
         num_syms0 = xkb_keymap_key_get_syms_by_level(kmap, keycode, 0, 0, &syms0);
+    }
+
+    /* A submap replaces the root map for as long as it is open, and swallows
+     * whatever it does not bind — so this is a return, not a fallthrough. */
+    if (server->key_mode >= 0 && server->key_mode < server->config.mode_count) {
+        if (try_mode_binds(server, event, syms, num_syms, active_mods)) return;
     }
 
     if (try_binds(server, event, syms, num_syms, active_mods)) return;

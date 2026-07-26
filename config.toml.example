@@ -277,6 +277,62 @@ tap = true
 "super+9"            = "view:8"
 "super+0"            = "view:9"
 
+# Modes (submaps): a second keymap you step into, so bare keys can mean
+# something. Press the `enter` key and the mode owns the keyboard — its binds
+# fire, Escape leaves, and every other key does nothing rather than reaching the
+# application underneath. The tray shows a pill with the mode's name while it is
+# open; without that a mode would just look like a keyboard that stopped working.
+#
+# A mode is one-shot by default: the first action fires and drops you back, which
+# is what a leader key is usually for. sticky = true keeps it open until Escape,
+# for the modes you hold — nudging a tile's size a dozen times, say.
+#
+# `enter` is shorthand for putting "mode:<name>" in [binds]; you can bind that
+# by hand instead, and "mode:default" from anywhere returns to the root map.
+#
+#[mode.physics]
+#enter = "super+o"
+#"g"   = "cycle_gravity"
+#"c"   = "calm_all"
+#"r"   = "spin_all"
+#"n"   = "toggle_nocollide_all"
+#
+#[mode.resize]
+#enter  = "super+shift+s"
+#sticky = true              # stays open: resizing is never one keypress
+#"Left"  = "tile_move:l"
+#"Right" = "tile_move:r"
+
+# Mouse. What a drag with a modifier held does — the same table for the pointer
+# that [binds] is for the keyboard. Buttons: left, right, middle, side, extra.
+# Modifiers match EXACTLY, as in [binds]: "super+left" does not fire while shift
+# is also down, which is why the shift variant is its own line.
+#
+# Drag verbs:
+#   move            drag the window; let go and it is thrown at the speed
+#                   your hand had. Inert on a tiling desktop.
+#   move_nocollide  the same, but shoving nothing on the way. On a tiling
+#                   desktop this drags one tile onto another to swap them.
+#   swap            swap two tiles, and only that.
+#   resize          drag the bottom-right corner. On a tiling desktop it
+#                   drags the BSP border under the cursor instead.
+#   twist           turn the window with the hand: it follows the angle from
+#                   its own centre to the cursor, winds up as you stir, and
+#                   keeps spinning at whatever rate you let go at. Needs
+#                   effects.spin > 0, and does nothing to a tiled, pinned or
+#                   fullscreen window — there is nowhere for it to turn.
+#
+# Any [binds] action works here too and fires once on the press, so
+# "super+middle" = "killclient" is a legal line.
+#
+# Deleting this section restores the three defaults shown below. Note that a
+# bind with NO modifier will eat that button from every application.
+#[mouse]
+#"super+left"       = "move"
+#"super+shift+left" = "move_nocollide"
+#"super+right"      = "resize"
+#"super+ctrl+left"  = "twist"
+
 # Touchpad gestures. OFF by default — nothing is bound until you bind it, and a
 # gesture fwm has not claimed goes to the application under the cursor, which is
 # where a swipe or a pinch belongs until you say otherwise. Uncomment the block

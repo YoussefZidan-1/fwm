@@ -131,6 +131,15 @@ struct FwmView *view_at(FwmServer *server, double lx, double ly,
     return tree->node.data;
 }
 
+/* Ceiling (rad/s) on the spin a twist can let go of: about two turns a second,
+ * fast enough to look flung and slow enough that the window is still a window.
+ * A flick at the corner of a wide window measures far more than the hand meant. */
+#define TWIST_MAX_SPIN 12.0
+
+/* How close to the window's centre the cursor may get before its angle stops
+ * meaning anything. See the dead-zone note in the motion handler. */
+#define TWIST_DEAD_ZONE 28.0
+
 static void handle_cursor_motion(struct wl_listener *listener, void *data) {
     FwmServer *server = wl_container_of(listener, server, cursor_motion);
     struct wlr_pointer_motion_event *event = data;
@@ -399,6 +408,50 @@ static void handle_cursor_motion(struct wl_listener *listener, void *data) {
         
         int d = server->target_camera_x / server->screen_width;
         server_apply_tiling(server, d);
+    } else if (server->interactive.action == FWM_ACTION_TWIST) {
+        FwmView *view = server->interactive.view;
+        PhysicsBody *pb = view ? physics_find_body(&server->physics, view->id) : NULL;
+        if (pb && pb->spin) {
+            double cx = view->x + view->width  / 2.0 - server->camera_x;
+            double cy = view->y + view->height / 2.0;
+            double a = atan2(ly - cy, lx - cx);
+
+            /* atan2 jumps by 2π at the back of the circle; unwrap against the
+             * last sample so a hand going round and round keeps winding the
+             * window up instead of flipping it. */
+            double d = a - server->interactive.twist_last;
+            while (d >  M_PI) d -= 2.0 * M_PI;
+            while (d < -M_PI) d += 2.0 * M_PI;
+            server->interactive.twist_last = a;
+
+            /* Near the centre the angle is meaningless: at 4px out, one pixel
+             * of ordinary hand tremor is fifteen degrees, and the window snaps
+             * about while the cursor is barely moving. Inside the dead zone the
+             * angle is still TRACKED (twist_last above) but not applied, so
+             * leaving the zone continues from wherever the hand now is instead
+             * of jumping. Radius is a fixed number of pixels rather than a
+             * fraction of the window: the trouble is cursor noise, which does
+             * not care how big the window is. */
+            double radius = hypot(lx - cx, ly - cy);
+            if (radius >= TWIST_DEAD_ZONE) {
+                server->interactive.twist_base += d;
+                pb->angle = server->interactive.twist_base;
+            } else {
+                d = 0.0;   /* nothing turned, so nothing to hand the release */
+            }
+
+            /* How fast the hand is turning, smoothed. The release hands this to
+             * the simulation, and an unsmoothed sample would let one 2 ms frame
+             * decide whether the window drifts or is flung. */
+            double dt_t = (now.tv_sec - server->interactive.twist_time.tv_sec)
+                        + (now.tv_nsec - server->interactive.twist_time.tv_nsec) / 1e9;
+            if (dt_t > 0.001) {
+                double rate = d / dt_t;
+                double k = dt_t / (dt_t + 0.08);   /* ~80 ms of hand movement */
+                server->interactive.twist_vel += (rate - server->interactive.twist_vel) * k;
+                server->interactive.twist_time = now;
+            }
+        }
     } else if (server->interactive.action == FWM_ACTION_SWAP) {
         server->interactive.cur_x = lx;
         server->interactive.cur_y = ly;
@@ -436,6 +489,19 @@ static void handle_cursor_motion_absolute(struct wl_listener *listener, void *da
         launcher_handle_motion(server->launcher, server->cursor->x, server->cursor->y);
         wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
         wlr_seat_pointer_clear_focus(server->seat);
+    }
+}
+
+/* Kernel button code -> the enum [mouse] binds are written in. Anything else
+ * (a mouse with ten side buttons) is unbindable rather than mismapped. */
+static int button_to_fwm(uint32_t button) {
+    switch (button) {
+    case BTN_LEFT:   return FWM_BTN_LEFT;
+    case BTN_RIGHT:  return FWM_BTN_RIGHT;
+    case BTN_MIDDLE: return FWM_BTN_MIDDLE;
+    case BTN_SIDE:   return FWM_BTN_SIDE;
+    case BTN_EXTRA:  return FWM_BTN_EXTRA;
+    default:         return -1;
     }
 }
 
@@ -503,7 +569,13 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
     // the drag modifier (Super) held. Forwarding them made clients count
     // phantom clicks during window drags.
     uint32_t fwd_mods = get_active_modifiers(server);
-    if (server->interactive.action == FWM_ACTION_NONE && !(fwd_mods & FWM_MOD_LOGO)) {
+    /* A button [mouse] has claimed is ours too, even without Super — otherwise
+     * a bind on a side button would fire AND reach the client. Super stays a
+     * blanket claim: the modifier that starts every window gesture must not
+     * leak a stray click into the window being grabbed, bound chord or not. */
+    bool claimed = config_match_mouse(&server->config, button_to_fwm(event->button),
+                                      fwd_mods) != NULL;
+    if (server->interactive.action == FWM_ACTION_NONE && !(fwd_mods & FWM_MOD_LOGO) && !claimed) {
         wlr_seat_pointer_notify_button(server->seat, event->time_msec, event->button, event->state);
     }
     
@@ -531,23 +603,86 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
             physics_stop_body(&server->physics, view->id);
             
             uint32_t active_mods = get_active_modifiers(server);
-            
-            // Check for drag gestures: Mod (Super/Logo) + Button1
-            if (active_mods & FWM_MOD_LOGO) {
+
+            /* What this chord does is [mouse]'s to say. The verb it names is
+             * then read against the desktop's mode, exactly as the hard-coded
+             * behaviour this replaced was: a tiling desktop owns its geometry,
+             * so there a drag can only swap tiles or move a border. */
+            const MouseBind *mb = config_match_mouse(&server->config,
+                                                     button_to_fwm(event->button), active_mods);
+            if (mb) {
                 PhysicsBody *pb = physics_find_body(&server->physics, view->id);
                 int tiling = pb ? (server->desktop_mode[pb->desktop_id] == DESKTOP_MODE_TILING) : 0;
-                
-                if (event->button == BTN_LEFT) {
+                const char *verb = mb->action;
+
+                /* Not a drag verb: an ordinary action, fired once on the press.
+                 * Lets "super+middle" close a window, or a side button open the
+                 * launcher, without inventing a second action vocabulary. */
+                if (!config_action_is_drag(verb)) {
+                    server_dispatch_action(server, verb);
+                    return;
+                }
+
+                int is_move = strcmp(verb, FWM_MOUSE_MOVE) == 0;
+                int is_move_nc = strcmp(verb, FWM_MOUSE_MOVE_NOCOLLIDE) == 0;
+                /* On a tiling desktop a move is a swap: the layout decides where
+                 * tiles are, so dragging one can only mean trading it with the
+                 * tile it is dropped on. Plain `move` stays inert there, as it
+                 * always has — a bare super+drag over tiles used to do nothing,
+                 * and quietly turning that into a swap would surprise a hand
+                 * that has learnt it. */
+                int is_swap = strcmp(verb, FWM_MOUSE_SWAP) == 0 || (tiling && is_move_nc);
+
+                if (is_swap) {
                     if (tiling) {
-                        if (active_mods & FWM_MOD_SHIFT) {
-                            server->interactive.action = FWM_ACTION_SWAP;
-                            server->interactive.view = view;
+                        server->interactive.action = FWM_ACTION_SWAP;
+                        server->interactive.view = view;
+                        server->interactive.start_x = lx;
+                        server->interactive.start_y = ly;
+                        server->interactive.cur_x = lx;
+                        server->interactive.cur_y = ly;
+                    }
+                } else if (strcmp(verb, FWM_MOUSE_TWIST) == 0) {
+                    /* Turning a window by hand. Same gate as the spin_window
+                     * bind: a tiled, pinned or fullscreen window has nowhere to
+                     * turn to. */
+                    if (pb && server_can_spin(pb) && server->config.effects.spin > 0.0) {
+                        double cx = view->x + view->width  / 2.0 - server->camera_x;
+                        double cy = view->y + view->height / 2.0;
+                        /* Spinning it with no kick: the hand supplies the
+                         * rotation from here, and physics only takes over at
+                         * the release. */
+                        physics_spin_body(&server->physics, view->id, 0.0);
+                        server->interactive.action = FWM_ACTION_TWIST;
+                        server->interactive.view = view;
+                        server->interactive.twist_base = pb->angle;
+                        server->interactive.twist_last = atan2(ly - cy, lx - cx);
+                        server->interactive.twist_vel = 0.0;
+                        server->interactive.twist_time = now;
+                    }
+                } else if (strcmp(verb, FWM_MOUSE_RESIZE) == 0) {
+                    if (tiling) {
+                        int d = pb ? pb->desktop_id : 0;
+                        BspNode *node = bsp_find_border(server->bsp_roots[d], lx + server->camera_x, ly, 40);
+                        if (node) {
+                            server->interactive.action = FWM_ACTION_BSP_RESIZE;
+                            server->interactive.bsp_node = node;
+                            server->interactive.bsp_start_ratio = node->ratio;
                             server->interactive.start_x = lx;
                             server->interactive.start_y = ly;
-                            server->interactive.cur_x = lx;
-                            server->interactive.cur_y = ly;
                         }
                     } else {
+                        server->interactive.action = FWM_ACTION_RESIZE;
+                        server->interactive.view = view;
+                        server->interactive.start_x = lx;
+                        server->interactive.start_y = ly;
+                        server->interactive.view_start_x = view->x - server->camera_x;
+                        server->interactive.view_start_y = view->y;
+                        server->interactive.view_start_width = view->width;
+                        server->interactive.view_start_height = view->height;
+                    }
+                } else if (is_move || is_move_nc) {
+                    if (!tiling) {
                         server->interactive.action = FWM_ACTION_MOVE;
                         server->interactive.view = view;
                         server->interactive.start_x = lx;
@@ -599,27 +734,6 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
                                              ly - view->y);
                         }
                     }
-                } else if (event->button == BTN_RIGHT) {
-                    if (tiling) {
-                        int d = pb ? pb->desktop_id : 0;
-                        BspNode *node = bsp_find_border(server->bsp_roots[d], lx + server->camera_x, ly, 40);
-                        if (node) {
-                            server->interactive.action = FWM_ACTION_BSP_RESIZE;
-                            server->interactive.bsp_node = node;
-                            server->interactive.bsp_start_ratio = node->ratio;
-                            server->interactive.start_x = lx;
-                            server->interactive.start_y = ly;
-                        }
-                    } else {
-                        server->interactive.action = FWM_ACTION_RESIZE;
-                        server->interactive.view = view;
-                        server->interactive.start_x = lx;
-                        server->interactive.start_y = ly;
-                        server->interactive.view_start_x = view->x - server->camera_x;
-                        server->interactive.view_start_y = view->y;
-                        server->interactive.view_start_width = view->width;
-                        server->interactive.view_start_height = view->height;
-                    }
                 }
             }
         }
@@ -645,6 +759,20 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
                         physics_throw_body(&server->physics, view->id, server->interactive.vx, server->interactive.vy);
                     }
                 }
+            }
+        } else if (server->interactive.action == FWM_ACTION_TWIST) {
+            /* Let go and the window keeps turning at the rate the hand was
+             * turning it — the whole point of doing this by hand rather than
+             * with a bind that guesses a number. Capped, because a flick at the
+             * very edge of a large window can measure a rate that would leave
+             * the window a blur nobody asked for. */
+            FwmView *view = server->interactive.view;
+            PhysicsBody *pb = view ? physics_find_body(&server->physics, view->id) : NULL;
+            if (pb && pb->spin) {
+                double w = server->interactive.twist_vel;
+                if (w >  TWIST_MAX_SPIN) w =  TWIST_MAX_SPIN;
+                if (w < -TWIST_MAX_SPIN) w = -TWIST_MAX_SPIN;
+                pb->angvel = w;
             }
         } else if (server->interactive.action == FWM_ACTION_SWAP) {
             FwmView *src_view = server->interactive.view;

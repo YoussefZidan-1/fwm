@@ -331,6 +331,10 @@ void server_reload_config(FwmServer *server) {
     server->repeat_keycode = 0;
     if (server->key_repeat_timer) wl_event_source_timer_update(server->key_repeat_timer, 0);
 
+    /* Modes are rebuilt from scratch, so an index into the old ones would point
+     * at whatever happens to sit there now. Back to the root map. */
+    server->key_mode = -1;
+
     /* Panels are rebuilt from the new config rather than patched. */
     server_close_errors_panel(server);
     if (server->hints_buffer) {

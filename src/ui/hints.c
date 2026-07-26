@@ -158,6 +158,45 @@ static void groups_add(struct Group *groups, int ngroups, const KeyBind *kb,
     }
 }
 
+/* ── mouse ───────────────────────────────────────────────────────────── */
+
+/* The drag verbs are not [binds] actions and action_label knows nothing of
+ * them, so they are named here. Everything else in a [mouse] value is an
+ * ordinary action and goes through the usual labeller. */
+static const char *mouse_label(const char *a, char *buf, size_t cap) {
+    if (!strcmp(a, FWM_MOUSE_MOVE))           return "move window";
+    if (!strcmp(a, FWM_MOUSE_MOVE_NOCOLLIDE)) return "move, no collisions";
+    if (!strcmp(a, FWM_MOUSE_RESIZE))         return "resize window";
+    if (!strcmp(a, FWM_MOUSE_SWAP))           return "swap tiles";
+    if (!strcmp(a, FWM_MOUSE_TWIST))          return "turn window";
+    return action_label(a, buf, cap);
+}
+
+static const char *button_name(int button) {
+    switch (button) {
+    case FWM_BTN_LEFT:   return "drag";        /* the button a drag is done with */
+    case FWM_BTN_RIGHT:  return "right-drag";
+    case FWM_BTN_MIDDLE: return "middle";
+    case FWM_BTN_SIDE:   return "side";
+    default:             return "extra";
+    }
+}
+
+static void mouse_build(const FwmConfig *cfg, struct HintsCtx *ctx) {
+    for (int i = 0; i < cfg->mouse.bind_count && ctx->count < HINTS_MAX; i++) {
+        const MouseBind *mb = &cfg->mouse.binds[i];
+        char labelbuf[64];
+        const char *label = mouse_label(mb->action, labelbuf, sizeof(labelbuf));
+        if (!label) continue;
+
+        struct HintRow *row = &ctx->rows[ctx->count++];
+        char mods[32];
+        mods_string(mb->mod, mods, sizeof(mods));
+        snprintf(row->key, sizeof(row->key), "%s%s", mods, button_name(mb->button));
+        snprintf(row->action, sizeof(row->action), "%s", label);
+    }
+}
+
 /* ── gestures ────────────────────────────────────────────────────────── */
 
 /* Gestures are the one part of the config nothing on screen ever hints at: no
@@ -261,6 +300,7 @@ static void hints_build(const FwmConfig *cfg, struct HintsCtx *ctx) {
         snprintf(row->action, sizeof(row->action), "%s", groups[g].label);
     }
 
+    mouse_build(cfg, ctx);
     gestures_build(cfg, ctx);
 }
 

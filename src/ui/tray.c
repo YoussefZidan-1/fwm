@@ -150,6 +150,29 @@ static void draw_tray_content(cairo_t *cr, int w, int h, void *user_data) {
         left_x = pw + 8.0;
     }
 
+    /* ── mode pill: next to the errors, only while a submap is open ──
+     * Drawn in the accent colour rather than the island grey: a mode is a
+     * state the keyboard is IN, and the tray is the only thing that says so. */
+    if (data->mode_name && data->mode_name[0]) {
+        char label[64];
+        snprintf(label, sizeof(label), "\xE2\x8C\xA8 %s", data->mode_name);  /* ⌨ */
+        int mw;
+        pango_layout_set_text(layout, label, -1);
+        pango_layout_get_pixel_size(layout, &mw, NULL);
+
+        double pw = PILL_PAD + mw + PILL_PAD;
+        pill_path(cr, left_x, 0, pw, h);
+        cairo_set_source_rgba(cr, thm->accent[0], thm->accent[1], thm->accent[2],
+                              data->opacity);
+        cairo_fill(cr);
+
+        cairo_set_source_rgb(cr, thm->pill[0], thm->pill[1], thm->pill[2]);
+        cairo_move_to(cr, left_x + PILL_PAD, text_y);
+        pango_cairo_show_layout(cr, layout);
+
+        left_x += pw + 8.0;
+    }
+
     /* ── left pill: focused window title + physics info ── */
     if (data->win_name) {
         char params[128];

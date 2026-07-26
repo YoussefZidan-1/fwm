@@ -47,7 +47,12 @@ typedef enum {
     FWM_ACTION_MOVE,
     FWM_ACTION_RESIZE,
     FWM_ACTION_SWAP,
-    FWM_ACTION_BSP_RESIZE
+    FWM_ACTION_BSP_RESIZE,
+    /* Turning a window with the mouse: the cursor's angle around the window's
+     * centre is the window's angle, and letting go hands whatever rate the hand
+     * was turning at to the simulation. The window does not move while this
+     * runs — it is an anchor, like a resize. */
+    FWM_ACTION_TWIST
 } FwmInteractiveAction;
 
 struct FwmView;
@@ -93,8 +98,22 @@ typedef struct {
      * ACCELERATION, so both are needed. */
     double pivot_x, pivot_y;
     double pivot_vx, pivot_vy;
+    /* ... and the smoothed acceleration itself, which is state rather than a
+     * local because it is filtered across ticks (SWING_ACC_TAU). */
+    double pivot_ax, pivot_ay;
     int pivot_have;
     
+    /* Twist (FWM_ACTION_TWIST). `twist_base` is the angle the window is being
+     * held at — seeded from its own angle at the grab, then moved by however
+     * far the cursor turns around its centre, so the window never jumps to meet
+     * the hand. `twist_last` is the previous cursor angle, for unwrapping.
+     * `twist_vel` is how fast the hand is turning, smoothed, because the
+     * release hands that rate to the simulation and one stuttering frame must
+     * not be what decides it. */
+    double twist_base, twist_last;
+    double twist_vel;
+    struct timespec twist_time;
+
     /* BSP resize */
     BspNode *bsp_node;
     float bsp_start_ratio;
@@ -264,6 +283,50 @@ typedef struct FwmServer {
     unsigned char key_consumed[768]; /* per-keycode: press was eaten by a bind,
                                         swallow the matching release too */
     int group_click; /* tab-bar click consumed; swallow its release */
+
+    /* When the last physics step finished. The tick timer and the display's
+     * vsync are different clocks — the timer is armed in whole milliseconds, so
+     * 60Hz becomes 16ms and runs at 62.5Hz — and anything the simulation
+     * integrates therefore advances in steps that do not line up with the
+     * frames it is drawn on. Rendering interpolates from this; see
+     * server_render_angle. */
+    struct timespec last_tick;
+    /* When the tick callback last ran, and the real time it has taken in but
+     * not yet spent on a whole step. Together these say how far behind the
+     * clock the simulation is at any instant. */
+    struct timespec tick_real_prev;
+    double sim_accum;
+
+    /* Effect frame diagnostics, on only when FWM_DEBUG_EFFECTS is set in the
+     * environment. Judder is a timing complaint, and timing cannot be argued
+     * about from the code — this counts what actually reached the screen while
+     * a window was spinning or wobbling, and says so once a second.
+     * `fx_snaps` counts composited re-photographs, `fx_moved` the frames where
+     * the picture actually changed. */
+    int fx_debug;
+    struct timespec fx_since;
+    int fx_frames, fx_snaps, fx_moved;
+    double fx_dt_min, fx_dt_max;
+    /* How evenly a rotation actually reaches the screen.
+     *
+     * Not the angle step itself: over a second that conflates judder with a
+     * spin honestly slowing down, and it reads a wrap past +-pi as a 355-degree
+     * jump. What matters is the drawn angular SPEED — step over the real time
+     * the frame took — and how much it changes from one frame to the next.
+     * Smooth motion holds it steady whatever the frame times are; judder is
+     * precisely this number jumping. Reported as the worst frame-to-frame
+     * change, in percent. */
+    double fx_omega_prev;
+    double fx_omega_jump;   /* worst |domega|/omega seen this second, 0..1 */
+    int    fx_omega_have;
+    double fx_snap_us;   /* time spent flattening subtrees this second */
+
+    /* The [mode.<name>] submap the keyboard is currently in, as an index into
+     * config.modes, or -1 for the root map. While a mode is active it owns
+     * every key: its binds fire, Escape leaves, and nothing else reaches the
+     * focused client. Reset on config reload, since the modes are rebuilt from
+     * scratch and the index would otherwise point at a different one. */
+    int key_mode;
     
     /* Physics and desktop coordinates */
     PhysicsWorld physics;

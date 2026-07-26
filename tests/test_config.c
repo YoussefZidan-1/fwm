@@ -450,6 +450,132 @@ static void test_physics_profiles(void) {
     drop_config();
 }
 
+static void test_mouse(void) {
+    CASE("[mouse] defaults reproduce the old hard-coded drags");
+    const char *p = write_config("[binds]\n\"super+q\" = \"killclient\"\n");
+    FwmConfig cfg;
+    config_load(&cfg, p);
+    const MouseBind *mb = config_match_mouse(&cfg, FWM_BTN_LEFT, FWM_MOD_LOGO);
+    CHECK_NOT_NULL(mb);
+    CHECK_STR(mb->action, FWM_MOUSE_MOVE);
+    mb = config_match_mouse(&cfg, FWM_BTN_LEFT, FWM_MOD_LOGO | FWM_MOD_SHIFT);
+    CHECK_NOT_NULL(mb);
+    CHECK_STR(mb->action, FWM_MOUSE_MOVE_NOCOLLIDE);
+    mb = config_match_mouse(&cfg, FWM_BTN_RIGHT, FWM_MOD_LOGO);
+    CHECK_NOT_NULL(mb);
+    CHECK_STR(mb->action, FWM_MOUSE_RESIZE);
+    /* Exact modifier match, as for keys: a chord nobody bound stays the
+     * client's. */
+    CHECK_NULL(config_match_mouse(&cfg, FWM_BTN_LEFT, FWM_MOD_LOGO | FWM_MOD_CTRL));
+    CHECK_NULL(config_match_mouse(&cfg, FWM_BTN_LEFT, 0));
+    config_free(&cfg);
+    drop_config();
+
+    CASE("a [mouse] section replaces them wholesale");
+    p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[mouse]\n"
+        "\"super+ctrl+left\" = \"twist\"\n"
+        "\"super+middle\"    = \"killclient\"\n");   /* an ordinary action */
+    config_load(&cfg, p);
+    CHECK_INT(cfg.error_count, 0);
+    CHECK_INT(cfg.mouse.bind_count, 2);
+    mb = config_match_mouse(&cfg, FWM_BTN_LEFT, FWM_MOD_LOGO | FWM_MOD_CTRL);
+    CHECK_NOT_NULL(mb);
+    CHECK_STR(mb->action, FWM_MOUSE_TWIST);
+    CHECK_INT(config_action_is_drag(mb->action), 1);
+    mb = config_match_mouse(&cfg, FWM_BTN_MIDDLE, FWM_MOD_LOGO);
+    CHECK_NOT_NULL(mb);
+    CHECK_INT(config_action_is_drag(mb->action), 0);
+    /* The defaults are gone: the table is the whole truth about the mouse. */
+    CHECK_NULL(config_match_mouse(&cfg, FWM_BTN_LEFT, FWM_MOD_LOGO));
+    config_free(&cfg);
+    drop_config();
+
+    CASE("broken [mouse] lines are reported, not obeyed");
+    p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[mouse]\n"
+        "\"super+wheel\"   = \"move\"\n"          /* no such button */
+        "\"hyper+left\"    = \"move\"\n"          /* no such modifier */
+        "\"super+right\"   = \"not_an_action\"\n" /* no such action */
+        "\"super+side\"    = \"launcher\"\n");
+    config_load(&cfg, p);
+    CHECK_INT(cfg.mouse.bind_count, 1);
+    CHECK(cfg.error_count >= 3);
+    mb = config_match_mouse(&cfg, FWM_BTN_SIDE, FWM_MOD_LOGO);
+    CHECK_NOT_NULL(mb);
+    CHECK_STR(mb->action, "launcher");
+    CHECK(cfg.key_count > 0);   /* still a working config */
+    config_free(&cfg);
+    drop_config();
+}
+
+static void test_modes(void) {
+    CASE("[mode.<name>] submaps");
+    const char *p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[mode.physics]\n"
+        "enter = \"super+o\"\n"
+        "\"g\" = \"cycle_gravity\"\n"
+        "\"c\" = \"calm_all\"\n"
+        "[mode.resize]\n"
+        "enter  = \"super+r\"\n"
+        "sticky = true\n"
+        "\"shift+Left\" = \"tile_move:l\"\n");
+    FwmConfig cfg;
+    config_load(&cfg, p);
+    CHECK_INT(cfg.error_count, 0);
+    CHECK_INT(cfg.mode_count, 2);
+
+    int m = config_mode_find(&cfg, "physics");
+    CHECK(m >= 0);
+    /* The prefixed form is what a dispatched action carries. */
+    CHECK_INT(config_mode_find(&cfg, "mode:physics"), m);
+    CHECK_INT(config_mode_find(&cfg, "nope"), -1);
+    CHECK_INT(cfg.modes[m].sticky, 0);      /* one-shot unless asked otherwise */
+    CHECK_INT(cfg.modes[m].key_count, 2);   /* `enter` is not one of its binds */
+
+    const KeyBind *kb = config_match_mode_bind(&cfg, m, XKB_KEY_g, 0);
+    CHECK_NOT_NULL(kb);
+    CHECK_STR(kb->action, "cycle_gravity");
+    /* Exact modifiers here too: the whole point of a mode is that bare keys
+     * mean something, so super+g inside it is a different bind. */
+    CHECK_NULL(config_match_mode_bind(&cfg, m, XKB_KEY_g, FWM_MOD_LOGO));
+    CHECK_NULL(config_match_mode_bind(&cfg, m, XKB_KEY_x, 0));
+
+    int r = config_mode_find(&cfg, "resize");
+    CHECK_INT(cfg.modes[r].sticky, 1);
+    CHECK_NOT_NULL(config_match_mode_bind(&cfg, r, XKB_KEY_Left, FWM_MOD_SHIFT));
+
+    /* `enter` lands in the ROOT map as a mode: action, so the key that opens a
+     * submap is an ordinary bind like any other. */
+    kb = config_match_bind(&cfg, XKB_KEY_o, FWM_MOD_LOGO);
+    CHECK_NOT_NULL(kb);
+    CHECK_STR(kb->action, "mode:physics");
+    config_free(&cfg);
+    drop_config();
+
+    CASE("an empty mode is dropped, and its enter key with it");
+    p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[mode.empty]\n"
+        "enter = \"super+o\"\n"
+        "[mode.broken]\n"
+        "enter = \"super+i\"\n"
+        "\"nosuchkey\" = \"calm_all\"\n"
+        "\"g\" = \"not_an_action\"\n");
+    config_load(&cfg, p);
+    CHECK_INT(cfg.mode_count, 0);
+    CHECK(cfg.error_count >= 3);
+    /* No way in, so no way to get stuck in a mode that does nothing. */
+    CHECK_NULL(config_match_bind(&cfg, XKB_KEY_o, FWM_MOD_LOGO));
+    CHECK_NULL(config_match_bind(&cfg, XKB_KEY_i, FWM_MOD_LOGO));
+    CHECK(cfg.key_count > 0);
+    config_free(&cfg);
+    drop_config();
+}
+
 static void test_option_table(void) {
     CASE("the runtime option table");
     int count = 0;
@@ -479,6 +605,8 @@ int main(void) {
     test_gestures();
     test_rule_material();
     test_physics_profiles();
+    test_mouse();
+    test_modes();
     test_option_table();
     return t_report("config");
 }

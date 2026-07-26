@@ -40,6 +40,10 @@ typedef struct {
     char kbd_layout[8]; /* short active-layout tag ("EN", "RU"); "" hides it */
     int error_count;    /* config problems; >0 draws the warning pill */
     int error_expanded; /* detail panel open — pill renders as active */
+    /* Name of the active [mode.<name>] submap, or NULL in the root map. A mode
+     * swallows every key it does not bind, so it MUST be visible: without this
+     * the only symptom of standing in one is a keyboard that has gone dead. */
+    const char *mode_name;
 } TrayData;
 
 struct wlr_scene_buffer *tray_init(struct wlr_scene_tree *parent, int screen_width);

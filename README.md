@@ -66,7 +66,11 @@ floor and ceiling instead of coming round.
 - **Smooth tile animations** — windows glide into their slots (~250 ms, configurable) instead of teleporting.
 - **Configurable gaps** — inner (`gaps_in`) and outer (`gaps_out`).
 - **Keyboard control** — directional focus (`Super+Arrows`), move window (`Super+Shift+Arrows`), flip split orientation (`Super+S`).
-- **Mouse control** — drag BSP borders with `Super+RightDrag` (instant, no animation lag), swap tiles with `Super+Shift+Drag`.
+- **Mouse control** — drag BSP borders with `Super+RightDrag` (instant, no animation lag), swap tiles with `Super+Shift+Drag`. Both are `[mouse]` binds like any other; see below.
+
+### Keyboard and mouse
+- **The mouse is a bind table too** — `[mouse]` says what a drag with a modifier does: `move`, `move_nocollide`, `resize`, `swap`, `twist`, or any `[binds]` action fired on the press. The defaults are the combinations that used to be hard-coded, so deleting the section changes nothing.
+- **Modes (submaps)** — `[mode.<name>]` is a second keymap you step into with one key, where bare letters mean something (`g` for gravity, `c` for calm). One-shot by default, `sticky = true` to hold it open, Escape always leaves, and the tray shows which mode you are in.
 
 ### Touchpad
 - **Tap-to-click on by default** — plus the rest of libinput's per-device settings in `[input]`: tap-and-drag, natural scrolling, disable-while-typing, pointer acceleration, scroll and click methods. Applied on hotplug and on `Super+Shift+R`, and silently skipped on a device that cannot do them.

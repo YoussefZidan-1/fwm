@@ -223,6 +223,104 @@ typedef struct {
     char            action[256];
 } KeyBind;
 
+/* ── modes (submaps) ─────────────────────────────────────────────────── */
+
+/*
+ * A second keymap you step into, so single keys can mean something:
+ *
+ *   [mode.physics]
+ *   enter  = "super+o"
+ *   "g"    = "cycle_gravity"
+ *   "c"    = "calm_all"
+ *   "r"    = "spin_all"
+ *
+ * While a mode is active it owns the keyboard outright: its own binds fire,
+ * Escape leaves, and every other key does nothing rather than reaching the
+ * application underneath. That is the whole point of a mode — a bare "g" is
+ * only safe to bind if nothing else can receive it — and it is why leaving is
+ * unconditional and always available.
+ *
+ * By default a mode is one-shot: the first action fires and drops back to the
+ * root map, because that is what a leader key is usually for. `sticky = true`
+ * keeps it open until Escape, for a mode meant to be held (nudging a window's
+ * size a dozen times).
+ *
+ * `enter` is a convenience: it registers "mode:<name>" in the root map for
+ * you. Binding "mode:<name>" by hand in [binds] does the same thing, and
+ * "mode:default" from anywhere returns to the root map.
+ */
+#define CONFIG_MAX_MODES 8
+
+/* Action prefix that switches modes, and the name that means "back to root". */
+#define FWM_MODE_ACTION  "mode:"
+#define FWM_MODE_DEFAULT "default"
+
+typedef struct {
+    char      name[32];
+    int       sticky;     /* stay in the mode until Escape */
+    KeyBind  *keys;
+    int       key_count;
+} ConfigMode;
+
+/* ── mouse binds ─────────────────────────────────────────────────────── */
+
+/*
+ * What a drag with a modifier held does:
+ *
+ *   [mouse]
+ *   "super+left"       = "move"
+ *   "super+shift+left" = "move_nocollide"
+ *   "super+right"      = "resize"
+ *   "super+ctrl+left"  = "twist"
+ *
+ * These used to be four lines of C in the button handler, which is a strange
+ * thing to be unable to change when every key on the keyboard is yours to
+ * rebind. The verbs below are the ones only a drag can express; anything else
+ * in the value is an ordinary [binds] action, fired once on the press.
+ *
+ * Modifiers are matched EXACTLY, like keybinds: super+left does not fire while
+ * shift is also down. A bind with no modifier at all is honoured, and will eat
+ * that button from every client — yours to do, but do it knowingly.
+ */
+
+/* Buttons, kept as an enum rather than linux/input-event-codes.h values so
+ * config.c stays free of kernel headers (and testable off a compositor).
+ * server_pointer.c maps them to BTN_*. */
+enum {
+    FWM_BTN_LEFT = 0,
+    FWM_BTN_RIGHT,
+    FWM_BTN_MIDDLE,
+    FWM_BTN_SIDE,
+    FWM_BTN_EXTRA,
+    FWM_BTN_COUNT,
+};
+
+/* The drag verbs. Everything else is dispatched as a normal action.
+ *
+ * What a verb means depends on the desktop's mode, exactly as the hard-coded
+ * behaviour it replaces did: on a tiling desktop `resize` drags the BSP border
+ * under the cursor and `move_nocollide` swaps two tiles, because the layout
+ * owns tile geometry and there is nothing else those gestures could mean
+ * there. */
+#define FWM_MOUSE_MOVE           "move"
+#define FWM_MOUSE_MOVE_NOCOLLIDE "move_nocollide"
+#define FWM_MOUSE_RESIZE         "resize"
+#define FWM_MOUSE_SWAP           "swap"
+#define FWM_MOUSE_TWIST          "twist"
+
+#define CONFIG_MAX_MOUSE 16
+
+typedef struct {
+    unsigned int mod;    /* FWM_MOD_* masks */
+    int          button; /* FWM_BTN_* */
+    char         action[256];
+} MouseBind;
+
+typedef struct {
+    MouseBind binds[CONFIG_MAX_MOUSE];
+    int       bind_count;
+} MouseConfig;
+
 /* ── touchpad gestures ───────────────────────────────────────────────── */
 
 /*
@@ -420,9 +518,12 @@ typedef struct {
     FocusConfig     focus;
     EffectsConfig   effects;
     SessionConfig   session;
+    MouseConfig     mouse;
     GesturesConfig  gestures;
     KeyBind        *keys;
     int             key_count;
+    ConfigMode      modes[CONFIG_MAX_MODES];
+    int             mode_count;
     WallpaperLayer *wallpapers;
     int             wallpaper_count;
     ConfigRule     *rules;
@@ -480,6 +581,24 @@ int config_match_rules(const FwmConfig *cfg, const char *app_id, const char *tit
  * The keysym is compared case-insensitively; see the implementation for why
  * that is load-bearing rather than lenient. */
 const KeyBind *config_match_bind(const FwmConfig *cfg, xkb_keysym_t sym, unsigned int mods);
+
+/* A mode by name, or -1. The name may be the whole action string ("mode:foo")
+ * or just the name — callers have one or the other and neither should have to
+ * do string surgery to ask. */
+int config_mode_find(const FwmConfig *cfg, const char *name);
+
+/* The bind for this key inside `mode` (an index from config_mode_find), or
+ * NULL. Same exact-modifier rule as config_match_bind. */
+const KeyBind *config_match_mode_bind(const FwmConfig *cfg, int mode,
+                                      xkb_keysym_t sym, unsigned int mods);
+
+/* The mouse bind for this button and modifier set, or NULL. Same exact-match
+ * rule as config_match_bind. */
+const MouseBind *config_match_mouse(const FwmConfig *cfg, int button, unsigned int mods);
+
+/* Whether an action string is one of the drag verbs (FWM_MOUSE_*), i.e. only
+ * meaningful as a mouse bind. */
+int config_action_is_drag(const char *action);
 
 /* Whether holding the key down should keep firing the action. */
 int config_action_is_repeatable(const char *action);

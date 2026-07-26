@@ -724,6 +724,9 @@ FwmView *server_find_view(FwmServer *server, uint32_t id) {
 
 bool server_init(FwmServer *server) {
     memset(server, 0, sizeof(*server));
+    server->key_mode = -1;   /* the root keymap; 0 would be the first submap */
+    /* Read once: the diagnostic must cost nothing at all when it is off. */
+    server->fx_debug = getenv("FWM_DEBUG_EFFECTS") != NULL;
     server->wl_display = wl_display_create();
     if (!server->wl_display) {
         wlr_log(WLR_ERROR, "failed to create display");
