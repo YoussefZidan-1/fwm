@@ -57,6 +57,8 @@ struct FwmKeyboard {
 
 /* ── server.c ─────────────────────────────────────────────────────────── */
 void server_shake_tick(FwmServer *server, double dt);
+/* Create the physics and video timers (server_tick.c owns both callbacks). */
+void server_tick_register(FwmServer *server, struct wl_event_loop *event_loop);
 void server_video_sync(FwmServer *server);
 void server_reclaim_memory(void);
 void server_dispatch_action(FwmServer *server, const char *action);

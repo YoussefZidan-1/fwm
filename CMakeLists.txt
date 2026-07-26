@@ -75,6 +75,9 @@ set(SOURCES
     src/ipc_events.c
     src/session.c
     src/server.c
+    src/server_lifecycle.c
+    src/server_tick.c
+    src/server_tiling.c
     src/server_shell.c
     src/server_output.c
     src/server_input.c
