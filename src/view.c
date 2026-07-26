@@ -264,8 +264,14 @@ static struct wlr_buffer *view_snapshot_content(FwmView *view) {
     return buf;
 }
 
-/* Show or hide the live content while keeping the borders (and our snapshot)
- * visible: the borders are the only children we own besides squash_buf. */
+/* Show or hide the live content while keeping the borders and whichever
+ * snapshot is standing in for the window visible.
+ *
+ * EVERY node of our own has to be listed here. This is the call that hides the
+ * window behind an effect, and each effect makes it immediately after creating
+ * the node that replaces it — so a node missing from this list is switched off
+ * by the very call that was supposed to reveal it, and the window simply
+ * vanishes for as long as the effect runs. */
 static void view_set_content_enabled(FwmView *view, bool enabled) {
     if (!view->scene_tree) return;
     struct wlr_scene_node *node;
@@ -276,6 +282,7 @@ static void view_set_content_enabled(FwmView *view, bool enabled) {
         }
         if (view->squash_buf && node == &view->squash_buf->node) ours = true;
         if (view->spin_buf && node == &view->spin_buf->node) ours = true;
+        if (view->jelly_buf && node == &view->jelly_buf->node) ours = true;
         if (!ours) wlr_scene_node_set_enabled(node, enabled);
     }
 }
@@ -543,8 +550,12 @@ static bool view_jelly_draw(FwmView *view, double strength) {
     if (!warp_blit(view->server->wlr_renderer, dst, view->jelly_tex, WOBBLE_GRID, pts)) {
         return false;
     }
-    wlr_scene_buffer_set_buffer(view->jelly_buf, dst);
     view->jelly_flip ^= 1;
+    wlr_scene_buffer_set_buffer(view->jelly_buf, dst);
+    /* Stated rather than left to default off the buffer, exactly as the spin
+     * states it: the node was created empty, so it starts with no size of its
+     * own at all. */
+    wlr_scene_buffer_set_dest_size(view->jelly_buf, dst->width, dst->height);
     return true;
 }
 
