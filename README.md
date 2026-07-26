@@ -81,11 +81,33 @@ floor and ceiling instead of coming round.
 - **Focus borders** — accent color on the focused window, muted on the rest; colors and width in the config.
 - **Window fade-in** — new windows ease in over ~260 ms (configurable, 0 disables).
 - **Impact effects** — windows squash and stretch where they hit; optional camera shake on hard landings.
-- **Rotated windows** — a spinning window is drawn at any angle, not in quarter turns. wlroots' scene graph is axis-aligned to its bones, so this one effect draws its own rotated quad on the renderer's GL context (`src/rotate.c`); everything else stays on the public API.
+- **Wobbly windows** — a dragged window goes soft and bends, the way KDE's do. See below.
+- **Rotated and bent windows** — a spinning window is drawn at any angle, not in quarter turns, and a dragged one is drawn through a deforming mesh. wlroots' scene graph is axis-aligned to its bones, so these two draw their own geometry on the renderer's GL context (`src/rotate.c`); everything else stays on the public API.
 - **Wallpaper-derived palette** — optionally tint the whole UI toward the wallpaper's dominant hue (`color_source = "wallpaper"`).
 - **Minimal tray** — three flat chevron-ended islands: focused window + physics readout, desktop indicators, clock. No titlebars anywhere (server-side decorations).
 - **Transparency** — client alpha (e.g. kitty `background_opacity`) is rendered as-is.
 - **Fake fullscreen** (`Super+D`) keeps the tray visible; **real fullscreen** (`Super+F`) hides it and covers the whole output.
+
+### Wobbly windows
+
+Pick a window up and it goes soft. The window is a lattice of springs rather
+than a rectangle: the part you took hold of keeps up with the cursor exactly,
+the rest of the sheet arrives late and bends on the way, and shaking it builds a
+wobble that keeps going for a beat after your hand stops. Nothing in it reads
+how fast you are dragging — the lag is what the springs do on their own, which
+is why it swings instead of following.
+
+Grab a window by a corner and the far corner trails by about a tenth of its
+width at a brisk drag; grab it dead centre and all four corners trail evenly.
+Let go and the wobble rings out in about half a second, after which the window
+is rigid again and lands with an ordinary impact dent.
+
+`effects.jelly` scales how far it bends, not how fast — the timing is the same
+at every setting, and 0 turns it off. Two things to expect, both shared with the
+free rotation above: the window shows a snapshot of itself refreshed a few times
+a second while it wobbles rather than live content, and its focus border is
+hidden for the duration, since a rectangle cannot bend along with it. The effect
+needs the GLES2 renderer.
 
 ### Desktop integration
 Runs the software you already use: **XWayland** (X11 apps as ordinary physics windows), **layer-shell** (waybar, mako, rofi, swaybg), **ext-session-lock** (hyprlock, swaylock), **idle protocols** (swayidle, no blanking during video), **xdg-activation**, **screencopy** (screenshots, screen share), **gamma-control** (wlsunset), **pointer constraints** (games and mouse-look), **foreign-toplevel** (taskbars), plus drag-and-drop and primary selection.
@@ -366,6 +388,7 @@ free_speed = 14.0    # how tightly the camera follows a held move_camera: bind
 [effects]
 camera_shake = 0.0   # jolt the view on hard impacts; off by default, 1.0 to enable
 squash       = 1.0   # windows deform on impact, scaled by speed; 0 disables
+jelly        = 1.0   # how far a dragged window bends (wobbly windows); 0 disables
 spin         = 1.0   # strength of the spin_window kick (experimental); 0 disables
 
 [focus]
