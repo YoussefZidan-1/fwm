@@ -47,11 +47,23 @@ wrist; take it dead center and it does not swing at all. Stirring the mouse in
 circles winds it up further, and it keeps whatever spin it had when you let go.
 `spin_all` does the same for every window at once (unbound by default).
 
-Two things to expect. While it turns, the window shows a snapshot of itself
-refreshed a few times a second rather than live content — the trade that makes
-arbitrary rotation possible at all. And it is only as free to turn as the room
-around it: a window whose diagonal is taller than the screen wedges against the
-floor and ceiling instead of coming round.
+A window keeps playing while it turns. A window that is a single surface is
+rotated straight from the texture the client just drew, at no cost at all;
+anything else — and that includes plenty of ordinary clients, which draw
+through a subsurface without ever showing one — is flattened into a picture
+that is retaken whenever the client draws, capped at 30 times a second. Either
+way the client keeps receiving frame callbacks while it is hidden, so it keeps
+drawing. `effects.live = 0` turns all of that off and goes back to a still
+frame refreshed a few times a second, for hardware that would rather not pay.
+
+One thing does not change: a window is only as free to turn as the room around
+it. One whose diagonal is taller than the screen wedges against the floor and
+ceiling instead of coming round.
+
+**Turning one by hand.** Bind `twist` in `[mouse]` — say
+`"super+ctrl+left" = "twist"` — and a window follows the angle from its own
+centre to the cursor. Stir and it winds up; let go and it keeps spinning at the
+rate your hand was turning it.
 
 ### World
 - **10 virtual desktops** on one continuous strip — the world is 10 screens wide, windows keep absolute positions.
@@ -118,11 +130,10 @@ Let go and the wobble rings out in about half a second, after which the window
 is rigid again and lands with an ordinary impact dent.
 
 `effects.jelly` scales how far it bends, not how fast — the timing is the same
-at every setting, and 0 turns it off. Two things to expect, both shared with the
-free rotation above: the window shows a snapshot of itself refreshed a few times
-a second while it wobbles rather than live content, and its focus border is
-hidden for the duration, since a rectangle cannot bend along with it. The effect
-needs the GLES2 renderer.
+at every setting, and 0 turns it off. The window stays live as it bends, the
+same way a spinning one does. Its focus border is hidden for the duration,
+since a rectangle cannot bend along with it. The effect needs the GLES2
+renderer.
 
 ### Desktop integration
 Runs the software you already use: **XWayland** (X11 apps as ordinary physics windows), **layer-shell** (waybar, mako, rofi, swaybg), **ext-session-lock** (hyprlock, swaylock), **idle protocols** (swayidle, no blanking during video), **xdg-activation**, **screencopy** (screenshots, screen share), **gamma-control** (wlsunset), **pointer constraints** (games and mouse-look), **pointer-gestures** (touchpad swipes and pinches reach the app when fwm has no bind for them), **foreign-toplevel** (taskbars), plus drag-and-drop and primary selection.

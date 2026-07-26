@@ -115,6 +115,17 @@ jelly        = 1.0
 # (Stirring the mouse while dragging a spinning window is not scaled by this —
 # there the window simply turns at the rate your hand does.)
 spin         = 1.0
+# Live content while a window spins or wobbles: the client keeps drawing while
+# the effect hides it, instead of the effect showing a still frame. A window
+# that is a single surface is drawn straight from the client's texture for
+# free; anything else is flattened into a picture whenever the client draws, at
+# most 30 times a second (~0.3ms each here).
+#
+# Set to 0 for the old still frame, refreshed a few times a second, with the
+# client left asleep — cheaper, and the thing to try if an effect judders.
+# Switchable live, without a reload: `fwmctl set effects.live 0`.
+# FWM_DEBUG_EFFECTS=1 in the environment logs what the effects actually cost.
+live         = 1.0
 
 # When a restarted fwm should put your applications back. fwm records what is
 # running and on which desktop, and relaunches it — the applications restart,

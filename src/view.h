@@ -93,6 +93,12 @@ typedef struct FwmView {
      * close-animation snapshot (FwmGhost) after the client buffer is gone. */
     struct wlr_buffer *last_buffer;
 
+    /* Set on every client commit, cleared when an effect re-photographs the
+     * window. The spin and the wobble redraw off THIS rather than off a timer:
+     * new content is exactly when a new picture is worth taking, and a window
+     * that is not drawing costs them nothing. */
+    int content_dirty;
+
     /* Impact squash & stretch. Deforms a SNAPSHOT of the last committed frame,
      * never the live surface: wlroots' scene resets a surface buffer's
      * dest_size on every client commit, so a live deformation would be wiped
@@ -124,6 +130,10 @@ typedef struct FwmView {
     int jelly_settling;               /* let go: come to rest, then give the
                                        * live window back */
     Wobble jelly_wob;
+    /* As the spin's: when the window is a single surface the sheet is warped
+     * straight from the client's texture, so a dragged window bends around live
+     * content instead of a still frame. jelly_src/jelly_tex are then unused. */
+    int jelly_live;
     struct wlr_scene_buffer *jelly_buf;
     struct wlr_buffer *jelly_src;     /* flattened window content, w x h */
     struct wlr_texture *jelly_tex;    /* ... imported once, reused every frame */
@@ -132,8 +142,8 @@ typedef struct FwmView {
     int jelly_border;                 /* were the borders shown before it */
     int jelly_w, jelly_h;             /* window size the snapshot was taken at */
     int jelly_margin;                 /* slack around the window, px */
+    double jelly_snap_t;              /* since the last COMPOSITED refresh, s */
     double jelly_px, jelly_py;        /* window position at the last tick */
-    double jelly_snap_t;              /* seconds since the last refresh */
 
     /* Free rotation (experimental; see PhysicsBody.spin).
      *
@@ -146,18 +156,26 @@ typedef struct FwmView {
      * flattened into `spin_src`, that gets drawn rotated into one of the two
      * `spin_dst` buffers, and the scene shows the result.
      *
-     * The cost is that the window is a still frame while it spins, so the
-     * snapshot is retaken a few times a second; the benefit is that damage,
-     * compositing and scanout keep working exactly as they always did. */
+     * The flattening is only needed for windows that are genuinely several
+     * buffers, though. A window that is ONE surface — most of them — is rotated
+     * straight from the client's own texture and stays live as it turns (see
+     * view_live_texture); spin_src and spin_tex are unused then. Either way
+     * damage, compositing and scanout keep working exactly as they always did. */
     struct wlr_scene_buffer *spin_buf;
     struct wlr_buffer *spin_src;      /* flattened window content, w x h */
     struct wlr_texture *spin_tex;     /* ... imported once, reused every frame */
+    /* Set when the window is a single surface and the rotation draws straight
+     * from the client's own texture (view_live_texture): live content, and
+     * spin_src/spin_tex are then unused. spin_seen is the texture last drawn,
+     * for spotting that the client has committed a new frame. */
+    int spin_live;
+    struct wlr_texture *spin_seen;    /* borrowed, never owned */
     struct wlr_buffer *spin_dst[2];   /* rotated output, square, diagonal-sized */
     int spin_flip;                    /* which of the two to draw into next */
     int spin_border;                  /* were the borders shown before the spin */
     int spin_w, spin_h;               /* window size the snapshot was taken at */
     int spin_size;                    /* side of the spin_dst squares */
-    double spin_snap_t;               /* seconds since the last re-snapshot */
+    double spin_snap_t;               /* since the last COMPOSITED refresh, s */
     double spin_angle;                /* angle currently on screen, radians */
 
     /* wlr-foreign-toplevel handle: this window as external panels see it

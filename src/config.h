@@ -182,6 +182,12 @@ typedef struct {
      * 0 makes the bind do nothing. Nothing rotates on its own: a window only
      * ever spins because the bind told it to. */
     double spin;
+    /* Live content behind the spin and the wobble: a window that is a single
+     * surface is drawn from the client's own texture and keeps drawing while
+     * the effect hides it. 0 puts every window back on the periodic snapshot —
+     * a still frame that costs the machine nothing, which is the better trade
+     * on hardware where the effect judders under a slow hand. */
+    double live;
 } EffectsConfig;
 
 /* ── session ─────────────────────────────────────────────────────────── */

@@ -487,6 +487,7 @@ static void load_effects(toml_table_t *root, EffectsConfig *e) {
     e->squash = 1.0;
     e->jelly = 1.0;
     e->spin = 1.0;
+    e->live = 1.0;
     if (!root) return;
     toml_table_t *tbl = toml_table_in(root, "effects");
     if (!tbl) return;
@@ -499,6 +500,9 @@ static void load_effects(toml_table_t *root, EffectsConfig *e) {
     LOAD_DOUBLE(tbl, "jelly", e->jelly);
     if (e->jelly < 0.0) e->jelly = 0.0;
     if (e->jelly > 2.0) e->jelly = 2.0;
+    LOAD_DOUBLE(tbl, "live", e->live);
+    if (e->live < 0.0) e->live = 0.0;
+    if (e->live > 1.0) e->live = 1.0;
     LOAD_DOUBLE(tbl, "spin", e->spin);
     if (e->spin < 0.0) e->spin = 0.0;
     if (e->spin > 4.0) e->spin = 4.0;
@@ -1342,6 +1346,7 @@ static const ConfigOption config_option_table[] = {
     { "effects.squash",                 CFG_OPT_DOUBLE, offsetof(FwmConfig, effects.squash),                  0.0,     4.0,    "impact squash & stretch; 0 disables" },
     { "effects.jelly",                  CFG_OPT_DOUBLE, offsetof(FwmConfig, effects.jelly),                   0.0,     4.0,    "drag wobble; 0 disables" },
     { "effects.spin",              CFG_OPT_DOUBLE, offsetof(FwmConfig, effects.spin),                    0.0,     4.0,    "free rotation kick (experimental); 0 disables" },
+    { "effects.live",              CFG_OPT_DOUBLE, offsetof(FwmConfig, effects.live),                    0.0,     1.0,    "live content under spin/wobble; 0 = still frame" },
 
     { "input.repeat_rate",              CFG_OPT_INT,    offsetof(FwmConfig, input.repeat_rate),               0.0,   200.0,    "key repeat, chars/s" },
     { "input.repeat_delay",             CFG_OPT_INT,    offsetof(FwmConfig, input.repeat_delay),              0.0,  5000.0,    "ms before repeat starts" },

@@ -100,6 +100,10 @@ static void handle_commit(struct wl_listener *listener, void *data) {
         }
     }
 
+    /* New content. An effect standing in front of the window reads this to
+     * decide whether its picture is stale (view_spin_tick, view_jelly_tick). */
+    view->content_dirty = 1;
+
     // Keep our own lock on the latest committed buffer: at unmap time the
     // client's buffer may already be gone, but the close animation needs the
     // last frame as a snapshot.
@@ -139,10 +143,6 @@ static void view_border_box(FwmView *view, int *w, int *h);
 #define JELLY_MARGIN_FRAC  0.22
 #define JELLY_MARGIN_MIN   48
 #define JELLY_MARGIN_MAX   192
-/* How often the frozen picture behind the wobble is retaken, in seconds. Same
- * trade as the spin's refresh: a dragged terminal keeps blinking and a dragged
- * video keeps moving, for one flatten-the-subtree pass 6-7 times a second. */
-#define JELLY_REFRESH_S    0.15
 
 /* ── composited snapshot of a window ──────────────────────────────────────
  *
@@ -170,7 +170,18 @@ static void snapshot_add_buffer(struct wlr_scene_buffer *scene_buffer,
     struct snapshot_ctx *ctx = data;
     if (!scene_buffer->buffer) return;
 
-    struct wlr_texture *tex = wlr_texture_from_buffer(ctx->renderer, scene_buffer->buffer);
+    /* A buffer that belongs to a client surface already HAS a texture: wlroots
+     * imported it when the client committed, and the scene draws the window
+     * from it sixty times a second. Importing the same dmabuf again for our own
+     * pass — and throwing the import away at the end of it — was costing about
+     * as much as the pass itself, which at one pass every 150ms is a 5ms frame
+     * every 150ms: a hitch you can see, and the whole reason a slow spin
+     * juddered. Borrow the cached one and only import what is genuinely ours
+     * (an effect's own buffer, a ghost). */
+    struct wlr_scene_surface *ss = wlr_scene_surface_try_from_buffer(scene_buffer);
+    struct wlr_texture *cached = ss ? wlr_surface_get_texture(ss->surface) : NULL;
+    struct wlr_texture *tex = cached
+        ? cached : wlr_texture_from_buffer(ctx->renderer, scene_buffer->buffer);
     if (!tex) return;
 
     /* dest_size 0 means "use the buffer size", the same rule the scene follows. */
@@ -185,7 +196,7 @@ static void snapshot_add_buffer(struct wlr_scene_buffer *scene_buffer,
         .transform = scene_buffer->transform,
         .blend_mode = WLR_RENDER_BLEND_MODE_PREMULTIPLIED,
     });
-    wlr_texture_destroy(tex);
+    if (!cached) wlr_texture_destroy(tex);   /* only ever destroy our own import */
 }
 
 /* An empty ARGB8888 buffer the renderer can draw into. */
@@ -262,6 +273,116 @@ static struct wlr_buffer *view_snapshot_content(FwmView *view) {
         return NULL;
     }
     return buf;
+}
+
+/* How often a COMPOSITED picture is retaken, in seconds.
+ *
+ * With effects.live on, whenever the client has drawn something new — capped,
+ * because the pass is cheap but not free (~0.5ms for a large window here, once
+ * the textures stopped being re-imported; it was ten times that before, which
+ * is what a slow spin juddered on). With it off, the old fixed cadence and no
+ * frame callbacks, so the client sleeps and the picture is a still frame. */
+#define SNAP_LIVE_S    (1.0 / 30.0)
+#define SNAP_REFRESH_S 0.15
+
+/* ── live content behind an effect ────────────────────────────────────────
+ *
+ * An effect that shows a picture of the window has two ways to go stale, and
+ * the difference in what they COST is what decides how far to chase each.
+ *
+ * The first is the picture. Most windows are ONE surface — a terminal, a video
+ * player, anything without subsurfaces or an open menu — and for those the
+ * composited snapshot is a copy of a texture the client already handed us.
+ * view_live_texture returns that texture instead, so the spin and the wobble
+ * draw live content every frame at no cost at all: no allocation, no
+ * flatten-the-subtree pass, nothing to keep up to date. That is the whole win,
+ * and it is free.
+ *
+ * The second is the client, and this one is NOT free. Hiding the live nodes
+ * takes the window out of the scene's frame-done sweep, so a client waiting on
+ * a frame callback stops drawing; view_send_frame_done keeps the callbacks
+ * coming. But a client redrawing 60 times a second while it is hidden costs
+ * real work on the machine, and on modest graphics that showed up exactly where
+ * you would expect — as a spin that juddered under a slow hand, where there is
+ * no motion to hide a dropped frame behind.
+ *
+ * So liveness is spent only where it is cheap. A single-surface window gets
+ * both halves: live texture, live client. A window that must be composited gets
+ * neither — no frame callbacks, and its picture retaken on the old
+ * SNAP_REFRESH_S timer — because there the second half buys a full render pass
+ * per client frame, which is precisely the cost that was juddering. Those
+ * windows behave exactly as they always have.
+ *
+ * effects.live = 0 turns the whole thing off and puts every window on the old
+ * still-frame path, for hardware where even the free half is not free. */
+
+/* Is this window ONE surface, so that its texture is the whole picture?
+ *
+ * Kept apart from fetching the texture, because the two say different things
+ * and confusing them costs a visible hitch: a window that has grown a
+ * subsurface must move to the composited path for good, while a window that
+ * merely has no texture this instant (a client between buffers) should keep
+ * showing the frame it already has and try again in 16ms. Tearing the effect
+ * down and rebuilding it for the latter is several allocations and a full
+ * snapshot pass, in the middle of an animation. */
+static bool view_is_single_surface(FwmView *view) {
+    if (view->server->config.effects.live <= 0.0) return false;
+    struct wlr_surface *s = view_surface(view);
+    if (!s) return false;
+    /* Anything drawn beside the toplevel's own buffer has to be composited, or
+     * it is simply missing from the picture — the very bug the snapshot pass
+     * was written for (see above). */
+    if (!wl_list_empty(&s->current.subsurfaces_above) ||
+        !wl_list_empty(&s->current.subsurfaces_below)) return false;
+    if (view->type == FWM_VIEW_XDG && view->xdg_toplevel &&
+        !wl_list_empty(&view->xdg_toplevel->base->popups)) return false;
+    return true;
+}
+
+static struct wlr_texture *view_live_texture(FwmView *view) {
+    if (!view_is_single_surface(view)) return NULL;
+    return wlr_surface_get_texture(view_surface(view));
+}
+
+/* Is the composited picture stale enough to be worth retaking? */
+static bool view_snapshot_due(FwmView *view, double since) {
+    if (view->server->config.effects.live > 0.0)
+        return view->content_dirty && since >= SNAP_LIVE_S;
+    return since >= SNAP_REFRESH_S;
+}
+
+/* Say which path an effect took, once, when it starts (FWM_DEBUG_EFFECTS).
+ * Which one a given window lands on is not obvious from the outside — plenty
+ * of ordinary clients draw through a subsurface without ever showing one — and
+ * that is exactly what has to be known before any judder can be argued about. */
+static void view_log_effect_path(FwmView *view, const char *what, bool live) {
+    if (!view->server->fx_debug) return;
+    struct wlr_surface *s = view_surface(view);
+    const char *why = "";
+    if (!live && s) {
+        if (!wl_list_empty(&s->current.subsurfaces_above) ||
+            !wl_list_empty(&s->current.subsurfaces_below)) why = " (subsurfaces)";
+        else if (view->type == FWM_VIEW_XDG && view->xdg_toplevel &&
+                 !wl_list_empty(&view->xdg_toplevel->base->popups)) why = " (open popup)";
+        else if (view->server->config.effects.live <= 0.0) why = " (effects.live = 0)";
+        else why = " (no texture yet)";
+    }
+    wlr_log(WLR_INFO, "%s on \"%s\": %s path%s", what,
+            view_title(view) ? view_title(view) : "?",
+            live ? "live" : "composited", why);
+}
+
+static void frame_done_iter(struct wlr_surface *surface, int sx, int sy, void *data) {
+    (void)sx; (void)sy;
+    wlr_surface_send_frame_done(surface, data);
+}
+
+static void view_send_frame_done(FwmView *view) {
+    struct wlr_surface *s = view_surface(view);
+    if (!s) return;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    wlr_surface_for_each_surface(s, frame_done_iter, &now);
 }
 
 /* Show or hide the live content while keeping the borders and whichever
@@ -456,6 +577,7 @@ static void view_jelly_free(FwmView *view) {
     view->jelly_w = view->jelly_h = view->jelly_margin = 0;
     view->jelly_flip = 0;
     view->jelly_snap_t = 0.0;
+    view->jelly_live = 0;
 }
 
 void view_jelly_stop(FwmView *view) {
@@ -491,13 +613,22 @@ static bool view_jelly_setup(FwmView *view) {
 
     int margin = jelly_margin_for(w, h);
 
-    struct wlr_buffer *src = view_snapshot_content(view);
-    if (!src) goto fail;
-    view->jelly_src = wlr_buffer_lock(src);
-    wlr_buffer_drop(src);
+    /* One surface and nothing else: bend the client's own texture, so the
+     * window stays live while it is dragged. The wobble only ever runs on the
+     * GLES2 path (view_jelly_begin refuses otherwise), so unlike the spin there
+     * is no buffer-only fallback to keep a snapshot around for. */
+    view->jelly_live = view_live_texture(view) != NULL;
+    view_log_effect_path(view, "wobble", view->jelly_live);
 
-    view->jelly_tex = wlr_texture_from_buffer(server->wlr_renderer, view->jelly_src);
-    if (!view->jelly_tex) goto fail;
+    if (!view->jelly_live) {
+        struct wlr_buffer *src = view_snapshot_content(view);
+        if (!src) goto fail;
+        view->jelly_src = wlr_buffer_lock(src);
+        wlr_buffer_drop(src);
+
+        view->jelly_tex = wlr_texture_from_buffer(server->wlr_renderer, view->jelly_src);
+        if (!view->jelly_tex) goto fail;
+    }
 
     /* Two targets used alternately: the scene may still be reading last
      * frame's while this one is drawn, and overwriting it in place would tear. */
@@ -520,7 +651,6 @@ static bool view_jelly_setup(FwmView *view) {
     view->jelly_w = w;
     view->jelly_h = h;
     view->jelly_margin = margin;
-    view->jelly_snap_t = 0.0;
     view->jelly_border = border;
 
     /* The borders are scene rectangles: they cannot bend any more than they
@@ -558,8 +688,18 @@ static bool view_jelly_draw(FwmView *view, double strength) {
         }
     }
 
+    /* Live path: whatever the client has on screen this instant. It may be a
+     * different texture than last frame — that is the whole point — and NULL
+     * only if the window stopped being a single surface, which the tick
+     * notices and rebuilds for. */
+    struct wlr_texture *tex = view->jelly_live ? view_live_texture(view) : view->jelly_tex;
+    /* No texture this instant (a client between buffers). Keep the frame that
+     * is already on screen: the next tick is 16ms away and tearing the whole
+     * wobble down mid-drag would be a far bigger jump than one repeated frame. */
+    if (!tex) return true;
+
     struct wlr_buffer *dst = view->jelly_dst[view->jelly_flip];
-    if (!warp_blit(view->server->wlr_renderer, dst, view->jelly_tex, WOBBLE_GRID, pts)) {
+    if (!warp_blit(view->server->wlr_renderer, dst, tex, WOBBLE_GRID, pts)) {
         return false;
     }
     view->jelly_flip ^= 1;
@@ -640,8 +780,27 @@ void view_jelly_tick(FwmView *view, double strength, double dt) {
      * moving, so the sheet kept being driven and the effect outlasted the whole
      * flight with a still frame in it. */
     view->jelly_snap_t += dt;
-    if (view->jelly_snap_t >= JELLY_REFRESH_S) {
+    /* The client is hidden behind the sheet and gets no frame callbacks from
+     * the scene; without these it would stop drawing and "live" would mean a
+     * live view of a frozen window. */
+    if (view->server->config.effects.live > 0.0) view_send_frame_done(view);
+
+    if (view->jelly_live) {
+
+        /* Nothing to retake — view_jelly_draw reads the client's texture as it
+         * goes. Only a window that has STOPPED being a single surface (a menu
+         * opened under the hand) needs rebuilding onto the snapshot path; a
+         * missing texture for one frame is not that, and view_jelly_draw simply
+         * keeps the frame already on screen. */
+        if (!view_is_single_surface(view)) {
+            if (!view_jelly_setup(view)) { view_jelly_stop(view); return; }
+            wobble_resize(&view->jelly_wob, view->jelly_w, view->jelly_h);
+        }
+        view->content_dirty = 0;
+    } else if (view_snapshot_due(view, view->jelly_snap_t)) {
+        view->content_dirty = 0;
         view->jelly_snap_t = 0.0;
+        view->server->fx_snaps++;
         view_jelly_resnap(view);
     }
 
@@ -671,16 +830,11 @@ void view_jelly_tick(FwmView *view, double strength, double dt) {
         return;
     }
 
+    view->server->fx_moved++;
     if (!view_jelly_draw(view, strength)) view_jelly_stop(view);
 }
 
 /* ── free rotation ────────────────────────────────────────────────────── */
-
-/* How often the frozen picture is replaced with a fresh one. A spinning window
- * is a still frame between refreshes, so this is the whole "how live is it"
- * knob: at 150ms a terminal's cursor still blinks and a video still moves,
- * while the flatten-the-subtree pass runs 6-7 times a second instead of 60. */
-#define SPIN_REFRESH_S 0.15
 
 bool view_is_spinning(FwmView *view) {
     return view->spin_buf != NULL;
@@ -728,6 +882,8 @@ static void view_spin_release(FwmView *view) {
     view->spin_flip = 0;
     view->spin_snap_t = 0.0;
     view->spin_angle = 0.0;
+    view->spin_live = 0;
+    view->spin_seen = NULL;
 }
 
 void view_stop_spin(FwmView *view) {
@@ -758,21 +914,37 @@ static bool view_spin_setup(FwmView *view) {
      * setup must leave the window on screen, not blank. */
     if (restarting) view_set_content_enabled(view, true);
 
-    struct wlr_buffer *src = view_alloc_buffer(server, w, h);
-    if (!src) return false;
-    if (!view_snapshot_into(view, src)) {
-        wlr_buffer_drop(src);
-        return false;
-    }
-    view->spin_src = wlr_buffer_lock(src);
-    wlr_buffer_drop(src);
+    /* One surface and nothing else: rotate the client's own texture and skip
+     * the snapshot machinery entirely. The window then turns LIVE — a video
+     * keeps playing as it tumbles — and costs less than the frozen version did.
+     * Decided once per spin, and re-decided if the window grows a subsurface or
+     * opens a menu while it turns (view_spin_tick).
+     *
+     * Only where arbitrary rotation actually works: the quarter-turn fallback
+     * below hands the SNAPSHOT BUFFER to the scene graph, and a client texture
+     * is not a buffer we may hand over. On such a renderer the snapshot is the
+     * only path, live or not. */
+    view->spin_live = rotate_supported(server->wlr_renderer)
+                   && view_live_texture(view) != NULL;
+    view_log_effect_path(view, "spin", view->spin_live);
 
-    /* Imported once and kept: the rotation redraws from this texture every
-     * frame, and re-importing a dmabuf 60 times a second is pure waste. The
-     * refresh below renders into the same buffer, so the texture stays valid
-     * across snapshots too. */
-    view->spin_tex = wlr_texture_from_buffer(server->wlr_renderer, view->spin_src);
-    if (!view->spin_tex) goto fail;
+    if (!view->spin_live) {
+        struct wlr_buffer *src = view_alloc_buffer(server, w, h);
+        if (!src) return false;
+        if (!view_snapshot_into(view, src)) {
+            wlr_buffer_drop(src);
+            return false;
+        }
+        view->spin_src = wlr_buffer_lock(src);
+        wlr_buffer_drop(src);
+
+        /* Imported once and kept: the rotation redraws from this texture every
+         * frame, and re-importing a dmabuf 60 times a second is pure waste. The
+         * refresh below renders into the same buffer, so the texture stays valid
+         * across snapshots too. */
+        view->spin_tex = wlr_texture_from_buffer(server->wlr_renderer, view->spin_src);
+        if (!view->spin_tex) goto fail;
+    }
 
     /* A square of the diagonal holds the window at every angle, so the target
      * never has to be reallocated as it turns. Two of them, used alternately:
@@ -797,7 +969,6 @@ static bool view_spin_setup(FwmView *view) {
     view->spin_w = w;
     view->spin_h = h;
     view->spin_size = size;
-    view->spin_snap_t = 0.0;
     view->spin_border = border;
 
     /* Everything the scene draws upright goes away: the client's own surfaces,
@@ -833,12 +1004,38 @@ void view_spin_tick(FwmView *view, double angle, double dt) {
         redraw = true;   /* the node has no picture in it yet */
     }
 
-    /* Refresh the frozen picture a few times a second. The live nodes have to
-     * come back for the length of the pass; nothing is presented in between,
-     * so the window never flashes upright. */
+    struct wlr_texture *src = view->spin_tex;
+
     view->spin_snap_t += dt;
-    if (view->spin_snap_t >= SPIN_REFRESH_S) {
+    /* Either path keeps the client drawing while it is hidden; what differs is
+     * what showing its frames costs us (view_snapshot_due). */
+    if (view->server->config.effects.live > 0.0) view_send_frame_done(view);
+
+    if (view->spin_live) {
+        if (!view_is_single_surface(view)) {
+            /* A menu opened, or the client grew a subsurface, mid-spin. The
+             * live path cannot show that, so rebuild onto the snapshot one —
+             * setup re-decides and lands on the snapshot for the same reason
+             * we are here. */
+            if (!view_spin_setup(view)) { view_stop_spin(view); return; }
+            src = view->spin_tex;
+            redraw = true;
+        } else {
+            src = wlr_surface_get_texture(view_surface(view));
+            /* A new frame from the client: same window, new texture. */
+            if (src && src != view->spin_seen) {
+                view->spin_seen = src;
+                redraw = true;
+            }
+        }
+        view->content_dirty = 0;
+    } else if (view_snapshot_due(view, view->spin_snap_t)) {
+        /* The composited path. The live nodes have to come back for the length
+         * of the pass; nothing is presented in between, so the window never
+         * flashes upright. */
+        view->content_dirty = 0;
         view->spin_snap_t = 0.0;
+        view->server->fx_snaps++;
         redraw = true;
         view_set_content_enabled(view, true);
         /* The rotated picture is itself a buffer in this subtree, and the
@@ -876,7 +1073,14 @@ void view_spin_tick(FwmView *view, double angle, double dt) {
          * would not build). Rather than dropping the effect entirely, show the
          * snapshot at the nearest quarter turn — those four angles ARE
          * expressible in the scene graph. The window then turns in steps
-         * instead of smoothly, which still reads as a window that rotates. */
+         * instead of smoothly, which still reads as a window that rotates.
+         *
+         * This path hands a BUFFER to the scene, which the live path does not
+         * have — it draws from the client's texture, and that is not ours to
+         * give away. Setup only chooses live when rotation is supported, so
+         * arriving here with no snapshot means the blit failed for some other
+         * reason; keep the last picture rather than blanking the window. */
+        if (!view->spin_src) return;
         int quarter = ((int)lround(angle / (M_PI / 2.0)) % 4 + 4) % 4;
         static const enum wl_output_transform steps[4] = {
             WL_OUTPUT_TRANSFORM_NORMAL, WL_OUTPUT_TRANSFORM_90,
