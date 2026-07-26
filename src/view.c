@@ -128,56 +128,21 @@ static void view_border_box(FwmView *view, int *w, int *h);
 
 /* ── drag wobble ──────────────────────────────────────────────────────────
  *
- * One mass on a spring, lagging behind the window (see the jelly_* fields).
- * K and C give sqrt(K) = 14.8 rad/s, the same ~2.4 Hz the impact squash rings
- * at, and a damping ratio of C/(2*sqrt(K)) = 0.61 — underdamped, so shaking the
- * window builds a wobble that outlives the hand by a beat instead of dying the
- * moment you stop, but not so lightly damped that shaking it AT that 2.4Hz
- * pumps the spring up by resonance.
- *
- * Dragged at a steady speed the lag settles at C*v/K, i.e. 98px at a brisk
- * 1200 px/s. Everything drawn is a function of that lag and nothing else. */
-#define JELLY_K            220.0   /* 1/s^2 */
-#define JELLY_C            18.0    /* 1/s */
-/* The lag is soft-saturated through tanh at this scale before anything is drawn
- * from it, which is the whole defence against a violent shake. Hard caps were
- * worse than no caps: the stretch, the trailing and the anchor each had their
- * own threshold, so a shake big enough to peg all three left the picture
- * slamming between the limits — and the harder the shake, the FASTER it crossed
- * the unsaturated middle, one frame per transition. tanh has no threshold to
- * cross: it is smooth everywhere, and its slope falls off as the lag grows, so
- * shaking twice as hard past this scale moves the picture barely at all. */
-#define JELLY_LAG_SCALE_PX 90.0
-#define JELLY_STRAIN_PER_PX 0.0022 /* lag px -> fraction of the window's size */
-#define JELLY_MAX_S        0.22    /* backstop for effects.jelly above 1 */
-#define JELLY_BULGE        0.5     /* how much the other axis pinches in */
-/* How much of the (saturated) lag the picture hangs back by. This is the part
- * that reads as jelly; the stretch alone only pulsed. */
-#define JELLY_TRAIL        0.5
-/* Time constants of the stretch envelope: it takes up a new peak almost at
- * once and lets go of it slowly, so a fast shake holds the window stretched
- * along the shake instead of pumping it flat and full ten times a second. */
-#define JELLY_ATTACK_S     0.04
-#define JELLY_RELEASE_S    0.22
-/* Smoothing on the drawn offset (see jelly_ox). */
-#define JELLY_SMOOTH_S     0.03
-/* Integration sub-step. Well under 2/sqrt(K), where forward Euler blows up. */
-#define JELLY_STEP_S       (1.0 / 240.0)
-#define JELLY_MAX_STEPS    64
-/* An impact arriving mid-drag is fed to the spring as a kick. Peak lag from a
- * kick is about v/sqrt(K), so this turns a typical 0.15 impact into ~40px. */
-#define JELLY_HIT_KICK     4000.0
+ * The lattice itself is wobble.c; these are the numbers that turn it into
+ * pixels. See the jelly_* fields for how it is drawn. */
+
+/* Slack around the window in the warp target, as a fraction of its larger
+ * side, and the bounds on it. A wobbling sheet overshoots its own box, and
+ * whatever leaves the buffer is clipped by a straight invisible edge — so this
+ * wants to be comfortably past the ~80px an ordinary drag reaches, without
+ * paying for a shake nobody performs. */
+#define JELLY_MARGIN_FRAC  0.22
+#define JELLY_MARGIN_MIN   48
+#define JELLY_MARGIN_MAX   192
 /* How often the frozen picture behind the wobble is retaken, in seconds. Same
  * trade as the spin's refresh: a dragged terminal keeps blinking and a dragged
  * video keeps moving, for one flatten-the-subtree pass 6-7 times a second. */
 #define JELLY_REFRESH_S    0.15
-/* Lag (px) and spring speed (px/s) below which a released wobble is over. Not
- * tighter than this on purpose: the frozen picture is not refreshed once the
- * window is let go, and chasing the last half-pixel of a ring-down held the
- * live content back for an extra third of a second (0.78s against 0.62s,
- * measured) with nothing on screen to show for it. */
-#define JELLY_REST_PX      2.0
-#define JELLY_REST_VEL     30.0
 
 /* ── composited snapshot of a window ──────────────────────────────────────
  *
@@ -325,21 +290,12 @@ void view_stop_squash(FwmView *view) {
     }
     view->squash_t = 0.0;
     view->squash_amount = 0.0;
-    view->jelly = 0;
-    view->jelly_settling = 0;
-    view->jelly_ampx = view->jelly_ampy = 0.0;
-    view->jelly_ox = view->jelly_oy = 0.0;
-    if (view->jelly_alt) {
-        wlr_buffer_unlock(view->jelly_alt);
-        view->jelly_alt = NULL;
-    }
     view_set_content_enabled(view, true);
     view_update_border_geometry(view); /* back to the real box */
 }
 
 /* Put the deformable snapshot in place and hide the live content behind it.
- * Both the impact squash and the drag wobble come through here, which is what
- * makes them share the one slot. False if there is nothing to snapshot. */
+ * False if there is nothing to snapshot. */
 static bool view_take_deform_snapshot(FwmView *view) {
     /* A composite of the whole subtree, not the toplevel's raw buffer: see
      * view_snapshot_content. We hold the reference the allocator gave us until
@@ -363,19 +319,11 @@ static bool view_take_deform_snapshot(FwmView *view) {
 void view_start_squash(FwmView *view, double nx, double ny, double amount) {
     if (!view->scene_tree || !view->last_buffer) return;
     if (amount <= 0.001) return;
-    /* A spinning window already has the snapshot slot, and a deformation along
-     * a screen-axis normal would be visibly wrong on a tilted picture. */
-    if (view->spin_buf) return;
-
-    /* Mid-drag the wobble owns the deformation. An impact does not get to
-     * replace it with a one-shot dent — it gets to kick the spring, which is
-     * the same information expressed in the animation already running: bang a
-     * window you are holding into another and it shudders. */
-    if (view->jelly) {
-        view->jelly_vx += nx * amount * JELLY_HIT_KICK;
-        view->jelly_vy += ny * amount * JELLY_HIT_KICK;
-        return;
-    }
+    /* A spinning window already has the picture, and a deformation along a
+     * screen-axis normal would be visibly wrong on a tilted one. A wobbling
+     * window has it too, and there the impact is not lost: the collision moved
+     * the window, and moving the window is exactly what the sheet responds to. */
+    if (view->spin_buf || view->jelly) return;
 
     if (view->squash_buf) {
         /* Already deforming: retarget rather than stacking a second snapshot,
@@ -400,7 +348,7 @@ void view_start_squash(FwmView *view, double nx, double ny, double amount) {
 }
 
 void view_squash_tick(FwmView *view, double dt) {
-    if (!view->squash_buf || view->jelly) return;
+    if (!view->squash_buf) return;
     view->squash_t += dt;
 
     /* Damped oscillation: a hard squash that springs back through a smaller
@@ -439,194 +387,258 @@ void view_squash_tick(FwmView *view, double dt) {
 
 /* ── drag wobble ──────────────────────────────────────────────────────── */
 
-void view_jelly_begin(FwmView *view, double strength) {
+/* The warp target is the window plus slack on every side; the mesh is drawn
+ * into it and the node sits at -margin so the window's own box still lines up
+ * where it always did. */
+static int jelly_margin_for(int w, int h) {
+    int big = w > h ? w : h;
+    int m = (int)lround(JELLY_MARGIN_FRAC * big);
+    if (m < JELLY_MARGIN_MIN) m = JELLY_MARGIN_MIN;
+    if (m > JELLY_MARGIN_MAX) m = JELLY_MARGIN_MAX;
+    return m;
+}
+
+/* The warped picture covers the window plus its margin, so left to itself it
+ * would swallow clicks in a transparent frame all around — including a good
+ * part of whatever is next to it. The lattice's own outline is the honest
+ * answer but a point-in-polygon test against 64 quads per motion event is not;
+ * the window's box, offset by how far the sheet has actually moved, is within
+ * a few px of it and is what the cursor is aiming at anyway. */
+static bool jelly_accepts_input(struct wlr_scene_buffer *buffer, double *sx, double *sy) {
+    FwmView *view = buffer->node.data;
+    if (!view || !view->jelly_buf) return true;
+    double lx = *sx - view->jelly_margin, ly = *sy - view->jelly_margin;
+    double dx = view->jelly_wob.px[0], dy = view->jelly_wob.py[0];   /* top-left point */
+    return lx >= dx && ly >= dy &&
+           lx <= dx + view->jelly_w && ly <= dy + view->jelly_h;
+}
+
+/* Tear the machinery down without touching what it hid — view_jelly_stop does
+ * that part, and a mid-wobble resize deliberately does not. */
+static void view_jelly_free(FwmView *view) {
+    if (view->jelly_buf) {
+        wlr_scene_node_destroy(&view->jelly_buf->node);
+        view->jelly_buf = NULL;
+    }
+    if (view->jelly_tex) {
+        wlr_texture_destroy(view->jelly_tex);
+        view->jelly_tex = NULL;
+    }
+    if (view->jelly_src) {
+        wlr_buffer_unlock(view->jelly_src);
+        view->jelly_src = NULL;
+    }
+    for (int i = 0; i < 2; i++) {
+        if (view->jelly_dst[i]) {
+            wlr_buffer_unlock(view->jelly_dst[i]);
+            view->jelly_dst[i] = NULL;
+        }
+    }
+    view->jelly_w = view->jelly_h = view->jelly_margin = 0;
+    view->jelly_flip = 0;
+    view->jelly_snap_t = 0.0;
+}
+
+void view_jelly_stop(FwmView *view) {
+    if (!view->jelly) return;
+    int border = view->jelly_border;
+    view->jelly = 0;
+    view->jelly_settling = 0;
+    view_jelly_free(view);
+    view_set_content_enabled(view, true);
+    if (border) view_set_border_enabled(view, 1);
+    view_update_border_geometry(view);
+}
+
+/* Build (or rebuild) the snapshot, the two warp targets and the scene node.
+ * Called when the wobble starts and again whenever the window changes size. */
+static bool view_jelly_setup(FwmView *view) {
+    FwmServer *server = view->server;
+    if (!view->scene_tree || !server->wlr_renderer) return false;
+
+    int w = view->width, h = view->height;
+    if (w <= 0 || h <= 0) return false;
+
+    bool restarting = view->jelly_buf != NULL;
+    int border = restarting ? view->jelly_border
+                            : (view->border[0] && view->border[0]->node.enabled);
+    view_jelly_free(view);
+
+    /* The live content has to be visible to be photographed, so the snapshot
+     * comes first and the window is hidden only once it succeeded — a failed
+     * setup must leave the window on screen, not blank. */
+    if (restarting) view_set_content_enabled(view, true);
+    if (border) view_set_border_enabled(view, 1);
+
+    int margin = jelly_margin_for(w, h);
+
+    struct wlr_buffer *src = view_snapshot_content(view);
+    if (!src) goto fail;
+    view->jelly_src = wlr_buffer_lock(src);
+    wlr_buffer_drop(src);
+
+    view->jelly_tex = wlr_texture_from_buffer(server->wlr_renderer, view->jelly_src);
+    if (!view->jelly_tex) goto fail;
+
+    /* Two targets used alternately: the scene may still be reading last
+     * frame's while this one is drawn, and overwriting it in place would tear. */
+    for (int i = 0; i < 2; i++) {
+        struct wlr_buffer *d = view_alloc_buffer(server, w + 2 * margin, h + 2 * margin);
+        if (!d) goto fail;
+        view->jelly_dst[i] = wlr_buffer_lock(d);
+        wlr_buffer_drop(d);
+    }
+
+    view->jelly_buf = wlr_scene_buffer_create(view->scene_tree, NULL);
+    if (!view->jelly_buf) goto fail;
+    wlr_scene_node_lower_to_bottom(&view->jelly_buf->node);
+    /* view_at() walks up from the node's PARENT to find the view, so this is
+     * free for the hit test to use. */
+    view->jelly_buf->node.data = view;
+    view->jelly_buf->point_accepts_input = jelly_accepts_input;
+    wlr_scene_node_set_position(&view->jelly_buf->node, -margin, -margin);
+
+    view->jelly_w = w;
+    view->jelly_h = h;
+    view->jelly_margin = margin;
+    view->jelly_snap_t = 0.0;
+    view->jelly_border = border;
+
+    /* The borders are scene rectangles: they cannot bend any more than they
+     * can tilt, so they go away for the duration rather than framing a window
+     * that is no longer where they say it is. */
+    view_set_content_enabled(view, false);
+    view_set_border_enabled(view, 0);
+    return true;
+
+fail:
+    view_jelly_free(view);
+    view_set_content_enabled(view, true);
+    if (border) view_set_border_enabled(view, 1);
+    return false;
+}
+
+/* Draw the lattice as it stands. Returns false if the mesh could not be drawn
+ * at all, which is the caller's cue to give the live window back. */
+static bool view_jelly_draw(FwmView *view, double strength) {
+    float pts[WOBBLE_POINTS * 2];
+    wobble_points(&view->jelly_wob, pts, view->jelly_margin, view->jelly_margin);
+
+    if (strength != 1.0) {
+        /* Move every point toward (or past) where it would rest. Scaling the
+         * SHAPE rather than the springs is what keeps the wobble's timing the
+         * same at every setting — only its size changes. */
+        for (int j = 0; j < WOBBLE_GRID; j++) {
+            for (int i = 0; i < WOBBLE_GRID; i++) {
+                int k = j * WOBBLE_GRID + i;
+                float hx = (float)(view->jelly_margin + (double)view->jelly_w * i / (WOBBLE_GRID - 1));
+                float hy = (float)(view->jelly_margin + (double)view->jelly_h * j / (WOBBLE_GRID - 1));
+                pts[k * 2 + 0] = hx + (pts[k * 2 + 0] - hx) * (float)strength;
+                pts[k * 2 + 1] = hy + (pts[k * 2 + 1] - hy) * (float)strength;
+            }
+        }
+    }
+
+    struct wlr_buffer *dst = view->jelly_dst[view->jelly_flip];
+    if (!warp_blit(view->server->wlr_renderer, dst, view->jelly_tex, WOBBLE_GRID, pts)) {
+        return false;
+    }
+    wlr_scene_buffer_set_buffer(view->jelly_buf, dst);
+    view->jelly_flip ^= 1;
+    return true;
+}
+
+void view_jelly_begin(FwmView *view, double strength, double grab_lx, double grab_ly) {
     if (!view->scene_tree || !view->last_buffer) return;
     if (strength <= 0.0) return;
     /* Rotation wins, exactly as it does over the impact squash: it owns the
-     * snapshot, and a lag measured along the screen axes says nothing useful
-     * about a picture that is tilted. */
+     * picture, and a sheet bending along the screen axes says nothing useful
+     * about one that is tilted. */
     if (view->spin_buf) return;
+    /* No mesh without the GLES2 path. Unlike the spin there is no degraded
+     * version worth showing — a window that does not wobble is just a window. */
+    if (!rotate_supported(view->server->wlr_renderer)) return;
 
-    if (view->jelly) { view->jelly_settling = 0; return; }
-    /* A dent from a landing a moment ago is replaced by the wobble rather than
-     * fought with — same slot, and the drag is the newer intent. */
-    if (view->squash_buf) view_stop_squash(view);
-    if (!view_take_deform_snapshot(view)) return;
-
-    /* The spare the refresh renders into. Failing to get one is not fatal: the
-     * wobble then simply shows a still window, as the impact squash does. */
-    struct wlr_buffer *alt = view_alloc_buffer(view->server, view->width, view->height);
-    if (alt) {
-        view->jelly_alt = wlr_buffer_lock(alt);
-        wlr_buffer_drop(alt);
+    if (view->jelly) {
+        view->jelly_settling = 0;
+        wobble_grab(&view->jelly_wob, grab_lx, grab_ly);
+        return;
     }
+    /* A dent from a landing a moment ago is replaced by the wobble rather than
+     * fought with — same picture, and the drag is the newer intent. */
+    if (view->squash_buf) view_stop_squash(view);
+    if (!view_jelly_setup(view)) return;
 
     view->jelly = 1;
     view->jelly_settling = 0;
-    view->jelly_snap_t = 0.0;
-    view->jelly_mx = view->jelly_px = view->x;
-    view->jelly_my = view->jelly_py = view->y;
-    view->jelly_vx = view->jelly_vy = 0.0;
-    view->jelly_ampx = view->jelly_ampy = 0.0;
-    view->jelly_ox = view->jelly_oy = 0.0;
-}
+    view->jelly_px = view->x;
+    view->jelly_py = view->y;
+    wobble_reset(&view->jelly_wob, view->jelly_w, view->jelly_h);
+    wobble_grab(&view->jelly_wob, grab_lx, grab_ly);
 
-/* Replace the frozen picture with a fresh one. Same dance as the spin's
- * refresh: the live nodes come back for the length of the pass and the frozen
- * picture goes away, or each refresh would bake the last deformed frame into
- * the next one. Nothing is presented in between, so the window never flashes
- * back to its undeformed self. */
-static void view_jelly_refresh(FwmView *view) {
-    if (!view->jelly_alt || !view->squash_buf) return;
-    if (view->jelly_alt->width != view->width || view->jelly_alt->height != view->height) return;
-
-    view_set_content_enabled(view, true);
-    wlr_scene_node_set_enabled(&view->squash_buf->node, false);
-    bool ok = view_snapshot_into(view, view->jelly_alt);
-    wlr_scene_node_set_enabled(&view->squash_buf->node, true);
-    view_set_content_enabled(view, false);
-    if (!ok) return;
-
-    struct wlr_buffer *shown = view->jelly_alt;
-    view->jelly_alt = view->squash_lock;   /* the one being retired becomes the spare */
-    view->squash_lock = shown;
-    wlr_scene_buffer_set_buffer(view->squash_buf, shown);
+    /* The setup above hid the live window behind a scene node with no picture
+     * in it yet, and the first tick is a frame away. Draw the undeformed sheet
+     * now — it is a plain copy of the window — or the press would blink it out
+     * of existence for that frame. */
+    if (!view_jelly_draw(view, strength)) view_jelly_stop(view);
 }
 
 void view_jelly_release(FwmView *view) {
-    if (view->jelly) view->jelly_settling = 1;
+    if (!view->jelly) return;
+    view->jelly_settling = 1;
+    wobble_release(&view->jelly_wob);
+}
+
+/* Retake the frozen picture. The live nodes come back for the length of the
+ * pass and the warped one goes away, or each refresh would bake the last bent
+ * frame into the next. Nothing is presented in between, so the window never
+ * flashes back to its undeformed self. */
+static void view_jelly_resnap(FwmView *view) {
+    view_set_content_enabled(view, true);
+    wlr_scene_node_set_enabled(&view->jelly_buf->node, false);
+    view_snapshot_into(view, view->jelly_src);
+    wlr_scene_node_set_enabled(&view->jelly_buf->node, true);
+    view_set_content_enabled(view, false);
 }
 
 void view_jelly_tick(FwmView *view, double strength, double dt) {
     if (!view->jelly) return;
-    if (!view->squash_buf || view->spin_buf || strength <= 0.0) {
-        view_stop_squash(view);
-        return;
-    }
+    if (view->spin_buf || strength <= 0.0) { view_jelly_stop(view); return; }
     if (dt <= 0.0) return;
 
+    if (!view->jelly_buf || view->jelly_w != view->width || view->jelly_h != view->height) {
+        if (!view_jelly_setup(view)) { view_jelly_stop(view); return; }
+        wobble_resize(&view->jelly_wob, view->jelly_w, view->jelly_h);
+    }
+
     /* Only while the window is actually held: once let go the wobble is over
-     * within a few frames and the live content is about to come back anyway. */
+     * within half a second and the live content is about to come back. */
     if (!view->jelly_settling) {
         view->jelly_snap_t += dt;
         if (view->jelly_snap_t >= JELLY_REFRESH_S) {
             view->jelly_snap_t = 0.0;
-            view_jelly_refresh(view);
+            view_jelly_resnap(view);
         }
     }
 
-    double px = view->x, py = view->y;
+    /* The window's own movement is the only thing that ever drives the sheet:
+     * the rest positions go where the window went, the points stay where they
+     * were, and the springs take it from there. */
+    wobble_translate(&view->jelly_wob, view->x - view->jelly_px, view->y - view->jelly_py);
+    view->jelly_px = view->x;
+    view->jelly_py = view->y;
 
-    /* Let go: the mass rides along with the window from here on, so the spring
-     * only has its own energy left to spend and the wobble ends. Without this
-     * the window's flight keeps driving it — and a window sailing at a steady
-     * speed holds a steady lag, which is a deformation that would never settle
-     * and a snapshot that would never hand the live content back. */
-    if (view->jelly_settling) {
-        view->jelly_mx += px - view->jelly_px;
-        view->jelly_my += py - view->jelly_py;
-    }
-    view->jelly_px = px;
-    view->jelly_py = py;
+    /* `strength` scales how far the sheet is allowed to be from its rest shape,
+     * not the springs themselves — the wobble keeps its timing at any setting
+     * and only gets bigger or smaller. */
+    wobble_step(&view->jelly_wob, dt);
 
-    /* Sub-stepped, and not as a nicety: forward Euler on a spring this stiff
-     * goes unstable somewhere past dt = 2/sqrt(K), and server_animate hands out
-     * dt up to its 0.25s stall clamp. One dropped frame was enough to have the
-     * mass thrown clear across the screen and snap back — a flinch, not a
-     * wobble. Fixed small steps make a long frame slow the wobble down instead
-     * of detonating it. */
-    int steps = (int)ceil(dt / JELLY_STEP_S);
-    if (steps < 1) steps = 1;
-    if (steps > JELLY_MAX_STEPS) steps = JELLY_MAX_STEPS;
-    double sdt = dt / steps;
-    for (int i = 0; i < steps; i++) {
-        view->jelly_vx += (JELLY_K * (px - view->jelly_mx) - JELLY_C * view->jelly_vx) * sdt;
-        view->jelly_vy += (JELLY_K * (py - view->jelly_my) - JELLY_C * view->jelly_vy) * sdt;
-        view->jelly_mx += view->jelly_vx * sdt;
-        view->jelly_my += view->jelly_vy * sdt;
-    }
-
-    /* How far the jelly is behind the window it is painted on. */
-    double lx = view->jelly_mx - px;
-    double ly = view->jelly_my - py;
-
-    /* The envelope is the last thing to let go — ending on the spring alone
-     * would snap a still-stretched window back to its resting shape in one
-     * frame. (Its own value is from the previous tick, which is all this needs:
-     * it only ever decays here.) */
-    if (view->jelly_settling &&
-        fabs(lx) < JELLY_REST_PX && fabs(ly) < JELLY_REST_PX &&
-        view->jelly_ampx < JELLY_REST_PX && view->jelly_ampy < JELLY_REST_PX &&
-        fabs(view->jelly_vx) < JELLY_REST_VEL && fabs(view->jelly_vy) < JELLY_REST_VEL) {
-        view_stop_squash(view);
+    if (view->jelly_settling && wobble_at_rest(&view->jelly_wob)) {
+        view_jelly_stop(view);
         return;
     }
 
-    int w, h;
-    view_border_box(view, &w, &h);
-    if (w <= 0 || h <= 0) { view_stop_squash(view); return; }
-
-    /* Everything below is a function of the SATURATED lag: see the comment on
-     * JELLY_LAG_SCALE_PX. Shaking harder past that scale asks for almost
-     * nothing more, which is what stops a hard shake turning into convulsions. */
-    double ex = JELLY_LAG_SCALE_PX * tanh(lx / JELLY_LAG_SCALE_PX);
-    double ey = JELLY_LAG_SCALE_PX * tanh(ly / JELLY_LAG_SCALE_PX);
-
-    /* The stretch follows an envelope of |lag|, not |lag| itself: see the
-     * jelly_amp* fields. Exponential rather than a fixed fraction per frame so
-     * a slow frame does not change how fast it moves. */
-    double up = 1.0 - exp(-dt / JELLY_ATTACK_S);
-    double dn = 1.0 - exp(-dt / JELLY_RELEASE_S);
-    double ax = fabs(ex), ay = fabs(ey);
-    view->jelly_ampx += (ax - view->jelly_ampx) * (ax > view->jelly_ampx ? up : dn);
-    view->jelly_ampy += (ay - view->jelly_ampy) * (ay > view->jelly_ampy ? up : dn);
-
-    double gx = view->jelly_ampx * JELLY_STRAIN_PER_PX * strength;
-    double gy = view->jelly_ampy * JELLY_STRAIN_PER_PX * strength;
-    if (gx > JELLY_MAX_S) gx = JELLY_MAX_S;
-    if (gy > JELLY_MAX_S) gy = JELLY_MAX_S;
-
-    /* Stretch along the lag, pinch across it — the same volume-preserving trick
-     * the impact squash uses, pointed the other way round because this one is
-     * being pulled rather than pressed. */
-    double sx = 1.0 + gx - JELLY_BULGE * gy;
-    double sy = 1.0 + gy - JELLY_BULGE * gx;
-
-    int dw = (int)lround(w * sx), dh = (int)lround(h * sy);
-    if (dw < 1) dw = 1;
-    if (dh < 1) dh = 1;
-
-    /* The body trails: the picture hangs back along the lag. Without this the
-     * window stayed exactly where it was and only its SIZE pulsed, which is a
-     * twitch, not a sway — the trailing is what reads as weight, the stretch is
-     * the small half of it.
-     *
-     * The stretch itself grows from the CENTRE, and that is the only choice
-     * with no sign in it. Growing it from whichever edge happens to be trailing
-     * means the anchor flips as the lag passes through zero, and the whole box
-     * teleports by (w - dw) every time it does — twice per wobble. Softening
-     * that flip into a slide only shrank the window it happened in: shaken hard
-     * the lag crosses the middle in a single frame and the slide is a jump
-     * again. Centred, there is nothing to cross; the trailing already puts the
-     * picture behind the window, which is what the edge anchor was reaching
-     * for. */
-    double want_ox = JELLY_TRAIL * ex + (w - dw) / 2.0;
-    double want_oy = JELLY_TRAIL * ey + (h - dh) / 2.0;
-
-    /* Rounds off the corners of that near-square wave. Short enough that an
-     * ordinary drag barely knows it is there (worst frame-to-frame movement
-     * 12px -> 10px, measured) and long enough to halve a frantic one (77px ->
-     * 36px) without eating the swing itself. */
-    double k = 1.0 - exp(-dt / JELLY_SMOOTH_S);
-    view->jelly_ox += (want_ox - view->jelly_ox) * k;
-    view->jelly_oy += (want_oy - view->jelly_oy) * k;
-
-    int ox = (int)lround(view->jelly_ox);
-    int oy = (int)lround(view->jelly_oy);
-
-    wlr_scene_buffer_set_dest_size(view->squash_buf, dw, dh);
-    wlr_scene_node_set_position(&view->squash_buf->node, ox, oy);
-    view_place_borders(view, ox, oy, dw, dh);
+    if (!view_jelly_draw(view, strength)) view_jelly_stop(view);
 }
 
 /* ── free rotation ────────────────────────────────────────────────────── */
@@ -773,8 +785,10 @@ void view_spin_tick(FwmView *view, double angle, double dt) {
     /* The squash owns the same snapshot slot and deforms an upright window;
      * the two cannot both be showing. Rotation wins — it is the bigger, longer
      * lasting effect, and an impact that arrives mid-spin already shows itself
-     * in the way the window tumbles. */
+     * in the way the window tumbles. The drag wobble is a picture of the window
+     * too, and gives way for the same reason. */
     if (view->squash_buf) view_stop_squash(view);
+    view_jelly_stop(view);
 
     bool redraw = false;
 
@@ -1316,6 +1330,7 @@ void view_unmap(FwmView *view) {
     /* Before anything else: the snapshot lives in scene_tree, which is about to
      * go, and it holds a buffer lock the close ghost may want back. */
     view_stop_squash(view);
+    view_jelly_stop(view);
     view_stop_spin(view);
 
     /* Which desktop to re-home the keyboard on, read before the body goes. */

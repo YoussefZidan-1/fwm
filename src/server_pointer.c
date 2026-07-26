@@ -526,6 +526,7 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
              * for the rest of the effect. The user taking hold of it outranks
              * the animation. */
             view_stop_squash(view);
+            view_jelly_stop(view);
             server_focus_view(server, view);
             physics_stop_body(&server->physics, view->id);
             
@@ -584,11 +585,18 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
                         }
                         server->interactive.collision_disabled = (active_mods & FWM_MOD_SHIFT) ? 1 : 0;
 
-                        /* The window goes soft for as long as it is held. A
-                         * tiled one does not move under the drag at all, so
-                         * there would be nothing for the jelly to lag behind. */
+                        /* The window goes soft for as long as it is held, and
+                         * the sheet is held at the point the cursor took hold
+                         * of — window-local, from its top-left, which is the
+                         * frame the lattice works in. (Not interactive.grab_l*
+                         * above: that one is measured from the CENTRE and
+                         * un-rotated, for the pendulum a spinning window hangs
+                         * from.) A tiled window does not move under the drag at
+                         * all, so there would be nothing to lag behind. */
                         if (!tiling) {
-                            view_jelly_begin(view, server->config.effects.jelly);
+                            view_jelly_begin(view, server->config.effects.jelly,
+                                             (lx + server->camera_x) - view->x,
+                                             ly - view->y);
                         }
                     }
                 } else if (event->button == BTN_RIGHT) {

@@ -63,6 +63,7 @@ set(SOURCES
     src/video.c
     src/view.c
     src/rotate.c
+    src/wobble.c
     src/layer.c
     src/lock.c
     src/foreign.c
@@ -184,8 +185,16 @@ if(FWM_TESTS)
     add_executable(test_ipc_events tests/test_ipc_events.c src/ipc_events.c)
     target_include_directories(test_ipc_events PRIVATE src tests)
 
+    # The drag wobble's lattice is springs over doubles. It only ever runs with
+    # a mouse button held down, which is exactly when nobody can inspect it —
+    # so it is asserted here instead.
+    add_executable(test_wobble tests/test_wobble.c src/wobble.c)
+    target_include_directories(test_wobble PRIVATE src tests)
+    target_link_libraries(test_wobble PRIVATE m)
+
     add_test(NAME bsp        COMMAND test_bsp)
     add_test(NAME config     COMMAND test_config)
     add_test(NAME input      COMMAND test_input)
     add_test(NAME ipc_events COMMAND test_ipc_events)
+    add_test(NAME wobble     COMMAND test_wobble)
 endif()

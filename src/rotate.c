@@ -167,10 +167,15 @@ static void egl_leave(struct wlr_renderer *renderer, const struct egl_save *save
     eglMakeCurrent(save->display, save->draw, save->read, save->context);
 }
 
-bool rotate_blit(struct wlr_renderer *renderer, struct wlr_buffer *dst,
-                 struct wlr_texture *src, int src_w, int src_h, double angle) {
+/* Draw `count` textured vertices into `dst`. Positions are in NDC and texture
+ * coordinates in [0,1], both already laid out by the caller — which is the
+ * whole trick this file turns: the transform lives in the vertex array, never
+ * in a matrix, so a rotation and a bend are the same draw call with different
+ * numbers in it. */
+static bool blit_verts(struct wlr_renderer *renderer, struct wlr_buffer *dst,
+                       struct wlr_texture *src, const GLfloat *verts,
+                       const GLfloat *texcoords, int count, GLenum mode) {
     if (!rotate_supported(renderer) || !dst || !src) return false;
-    if (src_w <= 0 || src_h <= 0) return false;
     if (owner != renderer) {
         /* A different renderer than the one the programs were built on: forget
          * them without touching GL. The old context is the only thing that
@@ -201,6 +206,61 @@ bool rotate_blit(struct wlr_renderer *renderer, struct wlr_buffer *dst,
 
     int dw = dst->width, dh = dst->height;
 
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, dw, dh);
+    glDisable(GL_SCISSOR_TEST);
+    /* The destination is bigger than the window (it has to hold the rotated or
+     * bent shape), so everything the mesh does not cover must end up fully
+     * transparent. */
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    /* No blending: the snapshot is already premultiplied and the target was
+     * just cleared, so a straight copy preserves its alpha exactly. Blending
+     * it over transparent black would multiply the colour by alpha twice and
+     * leave a translucent window with dark fringes. */
+    glDisable(GL_BLEND);
+
+    glUseProgram(p->id);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(attribs.target, attribs.tex);
+    /* Linear sampling is what makes a rotation look rotated rather than
+     * shredded, and what keeps a stretched cell of the mesh smooth; clamping
+     * keeps the edge pixels from wrapping around. */
+    glTexParameteri(attribs.target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(attribs.target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(attribs.target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(attribs.target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glUniform1i(p->uni_tex, 0);
+
+    /* Client-side arrays, so a buffer left bound by whoever ran last would be
+     * read instead of ours. */
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glVertexAttribPointer(p->attr_pos, 2, GL_FLOAT, GL_FALSE, 0, verts);
+    glVertexAttribPointer(p->attr_texcoord, 2, GL_FLOAT, GL_FALSE, 0, texcoords);
+    glEnableVertexAttribArray(p->attr_pos);
+    glEnableVertexAttribArray(p->attr_texcoord);
+
+    glDrawArrays(mode, 0, count);
+
+    glDisableVertexAttribArray(p->attr_pos);
+    glDisableVertexAttribArray(p->attr_texcoord);
+    glBindTexture(attribs.target, 0);
+    glUseProgram(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    ok = true;
+
+out:
+    egl_leave(renderer, &save);
+    return ok;
+}
+
+bool rotate_blit(struct wlr_renderer *renderer, struct wlr_buffer *dst,
+                 struct wlr_texture *src, int src_w, int src_h, double angle) {
+    if (!dst || src_w <= 0 || src_h <= 0) return false;
+
+    int dw = dst->width, dh = dst->height;
+
     /* The four corners of the source rectangle, rotated about the center of
      * the destination. Same y-down matrix Box2D's polygon uses in this world,
      * so what is drawn is exactly the box that collides. */
@@ -223,52 +283,46 @@ bool rotate_blit(struct wlr_renderer *renderer, struct wlr_buffer *dst,
         verts[i * 2 + 1] = (GLfloat)(2.0 * y / dh - 1.0);
     }
     /* Triangle fan over the corners in order: 0-1-2, 0-2-3. */
+    return blit_verts(renderer, dst, src, verts, texcoords, 4, GL_TRIANGLE_FAN);
+}
 
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glViewport(0, 0, dw, dh);
-    glDisable(GL_SCISSOR_TEST);
-    /* The destination is bigger than the window (it has to hold the rotated
-     * box), so everything outside the quad must end up fully transparent. */
-    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
+/* Two triangles per cell of the lattice. A strip would need degenerate
+ * vertices to jump rows and the mesh is small enough that the saving is not
+ * worth the trap; a list is what it looks like. */
+#define WARP_MAX_VERTS ((WARP_MAX_GRID - 1) * (WARP_MAX_GRID - 1) * 6)
+static GLfloat warp_verts[WARP_MAX_VERTS * 2];
+static GLfloat warp_tex[WARP_MAX_VERTS * 2];
 
-    /* No blending: the snapshot is already premultiplied and the target was
-     * just cleared, so a straight copy preserves its alpha exactly. Blending
-     * it over transparent black would multiply the colour by alpha twice and
-     * leave a translucent window with dark fringes. */
-    glDisable(GL_BLEND);
+bool warp_blit(struct wlr_renderer *renderer, struct wlr_buffer *dst,
+               struct wlr_texture *src, int grid, const float *pts) {
+    if (!dst || !pts) return false;
+    if (grid < 2 || grid > WARP_MAX_GRID) return false;
 
-    glUseProgram(p->id);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(attribs.target, attribs.tex);
-    /* Linear sampling is what makes a rotation look rotated rather than
-     * shredded; clamping keeps the edge pixels from wrapping around. */
-    glTexParameteri(attribs.target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(attribs.target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(attribs.target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(attribs.target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glUniform1i(p->uni_tex, 0);
+    double dw = dst->width, dh = dst->height;
+    if (dw <= 0.0 || dh <= 0.0) return false;
 
-    /* Client-side arrays, so a buffer left bound by whoever ran last would be
-     * read instead of ours. */
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glVertexAttribPointer(p->attr_pos, 2, GL_FLOAT, GL_FALSE, 0, verts);
-    glVertexAttribPointer(p->attr_texcoord, 2, GL_FLOAT, GL_FALSE, 0, texcoords);
-    glEnableVertexAttribArray(p->attr_pos);
-    glEnableVertexAttribArray(p->attr_texcoord);
+    int n = 0;
+    for (int j = 0; j < grid - 1; j++) {
+        for (int i = 0; i < grid - 1; i++) {
+            /* The cell's four corners, and the same four in texture space. */
+            const int ci[4] = { j * grid + i,       j * grid + i + 1,
+                                (j + 1) * grid + i + 1, (j + 1) * grid + i };
+            const int cu[4] = { i, i + 1, i + 1, i };
+            const int cv[4] = { j, j,     j + 1, j + 1 };
+            static const int tri[6] = { 0, 1, 2, 0, 2, 3 };
 
-    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+            for (int k = 0; k < 6; k++) {
+                int c = tri[k];
+                warp_verts[n * 2 + 0] = (GLfloat)(2.0 * pts[ci[c] * 2 + 0] / dw - 1.0);
+                warp_verts[n * 2 + 1] = (GLfloat)(2.0 * pts[ci[c] * 2 + 1] / dh - 1.0);
+                warp_tex[n * 2 + 0] = (GLfloat)cu[c] / (GLfloat)(grid - 1);
+                warp_tex[n * 2 + 1] = (GLfloat)cv[c] / (GLfloat)(grid - 1);
+                n++;
+            }
+        }
+    }
 
-    glDisableVertexAttribArray(p->attr_pos);
-    glDisableVertexAttribArray(p->attr_texcoord);
-    glBindTexture(attribs.target, 0);
-    glUseProgram(0);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    ok = true;
-
-out:
-    egl_leave(renderer, &save);
-    return ok;
+    return blit_verts(renderer, dst, src, warp_verts, warp_tex, n, GL_TRIANGLES);
 }
 
 void rotate_shutdown(struct wlr_renderer *renderer) {

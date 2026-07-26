@@ -21,6 +21,8 @@
 #include <wlr/xwayland.h>
 #include <stdbool.h>
 
+#include "wobble.h"
+
 struct FwmServer;
 struct FwmGroup;
 
@@ -104,37 +106,33 @@ typedef struct FwmView {
     double squash_amount;             /* peak deformation, 0..1 */
     double squash_nx, squash_ny;      /* impact normal, points at the contact */
 
-    /* Wobble ("jelly") while a window is dragged. Shares the snapshot slot
-     * above — squash_buf is the deformed node either way, so the wobble, the
-     * impact squash and the spin can never be on screen at the same time and
-     * whichever starts last takes the slot over.
+    /* Wobble ("jelly") while a window is dragged: KDE's effect, a sheet of
+     * springs that bends rather than a rectangle that is scaled. The model is
+     * in wobble.h and knows nothing about any of this; here is only what it
+     * takes to draw it.
      *
-     * The model is one lagging mass on a spring: `jelly_mx/my` chases the
-     * window's real position, and the distance it is behind by IS the
-     * deformation. Nothing here is driven by the drag's velocity directly —
-     * a spring lags on its own, which is what makes shaking the window build
-     * up a wobble that keeps going for a moment after the hand stops. */
-    int jelly;                        /* the wobble owns squash_buf */
-    int jelly_settling;               /* let go: relax to rest, then give the
+     * Which is the same machinery the spin below uses, for the same reason —
+     * the scene graph cannot express a bent window any more than a tilted one,
+     * so the subtree is flattened into `jelly_src` and warp_blit draws it
+     * through the lattice into one of the `jelly_dst` pair. The destination is
+     * bigger than the window by `jelly_margin` on every side, because a
+     * wobbling sheet overshoots its own box.
+     *
+     * The wobble, the impact squash and the spin all replace the window with a
+     * picture of it, so at most one of the three can be running. */
+    int jelly;                        /* the wobble owns the picture */
+    int jelly_settling;               /* let go: come to rest, then give the
                                        * live window back */
-    double jelly_mx, jelly_my;        /* the mass, world px */
-    double jelly_vx, jelly_vy;        /* its velocity, px/s */
+    Wobble jelly_wob;
+    struct wlr_scene_buffer *jelly_buf;
+    struct wlr_buffer *jelly_src;     /* flattened window content, w x h */
+    struct wlr_texture *jelly_tex;    /* ... imported once, reused every frame */
+    struct wlr_buffer *jelly_dst[2];  /* warped output, window + 2*margin */
+    int jelly_flip;                   /* which of the two to draw into next */
+    int jelly_border;                 /* were the borders shown before it */
+    int jelly_w, jelly_h;             /* window size the snapshot was taken at */
+    int jelly_margin;                 /* slack around the window, px */
     double jelly_px, jelly_py;        /* window position at the last tick */
-    /* How stretched each axis currently is, in lag px — an envelope that
-     * follows the lag's MAGNITUDE up quickly and down slowly, never the
-     * magnitude itself. A shaken jelly stays stretched along the shake; taking
-     * the magnitude straight collapses the window back to its resting shape at
-     * every zero crossing of the wobble, twice per shake. */
-    double jelly_ampx, jelly_ampy;
-    /* Where the deformed box is drawn, smoothed. Shaken faster than the spring
-     * can follow, the lag saturates into what is very nearly a square wave, and
-     * the picture would jump between its two extremes in single frames. */
-    double jelly_ox, jelly_oy;
-    /* The spare snapshot. A drag lasts seconds, not the quarter second an
-     * impact does, so the frozen picture is refreshed as the spin's is — into
-     * this one while the scene is still showing the other, then the two swap.
-     * Overwriting the buffer on screen would tear. */
-    struct wlr_buffer *jelly_alt;
     double jelly_snap_t;              /* seconds since the last refresh */
 
     /* Free rotation (experimental; see PhysicsBody.spin).
@@ -220,18 +218,21 @@ void view_stop_squash(FwmView *view);
 
 /* Drag wobble (see the jelly_* fields above).
  *
- * view_jelly_begin arms it when a drag starts; view_jelly_tick, called every
- * frame with the window's current position, runs the spring and deforms the
- * snapshot; view_jelly_release says the drag is over, after which the wobble
- * damps out on its own and hands the live window back.
+ * view_jelly_begin arms it when a drag starts, told where in the window's own
+ * frame it was taken hold of — that point keeps up with the cursor exactly and
+ * the rest of the sheet trails behind it. view_jelly_tick runs the lattice and
+ * draws it, every frame. view_jelly_release says the hand is off, after which
+ * the wobble rings out on its own and hands the live window back;
+ * view_jelly_stop ends it immediately.
  *
- * `strength` scales the deformation (config effects.jelly); at 0 begin does
- * nothing. A spinning window is never given a wobble — the two want the same
- * snapshot, and a lag along the screen axes is meaningless on a tilted
- * picture. */
-void view_jelly_begin(FwmView *view, double strength);
+ * `strength` scales how far from its rest shape the sheet is drawn (config
+ * effects.jelly), leaving its timing alone; at 0 begin does nothing. Neither
+ * does it on a spinning window, or on a renderer with no GLES2 path — the
+ * wobble is a mesh, and there is no lesser version of it worth showing. */
+void view_jelly_begin(FwmView *view, double strength, double grab_lx, double grab_ly);
 void view_jelly_tick(FwmView *view, double strength, double dt);
 void view_jelly_release(FwmView *view);
+void view_jelly_stop(FwmView *view);
 
 /* Free rotation (see the spin_* fields above). view_spin_tick shows the window
  * at `angle` radians, creating the snapshot machinery on the first call and
