@@ -1414,6 +1414,8 @@ void server_request_tray_redraw(FwmServer *server) {
     data.opacity = server->config.decor.tray_opacity;
     data.error_count = server->config.error_total;
     data.error_expanded = server->errors_buffer != NULL;
+    data.mode_name = (server->key_mode >= 0 && server->key_mode < server->config.mode_count)
+                         ? server->config.modes[server->key_mode].name : NULL;
     data.active_pos = (double)server->camera_x / server->screen_width;
     if (data.active_pos < 0.0) data.active_pos = 0.0;
     if (data.active_pos > 9.0) data.active_pos = 9.0;
