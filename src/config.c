@@ -63,7 +63,7 @@ static int action_is_known(const char *a) {
         "toggle_nocollide", "toggle_nocollide_all", "toggle_tiling_all",
         "toggle_floating", "toggle_floating_all",
         "calm_all", "fake_fullscreen", "real_fullscreen",
-        "launcher", NULL
+        "launcher", "toggle_tray", NULL
     };
     static const char *prefixes[] = {
         "spawn:", "view:", "move_camera:", "tile_focus:", "tile_move:",
@@ -367,6 +367,7 @@ static const struct { const char *bind; const char *action; } default_binds[] = 
     { "super+p",              "pin_window"       },
     { "super+n",              "toggle_nocollide" },
     { "super+g",              "cycle_gravity"    },
+    { "super+j",              "toggle_tray"      },
     { "super+s",              "toggle_split"     },
     { "super+w",              "group_toggle"     },
     { "super+Tab",            "group_next"       },

@@ -107,7 +107,7 @@ repeat_delay = 600
 # system actions: killclient, toggle_tiling, fake_fullscreen, real_fullscreen,
 #                 pin_window, toggle_nocollide, toggle_nocollide_all,
 #                 toggle_tiling_all, toggle_floating, toggle_floating_all,
-#                 calm_all, cycle_gravity,
+#                 calm_all, cycle_gravity, toggle_tray,
 #                 show_hints, show_errors, reload_config,
 #                 wallpaper_picker, launcher, EXIT
 # tiling:         toggle_split, tile_focus:l|r|u|d, tile_move:l|r|u|d
@@ -148,6 +148,10 @@ repeat_delay = 600
 "super+shift+t"      = "toggle_tiling_all"
 "super+shift+c"      = "calm_all"
 "super+g"            = "cycle_gravity"
+# Hide the tray outright — the bar disappears AND stops reserving its
+# strip, so tiled and fake-fullscreen windows grow into the top of the
+# screen. Press again to bring it back.
+"super+j"            = "toggle_tray"
 "super+shift+Escape" = "EXIT"
 # Bound to the physical "/" key, not to the "?" symbol: a symbol bind lands on
 # a different key per layout (US shift+/, RU shift+7), while "slash" resolves

@@ -433,6 +433,7 @@ fit  = "pan"
 "super+p"            = "pin_window"
 "super+n"            = "toggle_nocollide"
 "super+g"            = "cycle_gravity"
+"super+j"            = "toggle_tray"
 "super+s"            = "toggle_split"
 "super+shift+c"      = "calm_all"
 "super+shift+n"      = "toggle_nocollide_all"
@@ -467,6 +468,7 @@ fit  = "pan"
 | `tile_focus:l\|r\|u\|d` | focus tile in direction |
 | `tile_move:l\|r\|u\|d` | swap tile in direction |
 | `toggle_split` | flip split orientation of the focused tile |
+| `toggle_tray` | hide/show the tray — it stops reserving its strip, so windows fill the top |
 | `pin_window`, `toggle_nocollide`, `calm_all`, `cycle_gravity` | physics toggles |
 | `toggle_nocollide_all` / `toggle_tiling_all` / `toggle_floating_all` | same, but every window / every desktop at once |
 | `group_toggle`, `group_add`, `group_next`, `group_prev` | tab-stacks: make a stack, join it, cycle tabs |

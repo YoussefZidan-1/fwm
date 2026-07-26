@@ -266,6 +266,10 @@ typedef struct FwmServer {
     
     /* UI scene nodes */
     struct wlr_scene_buffer *tray_buffer;
+    /* Tray hidden by the user (toggle_tray). Unlike the automatic hide under a
+     * real-fullscreen window, this also gives the strip back: tile_area and
+     * fake fullscreen stop reserving TRAY_BOTTOM, so windows grow into it. */
+    int tray_hidden;
     struct wlr_scene_buffer *hints_buffer;
     struct wlr_scene_buffer *welcome_buffer;
     struct wlr_scene_buffer *errors_buffer; /* config-error detail panel */

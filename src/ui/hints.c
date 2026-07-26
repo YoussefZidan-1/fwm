@@ -101,6 +101,7 @@ static const char *action_label(const char *a, char *buf, size_t cap) {
         { "toggle_tiling_all", "tiling: all desktops" },
         { "calm_all",         "calm all windows" },
         { "cycle_gravity",    "cycle gravity" },
+        { "toggle_tray",      "show/hide tray" },
         { "toggle_split",     "flip split" },
         { "group_toggle",     "tab-stack on/off" },
         { "group_next",       "next tab" },

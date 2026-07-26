@@ -267,6 +267,30 @@ void server_dispatch_action(FwmServer *server, const char *action) {
          * otherwise be flipped INTO tiling on the "everything back to physics"
          * pass, which is the opposite of what was asked. */
         for (int d = 0; d < 10; d++) server_set_desktop_mode(server, d, want);
+    } else if (strcmp(action, "toggle_tray") == 0) {
+        /* Hide the tray outright: the node goes away AND the strip it reserved
+         * comes back, so tiles and fake-fullscreen windows grow into the top of
+         * the screen instead of leaving a bar-shaped hole. Physics windows need
+         * no help — nothing ever kept them out of that strip. */
+        server->tray_hidden = !server->tray_hidden;
+        if (server->tray_buffer)
+            wlr_scene_node_set_enabled(&server->tray_buffer->node, !server->tray_hidden);
+
+        for (int d = 0; d < 10; d++) {
+            if (server->desktop_mode[d] == DESKTOP_MODE_TILING)
+                server_apply_tiling(server, d);
+        }
+        /* Re-run fake fullscreen for the geometry, not the state: the call is a
+         * no-op on a body that is already fullscreen except for recomputing the
+         * work area, which is exactly what changed. Real fullscreen never used
+         * the strip, so it is left alone. */
+        FwmView *fv;
+        wl_list_for_each(fv, &server->views, link) {
+            PhysicsBody *fb = physics_find_body(&server->physics, fv->id);
+            if (fb && fb->fullscreen && !fv->fs_real)
+                server_set_fullscreen(server, fv, true, false);
+        }
+        server_request_tray_redraw(server);
     } else if (strcmp(action, "toggle_floating") == 0) {
         server_toggle_desktop_floating(server, server->target_camera_x / server->screen_width);
     } else if (strcmp(action, "toggle_floating_all") == 0) {

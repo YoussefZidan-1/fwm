@@ -545,9 +545,11 @@ static int physics_tick_cb(void *data) {
         wp_covered = true;
         if (fsv->fs_real) { real_fs = true; break; } /* strongest: also hides tray */
     }
-    /* Real fullscreen hides the tray; fake fullscreen deliberately keeps it. */
+    /* Real fullscreen hides the tray; fake fullscreen deliberately keeps it.
+     * A user-hidden tray stays hidden through both. */
     if (server->tray_buffer)
-        wlr_scene_node_set_enabled(&server->tray_buffer->node, !real_fs);
+        wlr_scene_node_set_enabled(&server->tray_buffer->node,
+                                   !real_fs && !server->tray_hidden);
 
     /* Either kind of fullscreen fully hides the wallpaper (fake fills the work
      * area and the tray covers the strip above it), so pause a video behind it:
@@ -972,7 +974,9 @@ static void tile_area(FwmServer *server, int desktop, int *x, int *y, int *w, in
     if (work.width <= 0 || work.height <= 0) {
         work = (struct wlr_box){ 0, 0, server->screen_width, server->screen_height };
     }
-    if (work.y < TRAY_BOTTOM) {
+    /* A hidden tray reserves nothing — that is what makes it *gone* rather than
+     * merely invisible. Layer-shell exclusive zones still apply. */
+    if (!server->tray_hidden && work.y < TRAY_BOTTOM) {
         work.height -= TRAY_BOTTOM - work.y;
         work.y = TRAY_BOTTOM;
     }
@@ -1150,7 +1154,8 @@ void server_set_fullscreen(FwmServer *server, struct FwmView *view, bool fullscr
         if (work.width <= 0 || work.height <= 0) {
             work = (struct wlr_box){ 0, 0, server->screen_width, server->screen_height };
         }
-        int top = real ? 0 : (work.y > TRAY_BOTTOM + 12 ? work.y : TRAY_BOTTOM + 12);
+        int reserve = server->tray_hidden ? 0 : TRAY_BOTTOM + 12;
+        int top = real ? 0 : (work.y > reserve ? work.y : reserve);
         view->x = d * server->screen_width + (real ? 0 : work.x);
         view->y = top;
         view->width = real ? server->screen_width : work.width;
@@ -1218,6 +1223,9 @@ void server_set_fullscreen(FwmServer *server, struct FwmView *view, bool fullscr
 
 void server_request_tray_redraw(FwmServer *server) {
     if (!server->tray_buffer) return;
+    /* Nothing to draw into an invisible node — and this runs every physics
+     * tick, so skipping it is the point of hiding the tray, not a micro-opt. */
+    if (server->tray_hidden) return;
     
     TrayData data = {0};
     for (int i = 0; i < 10; i++) {
