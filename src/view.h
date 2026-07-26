@@ -104,6 +104,29 @@ typedef struct FwmView {
     double squash_amount;             /* peak deformation, 0..1 */
     double squash_nx, squash_ny;      /* impact normal, points at the contact */
 
+    /* Wobble ("jelly") while a window is dragged. Shares the snapshot slot
+     * above — squash_buf is the deformed node either way, so the wobble, the
+     * impact squash and the spin can never be on screen at the same time and
+     * whichever starts last takes the slot over.
+     *
+     * The model is one lagging mass on a spring: `jelly_mx/my` chases the
+     * window's real position, and the distance it is behind by IS the
+     * deformation. Nothing here is driven by the drag's velocity directly —
+     * a spring lags on its own, which is what makes shaking the window build
+     * up a wobble that keeps going for a moment after the hand stops. */
+    int jelly;                        /* the wobble owns squash_buf */
+    int jelly_settling;               /* let go: relax to rest, then give the
+                                       * live window back */
+    double jelly_mx, jelly_my;        /* the mass, world px */
+    double jelly_vx, jelly_vy;        /* its velocity, px/s */
+    double jelly_px, jelly_py;        /* window position at the last tick */
+    /* The spare snapshot. A drag lasts seconds, not the quarter second an
+     * impact does, so the frozen picture is refreshed as the spin's is — into
+     * this one while the scene is still showing the other, then the two swap.
+     * Overwriting the buffer on screen would tear. */
+    struct wlr_buffer *jelly_alt;
+    double jelly_snap_t;              /* seconds since the last refresh */
+
     /* Free rotation (experimental; see PhysicsBody.spin).
      *
      * Same snapshot trick as the squash, for the same reason and one step
@@ -184,6 +207,21 @@ void view_update_border_geometry(FwmView *view);
 void view_start_squash(FwmView *view, double nx, double ny, double amount);
 void view_squash_tick(FwmView *view, double dt);
 void view_stop_squash(FwmView *view);
+
+/* Drag wobble (see the jelly_* fields above).
+ *
+ * view_jelly_begin arms it when a drag starts; view_jelly_tick, called every
+ * frame with the window's current position, runs the spring and deforms the
+ * snapshot; view_jelly_release says the drag is over, after which the wobble
+ * damps out on its own and hands the live window back.
+ *
+ * `strength` scales the deformation (config effects.jelly); at 0 begin does
+ * nothing. A spinning window is never given a wobble — the two want the same
+ * snapshot, and a lag along the screen axes is meaningless on a tilted
+ * picture. */
+void view_jelly_begin(FwmView *view, double strength);
+void view_jelly_tick(FwmView *view, double strength, double dt);
+void view_jelly_release(FwmView *view);
 
 /* Free rotation (see the spin_* fields above). view_spin_tick shows the window
  * at `angle` radians, creating the snapshot machinery on the first call and

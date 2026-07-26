@@ -76,9 +76,15 @@ on_activate = "same_desktop"
 #
 # squash deforms a window on impact — compressed along the contact, bulging
 # across it, springing back through a smaller overshoot. 0 disables.
+#
+# jelly makes a dragged window go soft: it lags behind the cursor and stretches
+# along the way you are pulling it, so shaking it wobbles it and the wobble
+# rings out for a beat after you stop. Never applies to a spinning window —
+# rotation owns the picture. 0 disables, up to 2.
 [effects]
 camera_shake = 0.0
 squash       = 1.0
+jelly        = 1.0
 # Strength of the kick spin_window gives a window, 0..4. 0 disables the bind.
 # (Stirring the mouse while dragging a spinning window is not scaled by this —
 # there the window simply turns at the rate your hand does.)

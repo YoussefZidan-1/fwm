@@ -129,6 +129,17 @@ static void server_animate(FwmServer *server) {
         wl_list_for_each(sv, &server->views, link) view_squash_tick(sv, dt);
     }
 
+    /* The drag wobble ticks unconditionally, not under an `if (jelly > 0)` like
+     * the squash above: turning the effect off in a config reload has to reach
+     * a window that is wobbling right now, and view_jelly_tick is what puts its
+     * live content back. Views without one return immediately. */
+    {
+        FwmView *jv;
+        wl_list_for_each(jv, &server->views, link) {
+            view_jelly_tick(jv, server->config.effects.jelly, dt);
+        }
+    }
+
     /* Free rotation. Also a frame-time ramp, and for a stronger reason than
      * the others: this one repaints a snapshot every frame, so running it on
      * the physics timer would render angles nobody ever sees. The body is the

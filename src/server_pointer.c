@@ -583,6 +583,13 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
                             server->interactive.pivot_have = 0;
                         }
                         server->interactive.collision_disabled = (active_mods & FWM_MOD_SHIFT) ? 1 : 0;
+
+                        /* The window goes soft for as long as it is held. A
+                         * tiled one does not move under the drag at all, so
+                         * there would be nothing for the jelly to lag behind. */
+                        if (!tiling) {
+                            view_jelly_begin(view, server->config.effects.jelly);
+                        }
                     }
                 } else if (event->button == BTN_RIGHT) {
                     if (tiling) {
@@ -612,6 +619,9 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
         // Button release
         if (server->interactive.action == FWM_ACTION_MOVE) {
             FwmView *view = server->interactive.view;
+            /* Let the wobble ring itself out — whatever the drop turns out to
+             * be, the hand is off the window. */
+            if (view) view_jelly_release(view);
             // Dropping an ungrouped window onto a tab bar adds it to that stack.
             int tab;
             FwmGroup *bg = view ? group_bar_at(server, lx, ly, &tab) : NULL;
