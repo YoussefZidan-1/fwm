@@ -327,10 +327,22 @@ void view_start_squash(FwmView *view, double nx, double ny, double amount) {
     if (!view->scene_tree || !view->last_buffer) return;
     if (amount <= 0.001) return;
     /* A spinning window already has the picture, and a deformation along a
-     * screen-axis normal would be visibly wrong on a tilted one. A wobbling
-     * window has it too, and there the impact is not lost: the collision moved
-     * the window, and moving the window is exactly what the sheet responds to. */
-    if (view->spin_buf || view->jelly) return;
+     * screen-axis normal would be visibly wrong on a tilted one. */
+    if (view->spin_buf) return;
+
+    /* A window still in your hand keeps its wobble: the drag owns the picture,
+     * and the impact is not lost anyway — a collision moves the window, and
+     * moving the window is exactly what the sheet responds to.
+     *
+     * One that has been let go is a different matter. Its wobble is ringing
+     * out, it is not being driven by anything any more, and landing is the
+     * loudest thing that will happen to it — so the landing takes the picture
+     * over. Without this the wobble swallowed every impact for as long as it
+     * lasted: windows arrived at the floor soft and squashed nothing. */
+    if (view->jelly) {
+        if (!view->jelly_settling) return;
+        view_jelly_stop(view);
+    }
 
     if (view->squash_buf) {
         /* Already deforming: retarget rather than stacking a second snapshot,
@@ -622,20 +634,30 @@ void view_jelly_tick(FwmView *view, double strength, double dt) {
         wobble_resize(&view->jelly_wob, view->jelly_w, view->jelly_h);
     }
 
-    /* Only while the window is actually held: once let go the wobble is over
-     * within half a second and the live content is about to come back. */
-    if (!view->jelly_settling) {
-        view->jelly_snap_t += dt;
-        if (view->jelly_snap_t >= JELLY_REFRESH_S) {
-            view->jelly_snap_t = 0.0;
-            view_jelly_resnap(view);
-        }
+    /* For as long as the picture is on screen, whether the hand is still on the
+     * window or the wobble is ringing out. Skipping the ring-out was a mistake
+     * you could watch: a released window is thrown, and a thrown window keeps
+     * moving, so the sheet kept being driven and the effect outlasted the whole
+     * flight with a still frame in it. */
+    view->jelly_snap_t += dt;
+    if (view->jelly_snap_t >= JELLY_REFRESH_S) {
+        view->jelly_snap_t = 0.0;
+        view_jelly_resnap(view);
     }
 
     /* The window's own movement is the only thing that ever drives the sheet:
      * the rest positions go where the window went, the points stay where they
-     * were, and the springs take it from there. */
-    wobble_translate(&view->jelly_wob, view->x - view->jelly_px, view->y - view->jelly_py);
+     * were, and the springs take it from there.
+     *
+     * Which stops the moment the hand is off it. The lattice lives in the
+     * window's own frame, so simply not translating IS the sheet riding along
+     * with the flight — and it has to, because a window sailing at a steady
+     * speed holds a steady lag, and a steady lag is never at rest. Left driven,
+     * the wobble ran until the physics did, and everything below it (the impact
+     * squash, the live window) waited that long too. */
+    if (!view->jelly_settling) {
+        wobble_translate(&view->jelly_wob, view->x - view->jelly_px, view->y - view->jelly_py);
+    }
     view->jelly_px = view->x;
     view->jelly_py = view->y;
 

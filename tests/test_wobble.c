@@ -76,6 +76,29 @@ static void test_lag_and_return(void) {
     CHECK_DBL(wobble_max_offset(&wb), 0.0, 1.0);
 }
 
+/* Why view_jelly_tick stops translating the moment the drag ends. */
+static void test_steady_motion_never_settles(void) {
+    CASE("a driven sheet never comes to rest");
+    Wobble wb;
+    wobble_reset(&wb, W, H);
+    wobble_release(&wb);                    /* nothing held: free to settle */
+
+    /* Keep telling it the window is moving, as a thrown window really is, and
+     * it holds a steady lag forever — a steady lag is not rest. So a released
+     * wobble that is still fed the window's flight outlasts the flight, and
+     * everything waiting on it (the live content, the impact squash) waits
+     * that long too. The view layer's answer is to stop feeding it. */
+    drag(&wb, 900.0 * DT, 0.0, 600);
+    CHECK(!wobble_at_rest(&wb));
+    CHECK(wobble_max_offset(&wb) > 20.0);
+
+    /* Stop feeding it and it is done in well under a second. */
+    int frames = 0;
+    while (!wobble_at_rest(&wb) && frames < 600) { wobble_step(&wb, DT); frames++; }
+    CHECK(wobble_at_rest(&wb));
+    CHECK(frames < 60);
+}
+
 static void test_grab_point_leads(void) {
     CASE("the held corner leads");
     Wobble wb;
@@ -167,6 +190,7 @@ static void test_points_out(void) {
 int main(void) {
     test_rest();
     test_lag_and_return();
+    test_steady_motion_never_settles();
     test_grab_point_leads();
     test_shake_stays_sane();
     test_long_frame();
