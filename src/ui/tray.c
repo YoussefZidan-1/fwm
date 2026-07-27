@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include "tray.h"
 #include "cairo_overlay.h"
+#include "modes.h"
 #include "../theme.h"
 #include <stdio.h>
 #include <string.h>
@@ -74,6 +75,18 @@ int tray_desktop_hit(double x, double y) {
     if (i > 9) i = 9;
     return i;
 }
+
+/* Modes pill: fixed width (see MODES_PILL_W), so the clock on its right and the
+ * desktop island on its left keep the positions they had before it existed. */
+static struct { double x, y, w, h; int valid; } g_modes;
+
+int tray_modes_pill_hit(double x, double y) {
+    return g_modes.valid &&
+           x >= g_modes.x && x <= g_modes.x + g_modes.w &&
+           y >= g_modes.y && y <= g_modes.y + g_modes.h;
+}
+
+double tray_modes_pill_x(void) { return g_modes.x; }
 
 /* Island with pointed (chevron) ends: same silhouette family as the old bar. */
 static void pill_path(cairo_t *cr, double x, double y, double w, double h) {
@@ -280,6 +293,7 @@ static void draw_tray_content(cairo_t *cr, int w, int h, void *user_data) {
     }
 
     /* ── right pill: clock (+ keyboard layout when several configured) ── */
+    double clock_px;
     {
         char clock[80];
         char stamp[64];
@@ -299,11 +313,67 @@ static void draw_tray_content(cairo_t *cr, int w, int h, void *user_data) {
 
         double pw = PILL_PAD * 2 + cw;
         double px = w - pw;
+        clock_px = px;
         draw_pill(cr, px, 0, pw, h, data->opacity);
 
         cairo_set_source_rgb(cr, thm->text[0], thm->text[1], thm->text[2]);
         cairo_move_to(cr, px + PILL_PAD, text_y);
         pango_cairo_show_layout(cr, layout);
+    }
+
+    /* ── modes pill: between the desktop island and the clock ──
+     * Fixed width, and DROPPED rather than squeezed when it does not fit: the
+     * clock grows with the locale's date and the island is centred, so on a
+     * narrow screen there is a width at which something has to give. Losing the
+     * pill costs a shortcut that also exists as a keybind; overlapping the clock
+     * would corrupt both, and the tray is drawn back-to-front so the damage
+     * would be silent. */
+    {
+        double px = clock_px - PILL_GAP - MODES_PILL_W;
+        double left_limit = desk_px + desk_pw + PILL_GAP;
+        if (px >= left_limit) {
+            int pressed = data->modes_open;
+            pill_path(cr, px, 0, MODES_PILL_W, h);
+            if (pressed)
+                cairo_set_source_rgba(cr, thm->accent[0], thm->accent[1], thm->accent[2],
+                                      data->opacity);
+            else
+                cairo_set_source_rgba(cr, thm->pill[0], thm->pill[1], thm->pill[2],
+                                      data->opacity);
+            cairo_fill(cr);
+
+            g_modes.x = px; g_modes.y = 0;
+            g_modes.w = MODES_PILL_W; g_modes.h = h; g_modes.valid = 1;
+
+            /* Four slots, always in the same order and always all four drawn:
+             * an icon that vanished when its mode went off would make the
+             * remaining ones move, and a row that reflows is unreadable at a
+             * glance — which is the only way anyone reads a tray. */
+            const int icons[4] = {
+                MODE_ICON_TILING, MODE_ICON_FLOATING, MODE_ICON_GRAVITY, MODE_ICON_CAVA,
+            };
+            const int on[4] = {
+                data->modes_tiling, data->modes_floating, data->modes_gravity,
+                data->modes_cava != 0,
+            };
+            double is = 14.0;
+            double gap = (MODES_PILL_W - PILL_PAD * 2 - is * 4) / 3.0;
+            double iy = (h - is) / 2.0;
+            for (int i = 0; i < 4; i++) {
+                if (pressed) {
+                    /* On the pressed pill the fill IS the accent, so an active
+                     * icon has to invert instead of using it. */
+                    if (on[i]) cairo_set_source_rgb(cr, thm->pill[0], thm->pill[1], thm->pill[2]);
+                    else       cairo_set_source_rgba(cr, thm->pill[0], thm->pill[1], thm->pill[2], 0.4);
+                } else {
+                    if (on[i]) cairo_set_source_rgb(cr, thm->accent[0], thm->accent[1], thm->accent[2]);
+                    else       cairo_set_source_rgb(cr, thm->dim[0], thm->dim[1], thm->dim[2]);
+                }
+                modes_icon(cr, icons[i], px + PILL_PAD + i * (is + gap), iy, is);
+            }
+        } else {
+            g_modes.valid = 0;
+        }
     }
 
     g_object_unref(layout);
@@ -336,6 +406,7 @@ typedef struct {
     int  minute;         /* clock shows minutes at most */
     char kbd[8];
     int  errors, err_expanded;
+    int  m_tiling, m_floating, m_gravity, m_cava, m_open;
     unsigned theme_gen;
 } TraySig;
 
@@ -360,6 +431,11 @@ void tray_redraw(struct wlr_scene_buffer *tray_buf, const TrayData *data) {
     memcpy(sig.kbd, data->kbd_layout, sizeof(sig.kbd));
     sig.errors = data->error_count;
     sig.err_expanded = data->error_expanded;
+    sig.m_tiling   = data->modes_tiling;
+    sig.m_floating = data->modes_floating;
+    sig.m_gravity  = data->modes_gravity;
+    sig.m_cava     = data->modes_cava;
+    sig.m_open     = data->modes_open;
     sig.theme_gen = theme_generation();
 
     if (have_last && memcmp(&sig, &last, sizeof(sig)) == 0) return;

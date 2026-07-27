@@ -16,6 +16,9 @@
 #   ./dev.sh -g 1                 ... with gravity on (fwm boots in zero-g)
 #   ./dev.sh -a toggle_tiling_all ... firing one action after startup
 #   ./dev.sh -c 3                 ... parked on desktop 3
+#   ./dev.sh -V both              ... with the [cava] bars on synthetic audio
+#                                     (off|visual|physical|both — a nested run
+#                                     has nothing playing to capture)
 #   ./dev.sh -d                   ... with debug logging
 #   ./dev.sh -s shot.png          screenshot after a few seconds, then quit
 #   ./dev.sh -B                   skip the rebuild
@@ -44,6 +47,7 @@ while [ $# -gt 0 ]; do
         -g) run_env="$run_env FWM_TEST_GRAVITY=$2"; shift 2 ;;
         -a) run_env="$run_env FWM_TEST_ACTION=$2"; shift 2 ;;
         -c) run_env="$run_env FWM_TEST_CAMERA=$2"; shift 2 ;;
+        -V) run_env="$run_env FWM_TEST_CAVA=1 FWM_TEST_CAVA_MODE=$2"; shift 2 ;;
         -d) run_env="$run_env FWM_DEBUG=1"; shift ;;
         --picker) run_env="$run_env FWM_OPEN_PICKER=1"; shift ;;
         --hints)  run_env="$run_env FWM_SHOW_HINTS=1"; shift ;;

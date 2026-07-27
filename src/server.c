@@ -31,6 +31,7 @@
 #include <malloc.h>
 #endif
 #include "ui/tray.h"
+#include "ui/modes.h"
 #include "ui/errors.h"
 #include "ui/welcome.h"
 #include "ui/launcher.h"
@@ -369,6 +370,20 @@ void server_request_tray_redraw(FwmServer *server) {
     if (data.active_pos > 9.0) data.active_pos = 9.0;
     data.active_desktop = (server->camera_x + server->screen_width / 2) / server->screen_width;
     if (data.active_desktop < 0) data.active_desktop = 0;
+
+    /* Modes pill. Layout is per-desktop, so it reports the desktop the camera
+     * is on; gravity and cava are global. Read live rather than tracked, which
+     * is what lets a keybind, `fwmctl set` and the menu all show up here without
+     * any of them knowing the pill exists. */
+    {
+        int d = data.active_desktop;
+        if (d > 9) d = 9;
+        data.modes_tiling   = server->desktop_mode[d] == DESKTOP_MODE_TILING;
+        data.modes_floating = server->desktop_mode[d] == DESKTOP_MODE_FLOATING;
+        data.modes_gravity  = server->physics.gravity_scale > 0.0;
+        data.modes_cava     = server->config.cava.mode;
+        data.modes_open     = server->modes_buffer != NULL;
+    }
     if (data.active_desktop >= 10) data.active_desktop = 9;
     
     if (server->focused_view) {

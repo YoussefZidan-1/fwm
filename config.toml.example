@@ -127,6 +127,48 @@ spin         = 1.0
 # FWM_DEBUG_EFFECTS=1 in the environment logs what the effects actually cost.
 live         = 1.0
 
+# Audio spectrum bars along the bottom of the screen, fed by loopback capture
+# of whatever is playing — no external cava process, and nothing to launch.
+#
+# The two halves are independent, which is the whole reason this is one key with
+# four values instead of two booleans nobody would think to combine:
+#
+#   "off"       (default) nothing runs and no audio stream is opened at all
+#   "visual"    draw the bars, never touch the windows
+#   "physical"  the bars are INVISIBLE but real — a row of solid, moving bodies
+#               along the floor that windows stand on and get tossed by
+#   "both"      draw them and let them throw your windows around
+#
+# The physical half only works on a desktop in physics mode (a tiled or floating
+# desktop owns its geometry, so nothing there can be pushed), and the row stands
+# on the floor of the desktop you are looking at.
+#
+# Captures through PipeWire or PulseAudio, whichever is already running — fwm
+# never starts a sound server of its own. With neither running, no bars.
+[cava]
+mode        = "off"
+# How many bands. Each one is a real body in the world while physical, so this
+# is a cost and not just a number: 48 across 1080p is a ~22px bar.
+bars        = 48
+# Px the loudest band reaches, and the px gap between bars.
+height      = 160
+gap         = 3
+# Spectrum gain. Raise it if the bars barely move at your usual volume.
+sensitivity = 1.0
+# How the bars fall, 0..0.99. 0 drops them the instant the sound stops; 0.9
+# leaves them hanging. They always RISE instantly — rounding off the attack
+# throws away the only part of a beat worth looking at.
+smoothing   = 0.75
+# Physical bar height as a fraction of the drawn one, 0..4. 0 turns the pushing
+# off while leaving the bars drawn; 2 makes windows dance twice as hard. This
+# scales how fast a bar may rise as well, so it is the one "how wild is it" knob.
+push        = 1.0
+# Alpha of the drawn bars. They take their colour from the theme, like the tray.
+opacity     = 0.85
+# Band edges, Hz. The row is spaced by octaves between them, not linearly.
+min_hz      = 40
+max_hz      = 12000
+
 # When a restarted fwm should put your applications back. fwm records what is
 # running and on which desktop, and relaunches it — the applications restart,
 # they do not resume, so anything unsaved inside them is still lost.
@@ -179,7 +221,7 @@ tap = true
 #                 toggle_tiling_all, toggle_floating, toggle_floating_all,
 #                 calm_all, cycle_gravity, toggle_tray,
 #                 spin_window, spin_all,
-#                 show_hints, show_errors, reload_config,
+#                 show_hints, show_errors, modes_menu, reload_config,
 #                 wallpaper_picker, launcher, EXIT
 # tiling:         toggle_split, tile_focus:l|r|u|d, tile_move:l|r|u|d
 # tab-stacks:     group_toggle, group_next, group_prev, group_add

@@ -29,6 +29,7 @@
 #include "ui/tray.h"
 #include "ui/hints.h"
 #include "ui/errors.h"
+#include "ui/modes.h"
 #include "ui/welcome.h"
 #include "ui/launcher.h"
 #include "ui/cairo_overlay.h"
@@ -296,6 +297,8 @@ void server_dispatch_action(FwmServer *server, const char *action) {
                                                 server->screen_height, &server->config);
         }
         server_request_tray_redraw(server);
+    } else if (strcmp(action, "modes_menu") == 0) {
+        server_toggle_modes_menu(server);
     } else if (strcmp(action, "group_toggle") == 0) {
         FwmView *v = server->focused_view;
         if (v) {
@@ -534,4 +537,118 @@ void server_dispatch_action(FwmServer *server, const char *action) {
 void server_dispatch_action_external(FwmServer *server, const char *action) {
     wlr_log(WLR_DEBUG, "ipc: dispatch %s", action);
     server_dispatch_action(server, action);
+}
+
+/* ── modes menu ───────────────────────────────────────────────────────── */
+
+void server_modes_state(FwmServer *server, ModesState *out) {
+    int d = (server->camera_x + server->screen_width / 2) / server->screen_width;
+    if (d < 0) d = 0;
+    if (d > 9) d = 9;
+    out->tiling   = server->desktop_mode[d] == DESKTOP_MODE_TILING;
+    out->floating = server->desktop_mode[d] == DESKTOP_MODE_FLOATING;
+    out->gravity  = server->physics.gravity_scale > 0.0;
+    out->cava     = server->config.cava.mode;
+    out->opacity  = server->config.decor.tray_opacity;
+}
+
+void server_close_modes_menu(FwmServer *server) {
+    if (!server->modes_buffer) return;
+    /* The exact reverse of the open: same duration, same distance, the other
+     * way. Ownership passes to the animation — hence clearing the pointer
+     * immediately, which is also what stops the tick redrawing a buffer that is
+     * on its way out. */
+    cairo_overlay_animate_out(server->modes_buffer, MODES_MENU_ANIM_MS,
+                              -MODES_MENU_RISE_PX, NULL, NULL);
+    server->modes_buffer = NULL;
+}
+
+/* Teardown path: the scene is going away, so there is nothing to animate into
+ * and no frames left to animate with. */
+void server_kill_modes_menu(FwmServer *server) {
+    if (server->modes_buffer) {
+        cairo_overlay_destroy(server->modes_buffer);
+        server->modes_buffer = NULL;
+    }
+}
+
+void server_toggle_modes_menu(FwmServer *server) {
+    if (server->modes_buffer) {
+        server_close_modes_menu(server);
+    } else {
+        if (!server->tray_buffer || server->tray_hidden) return;
+        /* The pill is dropped on a screen too narrow to hold it, and then there
+         * is nothing to hang the menu off. The keybind lands here too, so this
+         * is also what stops it opening a menu pointing at nothing. */
+        if (!tray_modes_pill_hit(tray_modes_pill_x(), 1.0)) return;
+        ModesState st;
+        server_modes_state(server, &st);
+        server->modes_buffer = modes_menu_show(
+            server->layer_overlay, server->screen_width, server->screen_height,
+            server->tray_buffer->node.x + tray_modes_pill_x(), &st);
+    }
+    server_request_tray_redraw(server);
+}
+
+int server_modes_menu_click(FwmServer *server, int row, int seg) {
+    int changed = 0;
+    int d = (server->camera_x + server->screen_width / 2) / server->screen_width;
+    if (d < 0) d = 0;
+    if (d > 9) d = 9;
+
+    switch (row) {
+    case MODES_ROW_TILING:
+        server_set_desktop_mode(server, d,
+            server->desktop_mode[d] == DESKTOP_MODE_TILING
+                ? DESKTOP_MODE_PHYSICS : DESKTOP_MODE_TILING);
+        changed = 1;
+        break;
+    case MODES_ROW_FLOATING:
+        server_set_desktop_mode(server, d,
+            server->desktop_mode[d] == DESKTOP_MODE_FLOATING
+                ? DESKTOP_MODE_PHYSICS : DESKTOP_MODE_FLOATING);
+        changed = 1;
+        break;
+    case MODES_ROW_GRAVITY: {
+        /* A switch is on or off, so this does not walk gravity_steps the way
+         * cycle_gravity does — it goes to zero, or back to the heaviest step the
+         * config offers, which is what someone flicking "gravity" expects. */
+        if (server->physics.gravity_scale > 0.0) {
+            server->physics.gravity_scale = 0.0;
+        } else {
+            const PhysicsConfig *pc = &server->config.physics;
+            double g = 1.0;
+            for (int i = 0; i < pc->gravity_step_count; i++)
+                if (pc->gravity_steps[i] > g) g = pc->gravity_steps[i];
+            server->physics.gravity_scale = g;
+        }
+        ipc_emit_gravity(server->ipc, server->physics.gravity_scale);
+        changed = 1;
+        break;
+    }
+    case MODES_ROW_CAVA: {
+        if (seg < 0) break;
+        /* The menu's "physical" is the config's "both": bars you can see AND
+         * that push. Invisible pushing is a real mode but a strange thing to
+         * land on by clicking, so it stays a file-only setting. */
+        int want = seg == MODES_CAVA_OFF     ? CAVA_MODE_OFF
+                 : seg == MODES_CAVA_VISUAL  ? CAVA_MODE_VISUAL
+                                             : CAVA_MODE_BOTH;
+        if (want != server->config.cava.mode) {
+            server->config.cava.mode = want;
+            changed = 1; /* server_cava_sync picks it up on the next tick */
+        }
+        break;
+    }
+    default:
+        break;
+    }
+
+    if (changed) {
+        ModesState st;
+        server_modes_state(server, &st);
+        modes_menu_redraw(server->modes_buffer, &st);
+        server_request_tray_redraw(server);
+    }
+    return changed;
 }

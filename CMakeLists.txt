@@ -49,6 +49,30 @@ pkg_check_modules(GLESV2 REQUIRED glesv2)
 # Video wallpaper decode. ffmpeg 6 on Void is the split libav* set + headers in
 # ffmpeg6-devel; the runtime is libav*6. Software decode only, so no libva pin.
 pkg_check_modules(LIBAV REQUIRED libavformat libavcodec libavutil libswscale)
+# Loopback audio capture for the [cava] visualiser. OPTIONAL on purpose: a
+# compositor must not refuse to build because the machine has no sound stack,
+# and src/audio.c compiles to working no-ops without it (the bars simply never
+# come up). On Void the headers are in pipewire-devel.
+#
+# BOTH are optional and BOTH are worth having: the visualiser picks at runtime
+# by probing for a socket, because which sound server a machine actually runs is
+# not knowable at build time — and a PulseAudio box gets no bars from a
+# PipeWire-only build.
+pkg_check_modules(PIPEWIRE libpipewire-0.3)
+pkg_check_modules(PULSE libpulse-simple)
+if(NOT PIPEWIRE_FOUND AND NOT PULSE_FOUND)
+    message(STATUS "no libpipewire-0.3 and no libpulse-simple "
+                   "— [cava] audio visualiser disabled")
+else()
+    set(CAVA_BACKENDS "")
+    if(PIPEWIRE_FOUND)
+        list(APPEND CAVA_BACKENDS pipewire)
+    endif()
+    if(PULSE_FOUND)
+        list(APPEND CAVA_BACKENDS pulse)
+    endif()
+    message(STATUS "[cava] capture backends: ${CAVA_BACKENDS}")
+endif()
 find_package(box2d REQUIRED)
 # The video decode runs on its own pthread; the compositor stays single-threaded.
 set(THREADS_PREFER_PTHREAD_FLAG ON)
@@ -64,6 +88,8 @@ set(SOURCES
     src/theme.c
     src/wallpaper.c
     src/video.c
+    src/audio.c
+    src/cava.c
     src/view.c
     src/rotate.c
     src/wobble.c
@@ -89,6 +115,7 @@ set(SOURCES
     src/server_actions.c
     src/ui/cairo_overlay.c
     src/ui/tray.c
+    src/ui/modes.c
     src/ui/hints.c
     src/ui/errors.c
     src/ui/welcome.c
@@ -157,6 +184,18 @@ target_link_libraries(fwm PRIVATE
 )
 
 target_compile_definitions(fwm PRIVATE WLR_USE_UNSTABLE)
+
+if(PIPEWIRE_FOUND)
+    target_compile_definitions(fwm PRIVATE HAVE_PIPEWIRE)
+    target_include_directories(fwm PRIVATE ${PIPEWIRE_INCLUDE_DIRS})
+    target_link_libraries(fwm PRIVATE ${PIPEWIRE_LIBRARIES})
+endif()
+
+if(PULSE_FOUND)
+    target_compile_definitions(fwm PRIVATE HAVE_PULSE)
+    target_include_directories(fwm PRIVATE ${PULSE_INCLUDE_DIRS})
+    target_link_libraries(fwm PRIVATE ${PULSE_LIBRARIES})
+endif()
 
 # Control-socket CLI. Deliberately links nothing: it speaks plain text over a
 # unix socket, so it stays usable even if the compositor's deps change.

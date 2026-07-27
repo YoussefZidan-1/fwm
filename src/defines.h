@@ -43,6 +43,23 @@
  * Only the momentum is limited: the dragged window itself still tracks the
  * cursor exactly, its position comes from the mirror, not from this. */
 #define DRAG_PUSH_MAX_SPEED     600.0
+/* Ceiling (px/s) on how fast a visualiser bar may RISE, before [cava] push
+ * scales it. A bar is kinematic — infinitely heavy — so whatever speed it has
+ * on contact goes straight into the window, and a kick drum moves a bar most of
+ * its travel inside one tick: 137px in 1/60s is 8200 px/s, which pinned a
+ * window against the ceiling and held it there.
+ *
+ * A single kick at this speed only lifts v²/2g ≈ 30px, which looks far too
+ * timid on paper — but a window spans dozens of bands that peak at different
+ * moments, so it gets struck again on the way down and pumped like a ball on a
+ * paddle. Real music through this reaches ~90px; the 400 that one kick's worth
+ * of arithmetic suggested measured 232px and put the window off the top of the
+ * screen. Tune against music, not against the formula.
+ *
+ * Only the upward direction is capped. A bar dropping away from a window never
+ * touches it, so limiting the fall would just make the physical row lag the
+ * drawn one for nothing. */
+#define BAR_MAX_RISE_SPEED      250.0
 #define GRAVITY  981.0   // px/s² (earth ~9.8 m/s² at 100 px/m)
 
 #endif /* FWM_DEFINES_H */

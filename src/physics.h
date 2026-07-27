@@ -142,4 +142,30 @@ void physics_unspin_body(PhysicsWorld *world, uint32_t id);
 void physics_push_away(PhysicsWorld *world, uint32_t pushed, uint32_t pusher, double speed);
 void physics_push_overlapping(PhysicsWorld *world, uint32_t pusher, double speed);
 
+/* ── audio visualiser bars ───────────────────────────────────────────── */
+
+/* Ceiling on the bar row. Each bar is a real body in the world, so this is a
+ * cost and not just an array bound; it matches CONFIG_MAX_BARS. */
+#define PHYSICS_MAX_BARS 128
+
+/* Stand a row of `count` bars on the floor, spanning `span_w` px starting at
+ * world x `origin_x`, with bar i rising `levels[i]` (0..1) of `max_h` px.
+ *
+ * The bars are KINEMATIC, not static: a static body moved by teleporting it
+ * passes through a resting window without ever touching it, because the solver
+ * only sees the overlap after the fact and pushes the window out sideways —
+ * whichever way is nearer. A kinematic body given a velocity is what the
+ * contact solver actually integrates against, so a rising bar hands the window
+ * above it real upward momentum. `dt` is the step the velocity is aimed at, and
+ * it must be the same one physics_step is about to take.
+ *
+ * `max_rise` caps that velocity in the upward direction only, because the whole
+ * of it lands in whatever is standing on the bar — see BAR_MAX_RISE_SPEED.
+ *
+ * Call once per step before physics_step. `count` 0 tears the row down, which
+ * is also what an unconfigured compositor does forever. */
+void physics_set_bars(PhysicsWorld *world, const float *levels, int count,
+                      double origin_x, double span_w, double max_h,
+                      int screen_h, double max_rise, double dt);
+
 #endif /* FWM_PHYSICS_H */

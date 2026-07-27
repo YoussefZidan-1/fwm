@@ -27,6 +27,7 @@
 #include "session.h"
 #include <signal.h>
 #include "ui/tray.h"
+#include "ui/modes.h"
 #include "ui/hints.h"
 #include "ui/errors.h"
 #include "ui/welcome.h"
@@ -529,6 +530,51 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
         if (tray_error_pill_hit(tx, ty)) {
             server_dispatch_action(server, "show_errors");
             server->group_click = 1; /* swallow the matching release */
+            return;
+        }
+    }
+
+    // Modes menu, while it is open: a click inside works a control, a click
+    // anywhere else dismisses it. Handled before the pill below, so the click
+    // that closes the menu is not also the click that reopens it.
+    if (event->state == WL_POINTER_BUTTON_STATE_PRESSED && event->button == BTN_LEFT &&
+        server->interactive.action == FWM_ACTION_NONE && server->modes_buffer) {
+        double mx = server->cursor->x - server->modes_buffer->node.x;
+        double my = server->cursor->y - server->modes_buffer->node.y;
+        int mw, mh;
+        modes_menu_size(&mw, &mh);
+        if (mx >= 0 && mx < mw && my >= 0 && my < mh) {
+            int seg = -1;
+            int row = modes_menu_hit(mx, my, &seg);
+            if (row != MODES_ROW_NONE) server_modes_menu_click(server, row, seg);
+            server->group_click = 1; /* swallow the matching release */
+            return;
+        }
+        /* Outside: dismiss, unless the click is on the pill itself — that is a
+         * toggle and the pill branch below owns it. The tray-buffer test comes
+         * FIRST because the coordinates are derived from it. */
+        int on_pill = 0;
+        if (server->tray_buffer) {
+            on_pill = tray_modes_pill_hit(
+                server->cursor->x - server->tray_buffer->node.x,
+                server->cursor->y - server->tray_buffer->node.y);
+        }
+        if (!on_pill) {
+            server_close_modes_menu(server);
+            server_request_tray_redraw(server);
+            /* Deliberately NOT swallowed: dismissing a menu should not also
+             * eat the click that was aimed at whatever is underneath. */
+        }
+    }
+
+    // Modes pill in the tray: opens and closes the menu.
+    if (event->state == WL_POINTER_BUTTON_STATE_PRESSED && event->button == BTN_LEFT &&
+        server->interactive.action == FWM_ACTION_NONE && server->tray_buffer) {
+        double tx = server->cursor->x - server->tray_buffer->node.x;
+        double ty = server->cursor->y - server->tray_buffer->node.y;
+        if (tray_modes_pill_hit(tx, ty)) {
+            server_toggle_modes_menu(server);
+            server->group_click = 1;
             return;
         }
     }

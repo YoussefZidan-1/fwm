@@ -375,6 +375,52 @@ typedef struct {
     int         bind_count;
 } GesturesConfig;
 
+/* ── audio visualiser ────────────────────────────────────────────────── */
+
+/*
+ * A row of spectrum bars along the bottom of the screen, fed by loopback
+ * capture of whatever is playing (see src/audio.h, src/cava.c).
+ *
+ *   [cava]
+ *   mode = "both"    # off | visual | physical | both
+ *   bars = 48
+ *   height = 160
+ *
+ * The two halves of `mode` are genuinely independent, which is why this is one
+ * key with four values rather than two booleans nobody would think to combine:
+ *
+ *   "visual"    draw the bars, do not touch the windows
+ *   "physical"  the bars are invisible but REAL — a row of kinematic bodies
+ *               along the floor that windows stand on and get tossed by
+ *   "both"      the default, and the point of the feature
+ *   "off"       nothing runs, no audio stream is opened at all
+ *
+ * `push` scales the physical bar height against the drawn one, so the dance can
+ * be tuned down (or up past what is drawn) without changing the look.
+ */
+enum {
+    CAVA_MODE_OFF      = 0,
+    CAVA_MODE_VISUAL   = 1,       /* bit 0: drawn */
+    CAVA_MODE_PHYSICAL = 2,       /* bit 1: collides */
+    CAVA_MODE_BOTH     = 3,
+};
+
+/* Bars are one kinematic body each while physical, so this is a real cost, not
+ * just an array bound. 128 across a 4K screen is a 30px bar. */
+#define CONFIG_MAX_BARS 128
+
+typedef struct {
+    int    mode;        /* CAVA_MODE_* */
+    int    bars;        /* how many bands, 2..CONFIG_MAX_BARS */
+    double height;      /* px the loudest band reaches */
+    double gap;         /* px between bars */
+    double sensitivity; /* multiplies the normalised magnitude */
+    double smoothing;   /* 0..1 fall inertia; 0 = bars snap straight down */
+    double push;        /* physical bar height as a fraction of `height` */
+    double opacity;     /* 0..1 on the drawn bars */
+    double min_hz, max_hz; /* band edges of the log-spaced spectrum */
+} CavaConfig;
+
 /* ── wallpaper / parallax ────────────────────────────────────────────── */
 
 /*
@@ -526,6 +572,7 @@ typedef struct {
     SessionConfig   session;
     MouseConfig     mouse;
     GesturesConfig  gestures;
+    CavaConfig      cava;
     KeyBind        *keys;
     int             key_count;
     ConfigMode      modes[CONFIG_MAX_MODES];

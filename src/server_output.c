@@ -382,6 +382,10 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
                                              server->screen_width, server->screen_height);
         server_video_sync(server); // begin driving frames if it is a video
 
+        // Audio spectrum bars: above the wallpaper, below the windows, so a
+        // window standing on a bar covers its top. No-op unless [cava] is on.
+        server_cava_sync(server);
+
         // Initialize UI panels
         server->tray_buffer = tray_init(server->layer_overlay, server->screen_width);
         server_request_tray_redraw(server);

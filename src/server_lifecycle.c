@@ -36,6 +36,7 @@
 #include "ui/launcher.h"
 #include "ui/cairo_overlay.h"
 #include "wallpaper.h"
+#include "cava.h"
 #include "server_internal.h"
 
 #include <stdlib.h>
@@ -352,6 +353,12 @@ void server_destroy(FwmServer *server) {
     server->welcome_buffer = NULL;
     if (server->errors_buffer) cairo_overlay_destroy(server->errors_buffer);
     server->errors_buffer = NULL;
+    server_kill_modes_menu(server);
+    /* Before the wallpaper, whose tree the bars hang under — and while the
+     * physics world is still alive, so the kinematic row is removed rather than
+     * left pointing at freed levels. */
+    if (server->cava) cava_destroy(server->cava);
+    server->cava = NULL;
     if (server->wallpaper_prev) wallpaper_destroy(server->wallpaper_prev);
     server->wallpaper_prev = NULL;
     if (server->wallpaper) wallpaper_destroy(server->wallpaper);

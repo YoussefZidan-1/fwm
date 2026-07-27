@@ -151,6 +151,16 @@ typedef struct FwmServer {
     struct wlr_scene_tree *ls_overlay;
     struct FwmWallpaper *wallpaper;
     struct FwmWallpaper *wallpaper_prev; /* outgoing set, alive during a cross-fade */
+    /* Audio spectrum bars along the bottom of the screen. NULL whenever [cava]
+     * is off, fwm was built without PipeWire, or no capture stream could be
+     * opened — all three are ordinary, and every use site must expect NULL. */
+    struct FwmCava *cava;
+    /* The mode server_cava_sync last ACTED on, which is not the same as the
+     * mode `cava` is in: a build that fails (no sound server) leaves cava NULL,
+     * and without remembering the attempt the tick would retry — and log — sixty
+     * times a second forever. Zero-initialised to CAVA_MODE_OFF, which is also
+     * the correct starting state: off has nothing to build. */
+    int cava_applied;
     struct wlr_output_layout *output_layout;
     struct wlr_scene_output_layout *scene_layout;
     struct wlr_xdg_shell *xdg_shell;
@@ -379,6 +389,9 @@ typedef struct FwmServer {
     struct wlr_scene_buffer *hints_buffer;
     struct wlr_scene_buffer *welcome_buffer;
     struct wlr_scene_buffer *errors_buffer; /* config-error detail panel */
+    /* Modes menu, opened from the tray pill. NULL when closed, and that NULL is
+     * also what the pill reads to draw itself pressed. */
+    struct wlr_scene_buffer *modes_buffer;
     struct Launcher *launcher;
     
     int running;

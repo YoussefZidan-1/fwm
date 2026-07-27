@@ -508,6 +508,85 @@ static void load_effects(toml_table_t *root, EffectsConfig *e) {
     if (e->spin > 4.0) e->spin = 4.0;
 }
 
+/* ── cava section ────────────────────────────────────────────────────── */
+
+static void load_cava(toml_table_t *root, FwmConfig *cfg) {
+    CavaConfig *c = &cfg->cava;
+
+    /* Off by default. It opens an audio capture stream and puts bodies in the
+     * physics world; neither is something a compositor should do because it
+     * was merely installed. */
+    c->mode        = CAVA_MODE_OFF;
+    c->bars        = 48;
+    c->height      = 160.0;
+    c->gap         = 3.0;
+    c->sensitivity = 1.0;
+    c->smoothing   = 0.75;
+    c->push        = 1.0;
+    c->opacity     = 0.85;
+    c->min_hz      = 40.0;
+    c->max_hz      = 12000.0;
+
+    if (!root) return;
+    toml_table_t *tbl = toml_table_in(root, "cava");
+    if (!tbl) return;
+
+    toml_datum_t d = toml_string_in(tbl, "mode");
+    if (d.ok) {
+        if      (strcmp(d.u.s, "off")      == 0) c->mode = CAVA_MODE_OFF;
+        else if (strcmp(d.u.s, "false")    == 0) c->mode = CAVA_MODE_OFF;
+        else if (strcmp(d.u.s, "visual")   == 0) c->mode = CAVA_MODE_VISUAL;
+        else if (strcmp(d.u.s, "physical") == 0) c->mode = CAVA_MODE_PHYSICAL;
+        else if (strcmp(d.u.s, "both")     == 0) c->mode = CAVA_MODE_BOTH;
+        else config_report_error(cfg, "[cava] mode: unknown value \"%s\" "
+                                      "(off | visual | physical | both)", d.u.s);
+        free(d.u.s);
+    } else {
+        /* `mode = false` is what a user writes when they mean "off", and TOML
+         * hands it over as a bool rather than a string. Accept it instead of
+         * reporting a type error for something perfectly clear. */
+        toml_datum_t b = toml_bool_in(tbl, "mode");
+        if (b.ok) c->mode = b.u.b ? CAVA_MODE_BOTH : CAVA_MODE_OFF;
+    }
+
+    toml_datum_t n = toml_int_in(tbl, "bars");
+    if (n.ok) {
+        if (n.u.i < 2 || n.u.i > CONFIG_MAX_BARS) {
+            config_report_error(cfg, "[cava] bars: %lld out of range 2..%d — using %d",
+                                (long long)n.u.i, CONFIG_MAX_BARS, c->bars);
+        } else {
+            c->bars = (int)n.u.i;
+        }
+    }
+
+    LOAD_DOUBLE(tbl, "height",      c->height);
+    LOAD_DOUBLE(tbl, "gap",         c->gap);
+    LOAD_DOUBLE(tbl, "sensitivity", c->sensitivity);
+    LOAD_DOUBLE(tbl, "smoothing",   c->smoothing);
+    LOAD_DOUBLE(tbl, "push",        c->push);
+    LOAD_DOUBLE(tbl, "opacity",     c->opacity);
+    LOAD_DOUBLE(tbl, "min_hz",      c->min_hz);
+    LOAD_DOUBLE(tbl, "max_hz",      c->max_hz);
+
+    if (c->height < 8.0)   c->height = 8.0;
+    if (c->gap < 0.0)      c->gap = 0.0;
+    if (c->sensitivity < 0.0) c->sensitivity = 0.0;
+    if (c->smoothing < 0.0) c->smoothing = 0.0;
+    if (c->smoothing > 0.99) c->smoothing = 0.99;  /* 1.0 would never fall again */
+    if (c->push < 0.0)     c->push = 0.0;
+    if (c->push > 4.0)     c->push = 4.0;
+    if (c->opacity < 0.0)  c->opacity = 0.0;
+    if (c->opacity > 1.0)  c->opacity = 1.0;
+    if (c->min_hz < 1.0)   c->min_hz = 1.0;
+    /* An inverted or collapsed band range divides by zero when the log-spaced
+     * edges are built, and a silent fallback beats a NaN row of bars. */
+    if (c->max_hz <= c->min_hz * 1.1) {
+        config_report_error(cfg, "[cava] max_hz must be well above min_hz — using 40..12000");
+        c->min_hz = 40.0;
+        c->max_hz = 12000.0;
+    }
+}
+
 static void load_session(toml_table_t *root, SessionConfig *s, FwmConfig *cfg) {
     s->restore = SESSION_RESTORE_CRASH;
     if (!root) return;
@@ -1353,6 +1432,18 @@ static const ConfigOption config_option_table[] = {
 
     { "gestures.sensitivity",           CFG_OPT_DOUBLE, offsetof(FwmConfig, gestures.sensitivity),            0.1,    10.0,    "camera px per finger px" },
     { "gestures.natural",               CFG_OPT_INT,    offsetof(FwmConfig, gestures.natural),                0.0,     1.0,    "1 = the strip follows the fingers" },
+
+    /* `mode` is settable as a number because the option table is typed, not
+     * because anyone should enjoy writing it: 0 off, 1 visual, 2 physical,
+     * 3 both — the same bits the enum spells out. `bars` is deliberately NOT
+     * here: changing it rebuilds every scene rect and every kinematic body,
+     * which is a config-reload job, not a live knob. */
+    { "cava.mode",                      CFG_OPT_INT,    offsetof(FwmConfig, cava.mode),                       0.0,     3.0,    "0 off, 1 visual, 2 physical, 3 both" },
+    { "cava.height",                    CFG_OPT_DOUBLE, offsetof(FwmConfig, cava.height),                     8.0,  2000.0,    "px the loudest band reaches" },
+    { "cava.sensitivity",               CFG_OPT_DOUBLE, offsetof(FwmConfig, cava.sensitivity),                0.0,    20.0,    "spectrum gain" },
+    { "cava.smoothing",                 CFG_OPT_DOUBLE, offsetof(FwmConfig, cava.smoothing),                  0.0,    0.99,    "bar fall inertia; 0 = instant" },
+    { "cava.push",                      CFG_OPT_DOUBLE, offsetof(FwmConfig, cava.push),                       0.0,     4.0,    "physical bar height vs. drawn" },
+    { "cava.opacity",                   CFG_OPT_DOUBLE, offsetof(FwmConfig, cava.opacity),                    0.0,     1.0,    "drawn bar alpha" },
 };
 
 const ConfigOption *config_options(int *count) {
@@ -1465,6 +1556,7 @@ void config_load(FwmConfig *cfg, const char *path) {
     load_effects(NULL, &cfg->effects);
     load_session(NULL, &cfg->session, cfg);
     load_gestures(NULL, cfg);
+    load_cava(NULL, cfg);
     load_mouse(NULL, cfg);   /* the built-in drag verbs, for every early-out below */
 
     FILE *f = fopen(path, "r");
@@ -1502,6 +1594,7 @@ void config_load(FwmConfig *cfg, const char *path) {
     load_modes(root, cfg);   /* after [binds]: each mode's `enter` key joins the root map */
     load_mouse(root, cfg);
     load_gestures(root, cfg);
+    load_cava(root, cfg);
     load_wallpaper(root, cfg);
     load_wallpaper_picker(root, cfg);
     load_rules(root, cfg);

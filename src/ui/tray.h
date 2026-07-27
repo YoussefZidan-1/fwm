@@ -44,6 +44,14 @@ typedef struct {
      * swallows every key it does not bind, so it MUST be visible: without this
      * the only symptom of standing in one is a keyboard that has gone dead. */
     const char *mode_name;
+    /* Modes pill (see ui/modes.h). Read straight from the live compositor every
+     * frame, so a mode changed by a keybind lights up here with nothing having
+     * to notify the tray. */
+    int modes_tiling;
+    int modes_floating;
+    int modes_gravity;
+    int modes_cava;      /* CAVA_MODE_* */
+    int modes_open;      /* menu is showing — the pill renders as pressed */
 } TrayData;
 
 struct wlr_scene_buffer *tray_init(struct wlr_scene_tree *parent, int screen_width);
@@ -61,5 +69,14 @@ int tray_error_pill_hit(double x, double y);
  * scroll-over-the-island. */
 int tray_desktop_hit(double x, double y);
 int tray_desktop_island_hit(double x, double y);
+
+/* Modes pill, same tray-buffer-local coordinates. Returns 0 when the pill is
+ * not on screen — on a narrow screen it is dropped rather than drawn over the
+ * neighbouring islands, and then it cannot be clicked either. */
+int tray_modes_pill_hit(double x, double y);
+
+/* Where the pill starts, in tray-buffer-local x, so the menu can line up with
+ * it. Valid only while tray_modes_pill_hit can succeed. */
+double tray_modes_pill_x(void);
 
 #endif /* FWM_TRAY_H */

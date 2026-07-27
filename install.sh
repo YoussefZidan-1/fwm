@@ -37,7 +37,7 @@ install_deps() {
         $SUDO pacman -S --needed --noconfirm \
             gcc make cmake pkgconf git \
             wayland wlroots0.20 libxkbcommon cairo pango gdk-pixbuf2 box2d \
-            ffmpeg xorg-xwayland
+            ffmpeg libpipewire libpulse xorg-xwayland
     elif command -v apt-get >/dev/null 2>&1; then
         msg "Installing dependencies (apt)"
         $SUDO apt-get update
@@ -45,7 +45,8 @@ install_deps() {
             gcc make cmake pkg-config git \
             libwayland-dev libxkbcommon-dev libcairo2-dev \
             libpango1.0-dev libgdk-pixbuf-2.0-dev \
-            libavformat-dev libavcodec-dev libavutil-dev libswscale-dev xwayland
+            libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
+            libpipewire-0.3-dev libpulse-dev xwayland
         # wlroots: the 0.20 -dev package name varies by release; try in order.
         local ok=0
         for p in libwlroots-0.20-dev libwlroots-0.19-dev libwlroots-dev; do
@@ -60,14 +61,14 @@ install_deps() {
             gcc make cmake pkgconf-pkg-config git \
             wayland-devel wlroots-devel libxkbcommon-devel \
             cairo-devel pango-devel gdk-pixbuf2-devel ffmpeg-free-devel \
-            xorg-x11-server-Xwayland
+            pipewire-devel pulseaudio-libs-devel xorg-x11-server-Xwayland
     elif command -v xbps-install >/dev/null 2>&1; then
         msg "Installing dependencies (xbps/Void)"
         $SUDO xbps-install -Sy \
             gcc make cmake pkg-config git \
             wayland-devel wlroots0.20-devel libxkbcommon-devel \
             cairo-devel pango-devel gdk-pixbuf-devel ffmpeg6-devel seatd \
-            xorg-server-xwayland
+            pipewire-devel pulseaudio-devel xorg-server-xwayland
         # Void has no systemd-logind: wlroots needs seatd for DRM/input access.
         if [ ! -e /var/service/seatd ]; then
             warn "enable seatd before starting fwm from a TTY:"
@@ -77,6 +78,8 @@ install_deps() {
     else
         warn "unknown package manager — install deps manually:"
         warn "  wayland, wlroots-0.20, xkbcommon, cairo, pango, gdk-pixbuf, box2d v3, ffmpeg (libav*), xwayland"
+    warn "  optional: pipewire and/or pulseaudio (headers) — the [cava] visualiser"
+    warn "  picks whichever sound server is actually running; with neither it is left out"
     fi
 }
 

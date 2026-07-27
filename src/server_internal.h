@@ -60,6 +60,10 @@ void server_shake_tick(FwmServer *server, double dt);
 /* Create the physics and video timers (server_tick.c owns both callbacks). */
 void server_tick_register(FwmServer *server, struct wl_event_loop *event_loop);
 void server_video_sync(FwmServer *server);
+/* Bring the visualiser in line with [cava] mode: build it, tear it down, or
+ * leave it be. Called from the tick, so `fwmctl set cava.mode` and a config
+ * reload both land through the same path. */
+void server_cava_sync(FwmServer *server);
 void server_reclaim_memory(void);
 void server_dispatch_action(FwmServer *server, const char *action);
 FwmView *server_find_view(FwmServer *server, uint32_t id);
@@ -82,6 +86,21 @@ bool server_can_spin(const PhysicsBody *b);
 /* ── server_config.c ──────────────────────────────────────────────────── */
 void server_config_path(char *buf, size_t cap);
 void server_close_errors_panel(FwmServer *server);
+
+/* ── modes menu (server_actions.c) ────────────────────────────────────── */
+/* Declared rather than included: server_internal.h is pulled in by most of the
+ * server and has no business dragging cairo along for four ints. */
+struct ModesState;
+/* Current mode state, for the tray pill and the menu. */
+void server_modes_state(FwmServer *server, struct ModesState *out);
+/* Open the menu, or close it if it is already open. */
+void server_toggle_modes_menu(FwmServer *server);
+void server_close_modes_menu(FwmServer *server);
+/* Immediate, unanimated close, for teardown. */
+void server_kill_modes_menu(FwmServer *server);
+/* Apply a click on menu row `row`. `seg` is the MODES_CAVA_* segment for the
+ * cava row and ignored otherwise. Returns 1 if anything changed. */
+int server_modes_menu_click(FwmServer *server, int row, int seg);
 void server_state_apply_wallpaper(FwmServer *server);
 
 /* ── server_desktop.c ─────────────────────────────────────────────────── */

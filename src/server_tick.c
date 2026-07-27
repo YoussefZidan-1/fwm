@@ -27,10 +27,12 @@
 #include <malloc.h>
 #endif
 #include "ui/tray.h"
+#include "ui/modes.h"
 #include "ui/welcome.h"
 #include "ui/launcher.h"
 #include "ui/cairo_overlay.h"
 #include "wallpaper.h"
+#include "cava.h"
 #include "group.h"
 #include "server_internal.h"
 
@@ -197,6 +199,12 @@ static int server_is_busy(FwmServer *server) {
     if (!wl_list_empty(&server->ghosts)) return 1;     /* close animations */
     if (launcher_is_open(server->launcher)) return 1;  /* spring tiles */
     if (cairo_overlay_animating()) return 1;
+    if (server->modes_buffer && modes_menu_animating()) return 1;
+    /* Bars that are up must keep the tick at full rate: on the heartbeat they
+     * would fall four times a second, and the windows standing on them would
+     * be shoved by a bar that teleported rather than rose. Silence lets it go
+     * idle again, so a configured visualiser costs nothing while nothing plays. */
+    if (cava_busy(server->cava)) return 1;
 
     for (int i = 0; i < server->physics.body_count; i++) {
         const PhysicsBody *b = &server->physics.bodies[i];
@@ -291,6 +299,69 @@ void server_video_sync(FwmServer *server) {
         server->video_timer_on = 0;
         wl_event_source_timer_update(server->video_timer, 0); /* disarm */
     }
+}
+
+void server_cava_sync(FwmServer *server) {
+    int want = server->config.cava.mode;
+
+    /* Debug: FWM_TEST_CAVA_MODE forces the mode on for a nested run, whose
+     * config.toml is the user's real one and almost certainly has no [cava].
+     * Cached because this runs every tick and getenv walks the environment.
+     * It overrides a reload too — that is the point of a test hook. */
+    static int test_mode = -2;
+    if (test_mode == -2) {
+        const char *tm = getenv("FWM_TEST_CAVA_MODE");
+        if      (!tm)                        test_mode = -1;
+        else if (strcmp(tm, "visual")   == 0) test_mode = CAVA_MODE_VISUAL;
+        else if (strcmp(tm, "physical") == 0) test_mode = CAVA_MODE_PHYSICAL;
+        else if (strcmp(tm, "both")     == 0) test_mode = CAVA_MODE_BOTH;
+        else if (strcmp(tm, "off")      == 0) test_mode = CAVA_MODE_OFF;
+        else                                  test_mode = -1;
+    }
+    if (test_mode >= 0) want = test_mode;
+
+    /* The capture thread reports failure asynchronously — it cannot be waited
+     * on (see audio.h) — so a row built optimistically at startup is retired
+     * here, the moment the answer comes back. `cava_applied` already equals
+     * `want`, so this runs once and never retries. */
+    if (server->cava && cava_dead(server->cava)) {
+        wlr_log(WLR_INFO, "cava: no audio capture available — bars stay off");
+        physics_set_bars(&server->physics, NULL, 0, 0.0, 0.0, 0.0, 0, 0.0, 0.0);
+        cava_destroy(server->cava);
+        server->cava = NULL;
+        return;
+    }
+
+    /* Compared against the attempt, not against the live instance: cava is NULL
+     * both when the mode is off and when the build failed, and only this tells
+     * those apart. */
+    if (server->cava_applied == want) return;
+
+    /* A mode change is a rebuild, not a toggle: the visual half owns a scene
+     * subtree that only exists when it is on, and the physical half owns bodies
+     * in the world. Tear the row out of the world first — cava_destroy takes
+     * the levels with it, and physics_set_bars would otherwise keep stepping
+     * bodies against numbers that no longer exist. */
+    if (server->cava) {
+        physics_set_bars(&server->physics, NULL, 0, 0.0, 0.0, 0.0, 0, 0.0, 0.0);
+        cava_destroy(server->cava);
+        server->cava = NULL;
+    }
+
+    /* Only once the screen exists: cava_create needs its size, and the output
+     * handler calls straight back here as soon as it does. */
+    if (server->screen_width == 0) return;
+    server->cava_applied = want;
+    if (want == CAVA_MODE_OFF) return;
+
+    /* The test hook forces the mode without touching the file, so hand
+     * cava_create the mode we actually resolved rather than the configured one
+     * it would otherwise read straight back out and refuse. */
+    CavaConfig cfg = server->config.cava;
+    cfg.mode = want;
+
+    server->cava = cava_create(server->layer_background, &cfg,
+                               server->screen_width, server->screen_height);
 }
 
 /* How fast the swing bleeds off, 1/s. Some is wanted: a real window dragged by
@@ -690,9 +761,42 @@ static int physics_tick_cb(void *data) {
     // Launcher: tile physics + overlay redraw while open.
     launcher_tick(server->launcher, dt);
 
+    // Modes menu: knobs sliding, the cava highlight travelling, rows staggering
+    // in. Uses `elapsed`, not the fixed step — these are wall-clock animations
+    // with nothing in the simulation depending on them.
+    if (server->modes_buffer) {
+        ModesState ms;
+        server_modes_state(server, &ms);
+        modes_menu_tick(server->modes_buffer, &ms, elapsed);
+    }
+
+    /* Audio spectrum. Analysed once per TICK rather than once per step: it is
+     * driven by the sound card's clock, not the simulation's, and running the
+     * FFT twice over a tick that paid for two steps would just decay the bars
+     * twice as fast on a slow frame. */
+    server_cava_sync(server);
+    if (server->cava) cava_tick(server->cava, &server->config.cava, elapsed);
+
     /* Physics steps: as many whole 1/60 steps as the real time since the last
      * tick paid for (see the accumulator at the top). Usually one. */
     for (int i = 0; i < steps; i++) {
+        /* The bar row stands on the floor of the desktop the camera is parked
+         * on. Anchoring it to the ACTIVE DESKTOP rather than to camera_x is
+         * deliberate: the row is kinematic and infinitely heavy, so sliding it
+         * sideways during a desktop switch would sweep every window it passed
+         * into the far wall. It jumps a whole screen once instead. */
+        int bar_n = 0;
+        const float *bar_lvl = cava_levels(server->cava, &bar_n);
+        if (bar_lvl && bar_n > 0) {
+            int bar_desk = (server->camera_x + server->screen_width / 2) / server->screen_width;
+            physics_set_bars(&server->physics, bar_lvl, bar_n,
+                             (double)bar_desk * server->screen_width,
+                             (double)server->screen_width,
+                             server->config.cava.height * server->config.cava.push,
+                             server->screen_height,
+                             BAR_MAX_RISE_SPEED * server->config.cava.push, dt);
+        }
+
         physics_step(&server->physics, server->screen_width, server->screen_height,
                      drag_win, resize_win, dragged_win, dt);
         /* Impacts are only valid until the NEXT step, so they have to be drained
@@ -738,6 +842,12 @@ static int physics_tick_cb(void *data) {
     if (server->tray_buffer)
         wlr_scene_node_set_enabled(&server->tray_buffer->node,
                                    !real_fs && !server->tray_hidden);
+
+    /* The modes menu hangs off a pill that is no longer on screen — and unlike
+     * the tray it is not merely disabled, it is a panel floating over a
+     * fullscreen window with nothing left to explain it. */
+    if (server->modes_buffer && (real_fs || server->tray_hidden))
+        server_close_modes_menu(server);
 
     /* Either kind of fullscreen fully hides the wallpaper (fake fills the work
      * area and the tray covers the strip above it), so pause a video behind it:

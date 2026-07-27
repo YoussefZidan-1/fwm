@@ -111,9 +111,43 @@ rate your hand was turning it.
 - **Wobbly windows** — a dragged window goes soft and bends, the way KDE's do. See below.
 - **Rotated and bent windows** — a spinning window is drawn at any angle, not in quarter turns, and a dragged one is drawn through a deforming mesh. wlroots' scene graph is axis-aligned to its bones, so these two draw their own geometry on the renderer's GL context (`src/rotate.c`); everything else stays on the public API.
 - **Wallpaper-derived palette** — optionally tint the whole UI toward the wallpaper's dominant hue (`color_source = "wallpaper"`).
-- **Minimal tray** — three flat chevron-ended islands: focused window + physics readout, desktop indicators, clock. No titlebars anywhere (server-side decorations).
+- **Minimal tray** — flat chevron-ended islands: focused window + physics readout, desktop indicators, a modes pill, clock. No titlebars anywhere (server-side decorations).
+- **Modes pill** — four icons between the desktop indicators and the clock (tiling, floating, gravity, cava), lit when the mode is on. Click it for a menu of switches; cava's is a three-position control (off / visual / physical) rather than a switch, because it is not an on-off thing. Fixed width, and dropped rather than squeezed on a screen too narrow to hold it — the clock grows with the locale's date and the desktop island is centred, so something has to give, and losing a pill that is also a keybind beats overlapping the clock.
 - **Transparency** — client alpha (e.g. kitty `background_opacity`) is rendered as-is.
 - **Fake fullscreen** (`Super+D`) keeps the tray visible; **real fullscreen** (`Super+F`) hides it and covers the whole output.
+
+### Audio visualiser that windows can stand on
+
+A row of spectrum bars along the bottom of the screen, fed by loopback capture
+of whatever is playing. No external `cava` process and nothing to launch — fwm
+opens the capture itself and does its own FFT.
+
+The point is the second half. The bars are not a picture: with
+`mode = "physical"` or `"both"` each band is a solid, moving body along the
+floor, so a window sitting at the bottom of the screen stands **on** the
+spectrum, gets thrown by the bass, and lands back down between beats. Windows
+dance.
+
+```toml
+[cava]
+mode = "both"   # off | visual | physical | both
+bars = 48
+push = 1.0      # how hard it throws things; 0 draws the bars without pushing
+```
+
+The two halves are genuinely independent: `"visual"` is a decoration that never
+touches a window, and `"physical"` gives you invisible bars — windows jumping to
+music with nothing on screen to explain it. Pushing only works on a desktop in
+physics mode, since a tiled or floating desktop owns its own geometry, and the
+row stands on the floor of the desktop you are looking at.
+
+Every knob is live: `fwmctl set cava.push 2` while the music plays.
+
+It captures through PipeWire or PulseAudio, whichever is actually running — it
+probes for the socket and never starts a sound server of its own. That last part
+is deliberate: libpulse will happily autospawn a daemon for any client that asks,
+and a second sound server fighting the first one for the ALSA device costs you
+your audio, not just your bars.
 
 ### Wobbly windows
 
@@ -152,8 +186,16 @@ Known gaps: no HiDPI / fractional output scale, no multimonitor, no IME (xkb lay
 | cairo + pango | `cairo`, `pango` |
 | gdk-pixbuf | `gdk-pixbuf2` |
 | Box2D 3.x | `box2d` |
+| ffmpeg (libav*) — video wallpaper | `ffmpeg` |
+| PipeWire and/or PulseAudio — *optional*, `[cava]` visualiser | `libpipewire`, `libpulse` |
 | CMake + pkg-config | `cmake`, `pkgconf` |
 | Xwayland (runtime) | `xorg-xwayland` |
+
+The sound libraries are the only optional ones: build without them and
+everything else works, minus the audio visualiser. Build against **both** if you
+can — which server a machine actually runs is not a build-time fact, and the
+visualiser probes for a socket at startup and uses whichever it finds. CMake
+prints the backends it compiled in.
 
 wlroots must be built with Xwayland support — CMake refuses to configure otherwise. Xwayland itself starts lazily, only when the first X11 client appears.
 
@@ -231,7 +273,10 @@ notices.
 Because keys cannot be injected into a nested compositor, a few env hooks stand
 in for them: `FWM_TEST_ACTION`, `FWM_TEST_GRAVITY` (fwm boots in zero-g),
 `FWM_TEST_CAMERA`, `FWM_OPEN_PICKER`, `FWM_SHOW_HINTS`, `FWM_DEBUG`. `dev.sh`
-wraps each in a flag. For anything you can express as an action, `fwmctl`
+wraps each in a flag. `FWM_TEST_CAVA=1` with `FWM_TEST_CAVA_MODE=<mode>`
+(`dev.sh -V both`) drives the visualiser from a synthetic wave instead of the
+sound card, because a nested run has nothing playing to capture — it is the only
+way to watch windows dance without music. For anything you can express as an action, `fwmctl`
 (below) reaches a *running* nested instance and needs no restart at all.
 
 `FWM_DEBUG_EFFECTS=1` is for one specific question: whether a spin or a wobble
@@ -592,6 +637,7 @@ fit  = "pan"
 | `reload_config` | re-read the config file and apply it without restarting |
 | `wallpaper_picker` | built-in wallpaper browser; Enter applies the image at once |
 | `show_errors` | open the config-problem panel (same as clicking the tray's ⚠ pill) |
+| `modes_menu` | open the modes menu (same as clicking the tray's modes pill) |
 | `EXIT` | quit the compositor |
 
 ### Mouse

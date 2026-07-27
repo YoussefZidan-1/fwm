@@ -67,6 +67,17 @@ struct Engine {
     b2BodyId walls[4];
     bool walls_built;
     int wall_w, wall_h;      /* screen dims the walls were built for */
+
+    /* Visualiser bars (physics_set_bars). Shapes are built once at a fixed
+     * size and then only ever slid vertically, so a bar changing height costs
+     * one velocity write and no shape rebuild — which matters when it happens
+     * 48 times per bar per second. */
+    b2BodyId bars[PHYSICS_MAX_BARS];
+    int    bar_count;
+    double bar_origin;       /* world x of the row's left edge */
+    double bar_span;         /* px the row covers */
+    double bar_max_h;        /* px the fully-lit bar rises */
+    int    bar_screen_h;
     float linear_damping;    /* derived from world->friction */
     double last_gravity;     /* px/s^2 applied last step; wake bodies on change */
 };
@@ -514,6 +525,121 @@ static void rebuild_walls(struct Engine *eng, PhysicsWorld *world, int screen_w,
     eng->walls_built = true;
     eng->wall_w = screen_w;
     eng->wall_h = screen_h;
+}
+
+/* ── visualiser bars ─────────────────────────────────────────────────── */
+
+static void bars_destroy(struct Engine *eng) {
+    for (int i = 0; i < eng->bar_count; i++) {
+        if (B2_IS_NON_NULL(eng->bars[i])) b2DestroyBody(eng->bars[i]);
+        eng->bars[i] = b2_nullBodyId;
+    }
+    eng->bar_count = 0;
+}
+
+/* Where the CENTRE of bar i sits when it is lit to `level`. The box is a fixed
+ * max_h tall and its top face is the surface windows land on, so level 0 parks
+ * the whole box below the floor line rather than shrinking it — a shape that
+ * changed size every frame would rebuild its contact manifold every frame, and
+ * a window standing on it would judder. */
+static double bar_center_y(const struct Engine *eng, double level) {
+    double top = (double)eng->bar_screen_h - level * eng->bar_max_h;
+    return top + eng->bar_max_h / 2.0;
+}
+
+static void bars_build(struct Engine *eng, PhysicsWorld *world, int count,
+                       double origin_x, double span_w, double max_h, int screen_h) {
+    bars_destroy(eng);
+    if (count <= 0) return;
+    if (count > PHYSICS_MAX_BARS) count = PHYSICS_MAX_BARS;
+
+    eng->bar_count    = count;
+    eng->bar_origin   = origin_x;
+    eng->bar_span     = span_w;
+    eng->bar_max_h    = max_h;
+    eng->bar_screen_h = screen_h;
+
+    double bw = span_w / (double)count;
+
+    for (int i = 0; i < count; i++) {
+        b2BodyDef bd = b2DefaultBodyDef();
+        bd.type = b2_kinematicBody;
+        bd.position = (b2Vec2){ px2m(origin_x + (i + 0.5) * bw),
+                                px2m(bar_center_y(eng, 0.0)) };
+        eng->bars[i] = b2CreateBody(eng->world, &bd);
+
+        b2ShapeDef sd = b2DefaultShapeDef();
+        /* Barely bouncy on purpose. The toss comes from the bar's own upward
+         * speed, and stacking restitution on top of that turns a window that
+         * merely sat down into one that never settles. */
+        sd.material.restitution = 0.05f;
+        /* Low friction so a window rides up and off a bar instead of being
+         * dragged sideways every time a neighbouring band peaks. */
+        sd.material.friction = 0.1f;
+        /* Hit events off: a bar row touches a resting window sixty times a
+         * second, and every one of those would fire a squash. */
+        sd.enableHitEvents = false;
+        sd.filter = filter_for_wall();
+        b2Polygon box = b2MakeBox(px2m(bw / 2.0), px2m(max_h / 2.0));
+        b2CreatePolygonShape(eng->bars[i], &sd, &box);
+    }
+    (void)world;
+}
+
+void physics_set_bars(PhysicsWorld *world, const float *levels, int count,
+                      double origin_x, double span_w, double max_h,
+                      int screen_h, double max_rise, double dt) {
+    struct Engine *eng = engine_of(world);
+    if (!eng) return;
+
+    if (count <= 0 || !levels || span_w <= 0.0 || max_h <= 0.0 || dt <= 0.0) {
+        bars_destroy(eng);
+        return;
+    }
+    if (count > PHYSICS_MAX_BARS) count = PHYSICS_MAX_BARS;
+
+    /* Anything that changes the row's geometry rather than its levels — a
+     * different bar count, a resized screen, a config reload — rebuilds it. */
+    if (eng->bar_count != count || eng->bar_span != span_w ||
+        eng->bar_max_h != max_h || eng->bar_screen_h != screen_h) {
+        bars_build(eng, world, count, origin_x, span_w, max_h, screen_h);
+    }
+
+    double bw = span_w / (double)count;
+
+    /* The row follows the active desktop, so switching desktops moves it a
+     * whole screen sideways. Sliding there would sweep every window on the way
+     * into the far wall, so drop the row flat and teleport it instead. */
+    bool moved = eng->bar_origin != origin_x;
+    if (moved) eng->bar_origin = origin_x;
+
+    for (int i = 0; i < count; i++) {
+        b2BodyId body = eng->bars[i];
+        if (B2_IS_NULL(body)) continue;
+
+        double level = levels[i];
+        if (level < 0.0) level = 0.0;
+        if (level > 1.0) level = 1.0;
+        double want_y = bar_center_y(eng, level);
+        double want_x = origin_x + (i + 0.5) * bw;
+
+        if (moved) {
+            b2Body_SetTransform(body, (b2Vec2){ px2m(want_x), px2m(bar_center_y(eng, 0.0)) },
+                                b2MakeRot(0.0f));
+            b2Body_SetLinearVelocity(body, (b2Vec2){0.0f, 0.0f});
+            continue;
+        }
+
+        /* Velocity from the body's ACTUAL position, not from the level we asked
+         * for last time: integration error and any solver pushback then correct
+         * themselves on the next step instead of accumulating into a row that
+         * has drifted off the floor. */
+        double cur_y = m2px(b2Body_GetPosition(body).y);
+        double vy = (want_y - cur_y) / dt;
+        /* Rising is negative y here. Capped — see BAR_MAX_RISE_SPEED. */
+        if (vy < -max_rise) vy = -max_rise;
+        b2Body_SetLinearVelocity(body, (b2Vec2){ 0.0f, px2m(vy) });
+    }
 }
 
 static void slot_create(struct Engine *eng, PhysicsWorld *world, int i, PhysicsBody *m,
