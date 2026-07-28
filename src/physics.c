@@ -67,6 +67,7 @@ struct Engine {
     b2BodyId walls[4];
     bool walls_built;
     int wall_w, wall_h;      /* screen dims the walls were built for */
+    int wall_wrap;           /* and whether the world was a ring at the time */
 
     /* Visualiser bars (physics_set_bars). Shapes are built once at a fixed
      * size and then only ever slid vertically, so a bar changing height costs
@@ -483,7 +484,8 @@ static b2Filter filter_for_wall(void) {
 }
 
 static void rebuild_walls(struct Engine *eng, PhysicsWorld *world, int screen_w, int screen_h) {
-    if (eng->walls_built && eng->wall_w == screen_w && eng->wall_h == screen_h) {
+    if (eng->walls_built && eng->wall_w == screen_w && eng->wall_h == screen_h
+        && eng->wall_wrap == world->wrap) {
         return;
     }
     if (eng->walls_built) {
@@ -505,6 +507,13 @@ static void rebuild_walls(struct Engine *eng, PhysicsWorld *world, int screen_w,
     };
 
     for (int i = 0; i < 4; i++) {
+        /* A ring has no ends, so it has no end walls: a window thrown off the
+         * left of the first desktop must fly on and arrive at the right of the
+         * last, not bounce. The floor and ceiling stay whatever happens. */
+        if (world->wrap && i < 2) {
+            eng->walls[i] = b2_nullBodyId;
+            continue;
+        }
         b2BodyDef bd = b2DefaultBodyDef();
         bd.type = b2_staticBody;
         bd.position = (b2Vec2){px2m(specs[i][0]), px2m(specs[i][1])};
@@ -525,6 +534,7 @@ static void rebuild_walls(struct Engine *eng, PhysicsWorld *world, int screen_w,
     eng->walls_built = true;
     eng->wall_w = screen_w;
     eng->wall_h = screen_h;
+    eng->wall_wrap = world->wrap;
 }
 
 /* ── visualiser bars ─────────────────────────────────────────────────── */
@@ -940,8 +950,20 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
             double max_y = H - m->height; if (max_y < 0) max_y = 0;
             double r = world->restitution;
             int clamped = 0;
-            if (m->x + m->width <= 0.0) { m->x = 0.0;   m->vx = fabs(m->vx) * r; clamped = 1; }
-            else if (m->x >= W)         { m->x = max_x; m->vx = -fabs(m->vx) * r; clamped = 1; }
+            /* On a ring the two horizontal cases are not escapes at all: they
+             * are the crossing. The window is carried to the other end with
+             * its velocity intact, because a throw that reaches the join is
+             * still a throw. Only once it is ENTIRELY past, so it leaves one
+             * end before appearing at the other and is never seen in both.
+             *
+             * This has to happen HERE rather than after the escape test: they
+             * test the same condition, and the escape net got there first and
+             * bounced the window back — which is exactly what "windows cannot
+             * move between 1 and 10" turned out to be. */
+            if (world->wrap && m->x >= W)                 { m->x -= W; clamped = 1; }
+            else if (world->wrap && m->x + m->width <= 0.0) { m->x += W; clamped = 1; }
+            else if (m->x + m->width <= 0.0) { m->x = 0.0;   m->vx = fabs(m->vx) * r; clamped = 1; }
+            else if (m->x >= W)              { m->x = max_x; m->vx = -fabs(m->vx) * r; clamped = 1; }
             if (m->y + m->height <= 0.0){ m->y = 0.0;   m->vy = fabs(m->vy) * r; clamped = 1; }
             else if (m->y >= H)         { m->y = max_y; m->vy = -fabs(m->vy) * r; clamped = 1; }
             if (clamped) {

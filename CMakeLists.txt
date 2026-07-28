@@ -245,6 +245,13 @@ if(FWM_TESTS)
     # ipc.c itself reaches wlroots, but the event vocabulary it serves does
     # not — that split is what lets `subscribe` argument parsing be checked
     # without a compositor.
+    # The ends of the world: a window thrown off one needs a mouse to throw it,
+    # and a nested run cannot move the pointer — so the ring's physics is
+    # asserted here rather than by hand. physics.c reaches Box2D, not wlroots.
+    add_executable(test_physics tests/test_physics.c src/physics.c)
+    target_include_directories(test_physics PRIVATE src tests)
+    target_link_libraries(test_physics PRIVATE box2d::box2d m)
+
     add_executable(test_ipc_events tests/test_ipc_events.c src/ipc_events.c)
     target_include_directories(test_ipc_events PRIVATE src tests)
 
@@ -265,6 +272,7 @@ if(FWM_TESTS)
     add_test(NAME bsp        COMMAND test_bsp)
     add_test(NAME config     COMMAND test_config)
     add_test(NAME input      COMMAND test_input)
+    add_test(NAME physics    COMMAND test_physics)
     add_test(NAME ipc_events COMMAND test_ipc_events)
     add_test(NAME wobble     COMMAND test_wobble)
     add_test(NAME gestures   COMMAND test_gestures)

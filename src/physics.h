@@ -97,6 +97,11 @@ typedef struct {
     PhysicsImpact impacts[PHYSICS_MAX_IMPACTS];
     int impact_count;
     double gravity_scale;
+    /* The ten desktops are a ring ([camera] wrap): a window thrown off one end
+     * of the world arrives at the other, still flying. Set from the config on
+     * every step, like gravity_scale, so toggling the ring reaches a throw
+     * already in the air. */
+    int wrap;
     
     /* Configurable physics parameters */
     double friction;

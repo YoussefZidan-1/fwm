@@ -847,6 +847,10 @@ static int physics_tick_cb(void *data) {
      * quietly moved by the time you drop one — and a window dropped onto a card
      * would be shoved by a world it was never in. Freeze it instead; nothing
      * else in the tick needs to stop, the tray and the wallpaper still live. */
+    /* The ring reaches the simulation the same way gravity does: read every
+     * tick, so toggling it catches a throw already in the air. */
+    server->physics.wrap = server->config.camera.wrap;
+
     if (expo_active(server)) steps = 0;
 
     /* Physics steps: as many whole 1/60 steps as the real time since the last
