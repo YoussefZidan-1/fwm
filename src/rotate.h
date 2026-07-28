@@ -85,9 +85,9 @@ struct scene3d_vert {
     float u, v;   /* source texture coordinate, 0..1 */
 };
 
-/* Largest fan scene3d_fan will draw — the drum's end caps, one vertex per
- * segment plus the centre. */
-#define SCENE3D_MAX_FAN 64
+/* Largest primitive scene3d draws: a quad. Kept as a name because the vertex
+ * arrays are sized by it. */
+#define SCENE3D_MAX_VERTS 4
 
 /* Open a pass into `dst`, which is cleared to transparent. Everything drawn
  * until scene3d_end blends over what came before it, in call order — there is
@@ -106,11 +106,6 @@ bool scene3d_quad(struct wlr_texture *tex, const struct scene3d_vert v[4],
 /* The same shape filled with one premultiplied colour: card edges, the frame
  * around a hovered window, a desktop with no wallpaper behind it. */
 bool scene3d_quad_solid(const float rgba[4], const struct scene3d_vert v[4]);
-
-/* A filled fan, `n` vertices from the centre outward — the drum's end caps,
- * which are what stop a ring looked at from above being a view into its own
- * far side. */
-bool scene3d_fan_solid(const float rgba[4], const struct scene3d_vert *v, int n);
 
 /* Close the pass and give the EGL context back. */
 void scene3d_end(void);

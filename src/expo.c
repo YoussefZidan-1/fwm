@@ -752,41 +752,6 @@ static void expo_draw_inner(FwmExpo *e, int d, const struct scene3d_vert q[4]) {
     }
 }
 
-/* The floor the drum stands on — or its ceiling, seen from below. NOT a lid
- * over the top: a lid is a black plate where the inside of the ring should be,
- * which is exactly what it looked like. Drawn as separate triangles rather
- * than one fan: a segment can have a corner behind the eye, and dropping it
- * must not tear the rest apart. */
-static void expo_draw_cap(FwmExpo *e, double wy) {
-    double r = expo_radius(e);
-    if (r <= 0.0) return;
-
-    ExpoPt centre = { .x = 0.0, .y = wy - e->server->screen_height / 2.0,
-                      .z = -r };
-    struct scene3d_vert c = expo_project(e, centre, 0.0, 0.0);
-    if (c.w <= 1.0f) return;
-
-    double span = FWM_DESKTOPS * expo_pitch(e);   /* the cards, not the seam */
-    double u0 = expo_offset(e, 0, 0);
-    int segs = (int)ceil(span / r / EXPO_CAP_SEG);
-    if (segs < 3) segs = 3;
-    if (segs > SCENE3D_MAX_FAN) segs = SCENE3D_MAX_FAN;
-
-    for (int i = 0; i < segs; i++) {
-        ExpoPt p0 = expo_ring_point(e, u0 + span * i / segs, wy);
-        ExpoPt p1 = expo_ring_point(e, u0 + span * (i + 1) / segs, wy);
-        struct scene3d_vert tri[3] = {
-            c,
-            expo_project(e, p0, 0.0, 0.0),
-            expo_project(e, p1, 0.0, 0.0),
-        };
-        if (tri[1].w <= 1.0f || tri[2].w <= 1.0f) continue;
-        float tint[4];
-        expo_ui_tint(tint, EXPO_FLOOR_ALPHA);
-        scene3d_fan_solid(tint, tri, 3);
-    }
-}
-
 /* True when the picture would come out identical to the one already on screen. */
 static bool expo_canvas_current(FwmExpo *e) {
     FwmServer *server = e->server;
@@ -847,9 +812,10 @@ static void expo_draw_gl(FwmExpo *e) {
             int t = order[j]; order[j] = order[j - 1]; order[j - 1] = t;
         }
     }
-    /* Inside first, then the floor it stands on, then the wall facing us. Three
-     * passes rather than one, because the floor belongs between the two halves
-     * of the ring and a single sorted pass has nowhere to put it. */
+    /* The inside of the far wall first, then the wall facing us. The drum has
+     * no floor and no lid on purpose: a disc across the middle of the ring is
+     * a black plate wherever you put it, and without one you simply see
+     * through the ring to the wallpaper behind it, which is what a ring does. */
     for (int i = 0; i < FWM_DESKTOPS; i++) {
         int d = order[i];
         ExpoPt a, b;
@@ -859,9 +825,6 @@ static void expo_draw_gl(FwmExpo *e) {
         if (expo_quad_onscreen(e, q) && !expo_quad_front(q))
             expo_draw_inner(e, d, q);
     }
-
-    if (e->tilt > 0.001) expo_draw_cap(e, server->screen_height);
-    else if (e->tilt < -0.001) expo_draw_cap(e, 0);
 
     for (int i = 0; i < FWM_DESKTOPS; i++)
         expo_draw_card(e, order[i], looking_at, open, scale);

@@ -97,12 +97,10 @@
 /* A desktop with no wallpaper still has to read as a slot on the strip, and
  * the drum's end caps want to read as a lid rather than as another desktop. */
 #define EXPO_CARD_GREY      0.13f
-/* Inside the drum: the floor it stands on and the back of the far wall. Both
- * are translucent and take the UI's own dark tint, so the ring reads as an
- * object standing on the wallpaper rather than as a hole cut in it — a solid
- * plate in the middle of the ring is exactly what looked wrong. The far wall
- * keeps a hint of its desktop printed on the inside. */
-#define EXPO_FLOOR_ALPHA    0.80f
+/* The inside of the drum's far wall: the UI's own dark tint, with a hint of the
+ * desktop still printed on it. There is no floor and no lid — a disc across the
+ * middle of the ring reads as a black plate wherever it is put, and without one
+ * the ring is simply see-through, which is what a ring is. */
 #define EXPO_INNER_ALPHA    0.88f
 #define EXPO_INNER_IMAGE    0.22f
 /* How far the camera pulls back as it rises, as a fraction of the tilt in
@@ -151,8 +149,6 @@
 /* How fast the camera eases to where it was sent, and back to the canonical
  * view when anything else happens, 1/s. */
 #define EXPO_ORBIT_SPEED    9.0
-/* Radians of drum per segment of an end cap. */
-#define EXPO_CAP_SEG        0.16
 /* Viewer distance from the front of the strip. Smaller is a wider lens: more
  * dramatic, and quicker to look wrong at the edges of the screen. */
 #define EXPO_CAM_DIST       2.2

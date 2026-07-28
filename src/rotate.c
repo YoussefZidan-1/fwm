@@ -431,8 +431,8 @@ static int scene3d_fill(const struct scene3d_vert *v, int n,
     return n;
 }
 
-static GLfloat scene3d_pos[SCENE3D_MAX_FAN * 3];
-static GLfloat scene3d_uv[SCENE3D_MAX_FAN * 2];
+static GLfloat scene3d_pos[SCENE3D_MAX_VERTS * 3];
+static GLfloat scene3d_uv[SCENE3D_MAX_VERTS * 2];
 
 static void scene3d_draw(struct program *p, int count, GLenum mode) {
     glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -484,30 +484,20 @@ bool scene3d_quad(struct wlr_texture *tex, const struct scene3d_vert v[4],
     return true;
 }
 
-static bool scene3d_solid_prim(const float rgba[4], const struct scene3d_vert *v,
-                               int n, GLenum mode) {
+bool scene3d_quad_solid(const float rgba[4], const struct scene3d_vert v[4]) {
     if (!pass.open || !rgba || !v) return false;
-    if (n < 3 || n > SCENE3D_MAX_FAN) return false;
     if (!program_build_from(&prog3d_solid, vert3d_src, frag3d_solid_src)) return false;
 
-    int count = scene3d_fill(v, n, scene3d_pos, scene3d_uv);
+    int count = scene3d_fill(v, 4, scene3d_pos, scene3d_uv);
 
     glUseProgram(prog3d_solid.id);
     if (prog3d_solid.uni_color >= 0)
         glUniform4f(prog3d_solid.uni_color, rgba[0], rgba[1], rgba[2], rgba[3]);
 
-    scene3d_draw(&prog3d_solid, count, mode);
+    scene3d_draw(&prog3d_solid, count, GL_TRIANGLE_STRIP);
 
     glUseProgram(0);
     return true;
-}
-
-bool scene3d_quad_solid(const float rgba[4], const struct scene3d_vert v[4]) {
-    return scene3d_solid_prim(rgba, v, 4, GL_TRIANGLE_STRIP);
-}
-
-bool scene3d_fan_solid(const float rgba[4], const struct scene3d_vert *v, int n) {
-    return scene3d_solid_prim(rgba, v, n, GL_TRIANGLE_FAN);
 }
 
 void scene3d_end(void) {
