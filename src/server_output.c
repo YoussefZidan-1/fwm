@@ -33,6 +33,7 @@
 #include "ui/launcher.h"
 #include "ui/cairo_overlay.h"
 #include "wallpaper.h"
+#include "expo.h"
 #include "group.h"
 
 #include <stdlib.h>
@@ -170,6 +171,10 @@ static void server_animate(FwmServer *server) {
     server_drag_swing_place(server);
 
     server_shake_tick(server, dt);
+
+    /* The desktop strip rides frame time like every other visual ramp; while
+     * it is up it is the only thing on screen that moves. */
+    expo_tick(server, dt);
 
     /* Squash rides frame time with the other visual ramps. */
     if (server->config.effects.squash > 0.0) {

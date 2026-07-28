@@ -14,6 +14,8 @@
 
 #include "view.h"
 #include "rotate.h"
+#include "snapshot.h"
+#include "expo.h"
 #include "theme.h"
 #include "server.h"
 #include "physics.h"
@@ -146,82 +148,15 @@ static void view_border_box(FwmView *view, int *w, int *h);
 
 /* ── composited snapshot of a window ──────────────────────────────────────
  *
- * Deforming `view->last_buffer` — the TOPLEVEL surface's buffer — is wrong for
- * any client that paints through subsurfaces: their content lives in a
- * different buffer entirely and is simply absent from the snapshot, while the
- * toplevel's own ARGB alpha gets blended over the hole. That is why Firefox
- * turned see-through during an impact and kitty (no subsurfaces) never did.
- *
- * So render the window's whole scene subtree into a buffer of our own, exactly
- * as the compositor would draw it on screen, and deform THAT. All public
- * wlroots API — no raw GLES, no scene-graph internals.
- *
- * (wlr_scene_node_snapshot does not exist in 0.20; if a future wlroots grows
- * one, it replaces this wholesale.) */
+ * The compositing itself lives in src/snapshot.c, which the expo strip shares;
+ * what belongs to a window is deciding what must not be baked in and how often
+ * the picture is worth retaking. */
 
-struct snapshot_ctx {
-    struct wlr_render_pass *pass;
-    struct wlr_renderer *renderer;
-    int origin_x, origin_y;      /* subtree's top-left in layout coords */
-};
-
-static void snapshot_add_buffer(struct wlr_scene_buffer *scene_buffer,
-                                int sx, int sy, void *data) {
-    struct snapshot_ctx *ctx = data;
-    if (!scene_buffer->buffer) return;
-
-    /* A buffer that belongs to a client surface already HAS a texture: wlroots
-     * imported it when the client committed, and the scene draws the window
-     * from it sixty times a second. Importing the same dmabuf again for our own
-     * pass — and throwing the import away at the end of it — was costing about
-     * as much as the pass itself, which at one pass every 150ms is a 5ms frame
-     * every 150ms: a hitch you can see, and the whole reason a slow spin
-     * juddered. Borrow the cached one and only import what is genuinely ours
-     * (an effect's own buffer, a ghost). */
-    struct wlr_scene_surface *ss = wlr_scene_surface_try_from_buffer(scene_buffer);
-    struct wlr_texture *cached = ss ? wlr_surface_get_texture(ss->surface) : NULL;
-    struct wlr_texture *tex = cached
-        ? cached : wlr_texture_from_buffer(ctx->renderer, scene_buffer->buffer);
-    if (!tex) return;
-
-    /* dest_size 0 means "use the buffer size", the same rule the scene follows. */
-    int w = scene_buffer->dst_width  ? scene_buffer->dst_width  : (int)tex->width;
-    int h = scene_buffer->dst_height ? scene_buffer->dst_height : (int)tex->height;
-
-    wlr_render_pass_add_texture(ctx->pass, &(struct wlr_render_texture_options){
-        .texture = tex,
-        .dst_box = { .x = sx - ctx->origin_x, .y = sy - ctx->origin_y,
-                     .width = w, .height = h },
-        .alpha = &scene_buffer->opacity,
-        .transform = scene_buffer->transform,
-        .blend_mode = WLR_RENDER_BLEND_MODE_PREMULTIPLIED,
-    });
-    if (!cached) wlr_texture_destroy(tex);   /* only ever destroy our own import */
-}
-
-/* An empty ARGB8888 buffer the renderer can draw into. */
-static struct wlr_buffer *view_alloc_buffer(FwmServer *server, int w, int h) {
-    if (!server->wlr_allocator || w <= 0 || h <= 0) return NULL;
-    struct wlr_buffer *buf = NULL;
-    struct wlr_drm_format_set fmts = {0};
-    if (wlr_drm_format_set_add(&fmts, DRM_FORMAT_ARGB8888, DRM_FORMAT_MOD_INVALID)) {
-        const struct wlr_drm_format *fmt = wlr_drm_format_set_get(&fmts, DRM_FORMAT_ARGB8888);
-        if (fmt) buf = wlr_allocator_create_buffer(server->wlr_allocator, w, h, fmt);
-    }
-    wlr_drm_format_set_finish(&fmts);
-    return buf;
-}
-
-/* Paint the window's subtree into `buf`, which must be the window's size.
- * Split out of view_snapshot_content so the spin can refresh a snapshot it
- * already owns instead of allocating a new buffer several times a second. */
 static bool view_snapshot_into(FwmView *view, struct wlr_buffer *buf) {
     FwmServer *server = view->server;
     if (!server->wlr_renderer || !view->scene_tree || !buf) return false;
     struct timespec _t0;
     if (server->fx_debug) clock_gettime(CLOCK_MONOTONIC, &_t0);
-
-    int w = buf->width, h = buf->height;
 
     /* The borders are our own nodes and must not be baked in — view_place_borders
      * redraws them around the deformed box on every tick. */
@@ -233,30 +168,10 @@ static bool view_snapshot_into(FwmView *view, struct wlr_buffer *buf) {
         }
     }
 
-    bool ok = false;
-    struct wlr_render_pass *pass =
-        wlr_renderer_begin_buffer_pass(server->wlr_renderer, buf, NULL);
-    if (!pass) goto restore;
-
-    /* Start from transparent: a window whose content does not cover the whole
-     * box must not pick up whatever the allocator handed us. */
-    wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){
-        .box = { .x = 0, .y = 0, .width = w, .height = h },
-        .color = { .r = 0, .g = 0, .b = 0, .a = 0 },
-        .blend_mode = WLR_RENDER_BLEND_MODE_NONE,
-    });
-
     int lx = 0, ly = 0;
     wlr_scene_node_coords(&view->scene_tree->node, &lx, &ly);
-    struct snapshot_ctx ctx = {
-        .pass = pass, .renderer = server->wlr_renderer,
-        .origin_x = lx, .origin_y = ly,
-    };
-    wlr_scene_node_for_each_buffer(&view->scene_tree->node, snapshot_add_buffer, &ctx);
+    bool ok = snapshot_subtree(server, buf, &view->scene_tree->node, lx, ly, 1.0);
 
-    ok = wlr_render_pass_submit(pass);
-
-restore:
     for (int i = 0; i < 4; i++) {
         if (view->border[i])
             wlr_scene_node_set_enabled(&view->border[i]->node, border_was_enabled[i]);
@@ -274,7 +189,7 @@ restore:
  * caller owns the reference that wlr_allocator_create_buffer hands back. */
 static struct wlr_buffer *view_snapshot_content(FwmView *view) {
     if (!view->scene_tree) return NULL;
-    struct wlr_buffer *buf = view_alloc_buffer(view->server, view->width, view->height);
+    struct wlr_buffer *buf = snapshot_alloc(view->server, view->width, view->height);
     if (!buf) return NULL;
     if (!view_snapshot_into(view, buf)) {
         wlr_buffer_drop(buf);
@@ -641,7 +556,7 @@ static bool view_jelly_setup(FwmView *view) {
     /* Two targets used alternately: the scene may still be reading last
      * frame's while this one is drawn, and overwriting it in place would tear. */
     for (int i = 0; i < 2; i++) {
-        struct wlr_buffer *d = view_alloc_buffer(server, w + 2 * margin, h + 2 * margin);
+        struct wlr_buffer *d = snapshot_alloc(server, w + 2 * margin, h + 2 * margin);
         if (!d) goto fail;
         view->jelly_dst[i] = wlr_buffer_lock(d);
         wlr_buffer_drop(d);
@@ -937,7 +852,7 @@ static bool view_spin_setup(FwmView *view) {
     view_log_effect_path(view, "spin", view->spin_live);
 
     if (!view->spin_live) {
-        struct wlr_buffer *src = view_alloc_buffer(server, w, h);
+        struct wlr_buffer *src = snapshot_alloc(server, w, h);
         if (!src) return false;
         if (!view_snapshot_into(view, src)) {
             wlr_buffer_drop(src);
@@ -960,7 +875,7 @@ static bool view_spin_setup(FwmView *view) {
      * drawn, and overwriting it in place would tear. */
     int size = (int)ceil(hypot(w, h)) + 2;
     for (int i = 0; i < 2; i++) {
-        struct wlr_buffer *d = view_alloc_buffer(server, size, size);
+        struct wlr_buffer *d = snapshot_alloc(server, size, size);
         if (!d) goto fail;
         view->spin_dst[i] = wlr_buffer_lock(d);
         wlr_buffer_drop(d);
@@ -1418,6 +1333,10 @@ FwmView *view_create(struct wlr_xdg_toplevel *toplevel, struct FwmServer *server
 
 void view_destroy(FwmView *view) {
     if (!view) return;
+
+    /* Cheap when the window was already unmapped, and the only cover for a
+     * client that is destroyed without unmapping first. */
+    expo_forget_view(view->server, view);
     
     wl_list_remove(&view->map.link);
     wl_list_remove(&view->unmap.link);
@@ -1602,6 +1521,9 @@ void view_unmap(FwmView *view) {
     ipc_emit_window(view->server->ipc, FWM_EV_WINDOW_CLOSE, view);
 
     foreign_view_unmap(view);
+    /* A card on the desktop strip stands in for this window; it must go with
+     * it, or the strip keeps offering a picture of something that is gone. */
+    expo_forget_view(view->server, view);
     /* Before anything else: the snapshot lives in scene_tree, which is about to
      * go, and it holds a buffer lock the close ghost may want back. */
     view_stop_squash(view);

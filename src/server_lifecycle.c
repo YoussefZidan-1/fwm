@@ -34,6 +34,7 @@
 #include "ui/errors.h"
 #include "ui/welcome.h"
 #include "ui/launcher.h"
+#include "expo.h"
 #include "ui/cairo_overlay.h"
 #include "wallpaper.h"
 #include "cava.h"
@@ -365,6 +366,7 @@ void server_destroy(FwmServer *server) {
     server->wallpaper = NULL;
     launcher_destroy(server->launcher);
     server->launcher = NULL;
+    expo_destroy(server);
 
     /* The rotation shaders belong to the renderer's GL context; they have to go
      * while that context still exists. */

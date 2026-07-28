@@ -58,6 +58,15 @@ void cairo_overlay_blit_bgra(struct wlr_scene_buffer *scene_buffer,
                              const unsigned char *src, int src_stride,
                              int src_x, int src_y);
 
+/* The wlr_buffer holding the overlay's current pixels, or NULL if it has none.
+ *
+ * This is NOT scene_buffer->buffer: the scene drops its reference once it has
+ * uploaded a texture, so that field reads NULL for every overlay that has been
+ * on screen for a frame. What is kept here is the overlay's own lock, which is
+ * why an overlay meant to be re-used as a picture (the wallpaper's card copy
+ * for the desktop strip) must not be made static. */
+struct wlr_buffer *cairo_overlay_buffer(struct wlr_scene_buffer *scene_buffer);
+
 /* For overlays that are drawn once and never updated again (wallpaper layers,
  * welcome, hints): free the CPU-side pixel copy and keep only the GPU texture.
  * Do not call cairo_overlay_update() on the overlay afterwards. */

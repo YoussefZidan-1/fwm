@@ -20,6 +20,7 @@
 #include <wlr/util/log.h>
 
 #include "lock.h"
+#include "expo.h"
 #include "server.h"
 #include "view.h"
 
@@ -157,6 +158,12 @@ static void handle_new_lock(struct wl_listener *listener, void *data) {
 
     server->lock = lock;
     server->locked = 1;
+
+    /* Before the trees are disabled, because tearing the strip down re-enables
+     * them. And it MUST go: its scene tree is created after layer_lock and so
+     * sits above it — a lock screen with the whole desktop strip drawn over it
+     * is not a lock screen. */
+    expo_destroy(server);
 
     set_normal_content_enabled(server, false);
     wlr_scene_node_set_enabled(&server->layer_lock->node, true);

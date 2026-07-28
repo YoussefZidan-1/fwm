@@ -16,6 +16,7 @@
 #define FWM_WALLPAPER_H
 
 #include <stdbool.h>
+#include <wlr/util/box.h>
 #include <wlr/types/wlr_scene.h>
 #include "config.h"
 
@@ -53,6 +54,22 @@ void wallpaper_fade_in(FwmWallpaper *wp, double duration_ms);
 
 /* Advance a running cross-fade. Returns true on the frame it completes. */
 bool wallpaper_fade_tick(FwmWallpaper *wp, double dt);
+
+/* What the expo strip needs to draw the same wallpaper into a card of its own.
+ *
+ * The live layers can be neither photographed nor re-used: the scene drops its
+ * reference to a cairo overlay's buffer as soon as it has uploaded a texture,
+ * and the wallpaper then frees the CPU-side pixels itself. Both attempts ended
+ * with ten grey cards. What is handed out instead is the small off-screen copy
+ * each layer keeps for exactly this (see WallpaperRT.card), plus the crop the
+ * given camera position corresponds to — so a card shows precisely what
+ * standing on that desktop looks like. */
+int wallpaper_layer_count(FwmWallpaper *wp);
+struct wlr_buffer *wallpaper_layer_buffer(FwmWallpaper *wp, int i);
+/* The part of that buffer a screen at `camera_x` is looking at, in the
+ * buffer's own pixels — the caller never has to know it is a downscaled copy. */
+void wallpaper_layer_crop(FwmWallpaper *wp, int i, int camera_x,
+                          int screen_w, int screen_h, struct wlr_fbox *out);
 
 void wallpaper_destroy(FwmWallpaper *wp);
 

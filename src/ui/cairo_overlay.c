@@ -205,6 +205,12 @@ void cairo_overlay_update(struct wlr_scene_buffer *scene_buffer,
     info->current = buf;
 }
 
+struct wlr_buffer *cairo_overlay_buffer(struct wlr_scene_buffer *scene_buffer) {
+    if (!scene_buffer) return NULL;
+    struct CairoOverlayInfo *info = scene_buffer->node.data;
+    return info ? info->current : NULL;
+}
+
 void cairo_overlay_make_static(struct wlr_scene_buffer *scene_buffer) {
     if (!scene_buffer) return;
     struct CairoOverlayInfo *info = scene_buffer->node.data;

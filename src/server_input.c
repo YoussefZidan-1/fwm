@@ -33,6 +33,7 @@
 #include "ui/cairo_overlay.h"
 #include "wallpaper.h"
 #include "group.h"
+#include "expo.h"
 
 static int key_repeat_cb(void *data);
 
@@ -371,6 +372,17 @@ static void handle_keyboard_key(struct wl_listener *listener, void *data) {
 
     if (try_binds(server, event, syms, num_syms, active_mods)) return;
     if (try_binds(server, event, syms0, num_syms0, active_mods)) return;
+
+    /* The desktop strip owns the keyboard for everything the binds above did
+     * not claim — its own keys (Escape, z, the arrows) and, deliberately,
+     * every other key as well: the windows a key would reach are hidden
+     * behind the strip, so a client must not receive it. */
+    if (expo_active(server)) {
+        for (int i = 0; i < num_syms; i++) expo_handle_key(server, syms[i]);
+        if (event->keycode < sizeof(server->key_consumed))
+            server->key_consumed[event->keycode] = 1;
+        return;
+    }
 
     // No bind matched — only now does the client get the key. Clear any stale
     // consumed mark (e.g. the release was swallowed by the launcher instead of

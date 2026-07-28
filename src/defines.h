@@ -62,4 +62,47 @@
 #define BAR_MAX_RISE_SPEED      250.0
 #define GRAVITY  981.0   // px/s² (earth ~9.8 m/s² at 100 px/m)
 
+/* ── expo, the desktop strip ──────────────────────────────────────────── */
+/* Resolution the strip's snapshots are taken at, as a fraction of the real
+ * thing. Ten screen-sized cards at 1:1 is most of a hundred megabytes of
+ * GPU memory for a picture that is never shown larger than a third of a
+ * screen; half-resolution is still sharper than the smallest zoom step and
+ * costs a quarter of that. */
+#define EXPO_SNAP_SCALE     0.5
+/* Desktops across the screen at each zoom step. The near step is deliberately
+ * barely more than one: enough to see that the desktops either side exist and
+ * to drop a window onto them, not so far that the desktop you were working on
+ * becomes a thumbnail. The far step is the same idea one notch out — the whole
+ * ten-desktop strip was tried and is unusable: nine of the cards are empty and
+ * the tenth is too small to aim at. */
+#define EXPO_ZOOM_NEAR      1.3
+#define EXPO_ZOOM_FAR       3.0
+/* How fast the zoom chases its target (1/s, exponential — the same
+ * framerate-independent form as the free camera pan, which is what keeps a
+ * retarget mid-flight from restarting an ease). */
+#define EXPO_ZOOM_SPEED     11.0
+/* Gap between desktop cards, in screen widths, reached at the near zoom step
+ * and held beyond it. It closes as the strip zooms back in to 1.0, so the
+ * identity view has no seams in it. */
+#define EXPO_GAP_FRAC       0.04
+/* The edge drawn around every card, in SCREEN px — not scaled with the strip,
+ * because its job is to say where one desktop ends at any zoom. The desktop the
+ * strip is looking at gets the accent colour, the rest a dim grey. */
+#define EXPO_EDGE_PX        2
+#define EXPO_EDGE_GREY      0.34f
+/* Wallpaper layers a card will reproduce. The parallax rarely runs past two or
+ * three; beyond this the extra layers are dropped from the card rather than
+ * multiplied by ten desktops. */
+#define EXPO_MAX_WP_LAYERS  4
+/* A desktop with no wallpaper still has to read as a slot on the strip. */
+#define EXPO_CARD_GREY      0.13f
+/* How fast a pan (arrows, wheel) chases where it was sent, 1/s. Quicker than
+ * the zoom: a step sideways should feel like a nudge, not like a journey. */
+#define EXPO_PAN_SPEED      14.0
+/* How far the live wallpaper behind the strip is dimmed — the strip keeps it
+ * on screen rather than blacking the background out — and the frame drawn
+ * around the window under the cursor (px at 1:1, so it scales with the strip). */
+#define EXPO_BACKDROP_ALPHA 0.72
+#define EXPO_HILIGHT_PX     6
+
 #endif /* FWM_DEFINES_H */

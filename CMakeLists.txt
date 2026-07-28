@@ -92,6 +92,8 @@ set(SOURCES
     src/cava.c
     src/view.c
     src/rotate.c
+    src/snapshot.c
+    src/expo.c
     src/wobble.c
     src/layer.c
     src/lock.c
@@ -121,6 +123,7 @@ set(SOURCES
     src/ui/welcome.c
     src/ui/launcher.c
     src/ui/logo.c
+    src/ui/expo_menu.c
 )
 
 # wlroots ships the C headers for the wlr-* protocols but not the generated

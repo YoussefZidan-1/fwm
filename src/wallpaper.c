@@ -48,7 +48,26 @@ struct WallpaperRT {
     struct wlr_scene_buffer *buffer;
     int slack;
     FwmVideo *video; /* non-NULL for a "video" layer; owns `buffer` */
+
+    /* A downscaled duplicate of the layer, kept off-screen for the desktop
+     * strip to draw its cards from. It exists because `buffer` cannot be
+     * re-used as a picture: the scene drops its reference the moment it has
+     * uploaded a texture, and cairo_overlay_make_static then frees the pixels,
+     * so by the time anyone asks there is nothing left to draw from — which is
+     * exactly how the strip ended up with ten grey cards.
+     *
+     * Never enabled and never made static: an overlay the scene has drawn is
+     * an overlay whose buffer has been taken. A video layer needs none of this
+     * — it is re-blitted every frame, so its own buffer is always live — and
+     * points `card` straight at it with a scale of 1. */
+    struct wlr_scene_buffer *card;
+    double card_k;
 };
+
+/* Resolution of that copy, as a fraction of the real layer. The strip never
+ * shows a card larger than about half the screen, and the full-width pan buffer
+ * it is copied from is tens of megabytes. */
+#define WALLPAPER_CARD_SCALE 0.5
 
 /* A video layer either declares fit = "video" or just points at a file with a
  * video extension, so the picker (which only sets a path) can hand us one too. */
@@ -199,6 +218,8 @@ FwmWallpaper *wallpaper_create(struct wlr_scene_tree *parent, const FwmConfig *c
             wp->layers[idx].video  = vid;
             wp->layers[idx].buffer = video_scene_buffer(vid);
             wp->layers[idx].slack  = 0;
+            wp->layers[idx].card   = wp->layers[idx].buffer;
+            wp->layers[idx].card_k = 1.0;
             continue;
         }
 
@@ -302,6 +323,21 @@ FwmWallpaper *wallpaper_create(struct wlr_scene_tree *parent, const FwmConfig *c
             int idx = wp->count++;
             wp->layers[idx].buffer = buf;
             wp->layers[idx].slack  = buf_w - screen_w;
+
+            /* The strip's copy, drawn from the image still in hand — decoding
+             * it again later would cost a stall on the frame the strip opens. */
+            int tw = (int)lround(buf_w * WALLPAPER_CARD_SCALE);
+            int th = (int)lround(screen_h * WALLPAPER_CARD_SCALE);
+            struct wlr_scene_buffer *card = cairo_overlay_create(parent, tw, th);
+            if (card) {
+                struct DrawCtx cctx = { .img = img, .contain = contain,
+                                        .scale = scale > 0.0
+                                            ? scale * WALLPAPER_CARD_SCALE : 0.0 };
+                cairo_overlay_update(card, draw_layer, &cctx);
+                wlr_scene_node_set_enabled(&card->node, false);
+                wp->layers[idx].card   = card;
+                wp->layers[idx].card_k = WALLPAPER_CARD_SCALE;
+            }
             wlr_log(WLR_INFO, "wallpaper layer %d: buffer %dpx, pan travel %dpx, "
                     "height cropped %.0f%%", i + 1, buf_w, buf_w - screen_w,
                     100.0 * (scale > 0.0 ? 0.0
@@ -333,6 +369,34 @@ void wallpaper_update(FwmWallpaper *wp, int camera_x) {
         int shift = (int)lround(l->slack * t);
         wlr_scene_node_set_position(&l->buffer->node, -shift, 0);
     }
+}
+
+int wallpaper_layer_count(FwmWallpaper *wp) {
+    return wp ? wp->count : 0;
+}
+
+struct wlr_buffer *wallpaper_layer_buffer(FwmWallpaper *wp, int i) {
+    if (!wp || i < 0 || i >= wp->count) return NULL;
+    return cairo_overlay_buffer(wp->layers[i].card);
+}
+
+void wallpaper_layer_crop(FwmWallpaper *wp, int i, int camera_x,
+                          int screen_w, int screen_h, struct wlr_fbox *out) {
+    double k = 1.0;
+    int shift = 0;
+    if (wp && i >= 0 && i < wp->count) {
+        k = wp->layers[i].card_k > 0.0 ? wp->layers[i].card_k : 1.0;
+        if (wp->pan_range > 0) {
+            double t = (double)camera_x / wp->pan_range;
+            if (t < 0.0) t = 0.0;
+            if (t > 1.0) t = 1.0;
+            shift = (int)lround(wp->layers[i].slack * t);
+        }
+    }
+    *out = (struct wlr_fbox){
+        .x = shift * k, .y = 0,
+        .width = screen_w * k, .height = screen_h * k,
+    };
 }
 
 void wallpaper_fade_in(FwmWallpaper *wp, double duration_ms) {
@@ -403,6 +467,9 @@ void wallpaper_destroy(FwmWallpaper *wp) {
         } else if (wp->layers[i].buffer) {
             cairo_overlay_destroy(wp->layers[i].buffer);
         }
+        /* A video layer's card IS its buffer, and video_destroy took it. */
+        if (wp->layers[i].card && !wp->layers[i].video)
+            cairo_overlay_destroy(wp->layers[i].card);
     }
     free(wp->layers);
     free(wp);

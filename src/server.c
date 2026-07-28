@@ -26,6 +26,7 @@
 #include "lock.h"
 #include "foreign.h"
 #include "ipc.h"
+#include "expo.h"
 #include <signal.h>
 #ifdef __GLIBC__
 #include <malloc.h>
@@ -365,10 +366,15 @@ void server_request_tray_redraw(FwmServer *server) {
     data.error_expanded = server->errors_buffer != NULL;
     data.mode_name = (server->key_mode >= 0 && server->key_mode < server->config.mode_count)
                          ? server->config.modes[server->key_mode].name : NULL;
-    data.active_pos = (double)server->camera_x / server->screen_width;
+    /* While the desktop strip is up, camera_x is parked and the strip's own pan
+     * is what moved — so ask it instead, or the marker would sit on the desktop
+     * the strip was entered from however far it had travelled. */
+    if (!expo_view_position(server, &data.active_pos)) {
+        data.active_pos = (double)server->camera_x / server->screen_width;
+    }
     if (data.active_pos < 0.0) data.active_pos = 0.0;
     if (data.active_pos > 9.0) data.active_pos = 9.0;
-    data.active_desktop = (server->camera_x + server->screen_width / 2) / server->screen_width;
+    data.active_desktop = (int)lround(data.active_pos);
     if (data.active_desktop < 0) data.active_desktop = 0;
 
     /* Modes pill. Layout is per-desktop, so it reports the desktop the camera

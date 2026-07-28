@@ -1,0 +1,52 @@
+/*
+ * fwm — a Wayland compositor
+ * Copyright (C) 2026 Ilu
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ */
+
+#ifndef FWM_SNAPSHOT_H
+#define FWM_SNAPSHOT_H
+
+#include <stdbool.h>
+
+struct FwmServer;
+struct wlr_buffer;
+struct wlr_scene_node;
+
+/* Photographing a piece of the scene graph into a buffer of our own.
+ *
+ * Deforming a client's own buffer is wrong for anything that paints through
+ * subsurfaces: their content lives in a different buffer entirely and is simply
+ * absent, while the toplevel's ARGB alpha gets blended over the hole (Firefox
+ * turned see-through during an impact; kitty, which has no subsurfaces, never
+ * did). So the picture is composited the way the compositor would draw it.
+ *
+ * All public wlroots API — no raw GLES, no scene-graph internals.
+ * (wlr_scene_node_snapshot does not exist in 0.20; if a future wlroots grows
+ * one, it replaces this wholesale.) */
+
+/* An empty ARGB8888 buffer the renderer can draw into. NULL if the allocator
+ * cannot serve it. The caller owns the reference. */
+struct wlr_buffer *snapshot_alloc(struct FwmServer *server, int w, int h);
+
+/* Composite `node`'s subtree into `dst`, which is cleared to transparent first.
+ * Layout point (origin_x, origin_y) lands on the buffer's top-left and
+ * everything is scaled by `scale` about it, so a whole desktop fits into a
+ * buffer a fraction of its size. Content outside `dst` is clipped by the pass.
+ *
+ * Scaling here rather than at draw time is what keeps the expo strip's memory
+ * bounded: ten screen-sized cards at full resolution is most of a hundred
+ * megabytes, and the strip never shows them larger than a third of a screen. */
+bool snapshot_subtree(struct FwmServer *server, struct wlr_buffer *dst,
+                      struct wlr_scene_node *node,
+                      int origin_x, int origin_y, double scale);
+
+#endif /* FWM_SNAPSHOT_H */

@@ -35,6 +35,7 @@
 #include "ui/cairo_overlay.h"
 #include "wallpaper.h"
 #include "group.h"
+#include "expo.h"
 #include <linux/input-event-codes.h>
 
 /* Defined further down this file; used before their definitions. */
@@ -185,6 +186,14 @@ static void handle_cursor_motion(struct wl_listener *listener, void *data) {
     server_notify_activity(server);
     if (lock_is_active(server)) return; /* nothing under the lock may be reached */
     drag_icon_update_position(server);
+
+    /* Same rule as the launcher below, for the same reason: while the desktop
+     * strip is up the pointer is aiming at snapshots, not at the windows they
+     * are pictures of, and no client may be told the cursor is over it. */
+    if (expo_handle_motion(server, lx, ly)) {
+        wlr_seat_pointer_clear_focus(server->seat);
+        return;
+    }
 
     // While the launcher is open the pointer belongs to it: hover moves the
     // selection, clients get no motion (and no pointer focus).
@@ -586,12 +595,24 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
         double ty = server->cursor->y - server->tray_buffer->node.y;
         int d = tray_desktop_hit(tx, ty);
         if (d >= 0) {
-            server->target_camera_x = d * server->screen_width;
-            server->cam_free = 0;    /* discrete jump: the eased slide */
+            if (!expo_goto_desktop(server, d)) {
+                server->target_camera_x = d * server->screen_width;
+                server->cam_free = 0;    /* discrete jump: the eased slide */
+            }
             server->group_click = 1; /* swallow the matching release */
             return;
         }
     }
+
+    /* Everything above this line is the tray, and the tray goes on working while
+     * the desktop strip is up: the marker follows the strip, clicking a desktop
+     * indicator sends the strip there (it rides camera_x like everything else),
+     * and the pills still open what they open. Only below here does a click
+     * mean "a window", and those windows are the strip's cards, not the live
+     * ones underneath. */
+    if (expo_handle_button(server, event->button,
+                           event->state == WL_POINTER_BUTTON_STATE_PRESSED,
+                           server->cursor->x, server->cursor->y)) return;
 
     // Tab-stack bars: a left click on a tab switches the stack's window and
     // stays in the compositor (its release is swallowed too).
@@ -878,15 +899,24 @@ static void handle_cursor_axis(struct wl_listener *listener, void *data) {
             /* Step from where the camera is HEADED, not where it is: spinning
              * the wheel several notches must advance several desktops rather
              * than fight the slide still in flight. */
-            int d = server->target_camera_x / server->screen_width;
+            int d = expo_view_desktop(server);
+            if (d < 0) d = server->target_camera_x / server->screen_width;
             d += event->delta > 0.0 ? 1 : -1;
             if (d < 0) d = 0;
             if (d > 9) d = 9;
-            server->target_camera_x = d * server->screen_width;
-            server->cam_free = 0;
+            if (!expo_goto_desktop(server, d)) {
+                server->target_camera_x = d * server->screen_width;
+                server->cam_free = 0;
+            }
             return;
         }
     }
+
+    /* After the island, so the tray keeps its own meaning for the wheel while
+     * the strip is up: over the island it still steps one desktop at a time,
+     * anywhere else it pans the strip freely. */
+    if (event->orientation == WL_POINTER_AXIS_VERTICAL_SCROLL &&
+        expo_handle_axis(server, event->delta)) return;
 
     wlr_seat_pointer_notify_axis(server->seat, event->time_msec, event->orientation, event->delta, event->delta_discrete, event->source, event->relative_direction);
 }

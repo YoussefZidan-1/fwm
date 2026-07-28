@@ -35,6 +35,7 @@
 #include "ui/cairo_overlay.h"
 #include "wallpaper.h"
 #include "group.h"
+#include "expo.h"
 
 /* Directional tile navigation: among the leaves of `desktop`, find the one
  * nearest to `from` in direction `dir` ('l','r','u','d'), judged by tile
@@ -243,6 +244,20 @@ static int tile_action_ctx(FwmServer *server, int *out_d, BspNode **out_leaf) {
 }
 
 void server_dispatch_action(FwmServer *server, const char *action) {
+    /* The desktop strip owns the session while it is up: anything else firing
+     * here would act on a world nobody can see. Two exceptions, both of which
+     * mean "look somewhere else" and are things the strip can do itself —
+     * closing it, and jumping to a desktop, which is how super+1..0 stays the
+     * fastest way across ten of them instead of a lot of scrolling. */
+    if (expo_active(server)) {
+        if (strncmp(action, "view:", 5) == 0) {
+            int d = resolve_desktop(server, action + 5);
+            if (d >= 0) expo_goto_desktop(server, d);
+            return;
+        }
+        if (strcmp(action, "expo") != 0) return;
+    }
+
     if (strcmp(action, "killclient") == 0) {
         if (server->focused_view) {
             view_send_close(server->focused_view);
@@ -507,6 +522,8 @@ void server_dispatch_action(FwmServer *server, const char *action) {
         if (new_target > 9 * server->screen_width) new_target = 9 * server->screen_width;
         server->target_camera_x = new_target;
         server->cam_free = 1; // continuous pan, not a desktop jump
+    } else if (strcmp(action, "expo") == 0) {
+        expo_toggle(server);
     } else if (strcmp(action, "launcher") == 0) {
         bool was_open = launcher_is_open(server->launcher);
         launcher_toggle(server->launcher);
@@ -592,7 +609,10 @@ void server_toggle_modes_menu(FwmServer *server) {
 
 int server_modes_menu_click(FwmServer *server, int row, int seg) {
     int changed = 0;
-    int d = (server->camera_x + server->screen_width / 2) / server->screen_width;
+    /* The desktop the user is looking at — which, while the strip is up, is
+     * where the strip has panned to and not where camera_x is parked. */
+    int d = expo_view_desktop(server);
+    if (d < 0) d = (server->camera_x + server->screen_width / 2) / server->screen_width;
     if (d < 0) d = 0;
     if (d > 9) d = 9;
 

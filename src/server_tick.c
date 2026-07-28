@@ -34,6 +34,7 @@
 #include "wallpaper.h"
 #include "cava.h"
 #include "group.h"
+#include "expo.h"
 #include "server_internal.h"
 
 #include <stdlib.h>
@@ -193,6 +194,7 @@ void server_shake_tick(FwmServer *server, double dt) {
  * freezes an animation halfway. */
 static int server_is_busy(FwmServer *server) {
     if (server->interactive.action != FWM_ACTION_NONE) return 1;
+    if (expo_animating(server)) return 1;             /* the strip zooming */
     if (server->camera_x != server->target_camera_x || server->cam_anim) return 1;
     if (server->shake_mag > 0.0) return 1;
     if (server->wallpaper_prev) return 1;              /* wallpaper cross-fade */
@@ -776,6 +778,13 @@ static int physics_tick_cb(void *data) {
      * twice as fast on a slow frame. */
     server_cava_sync(server);
     if (server->cava) cava_tick(server->cava, &server->config.cava, elapsed);
+
+    /* The desktop strip shows still pictures of every desktop. Letting the
+     * simulation run behind them would mean the windows you are looking at have
+     * quietly moved by the time you drop one — and a window dropped onto a card
+     * would be shoved by a world it was never in. Freeze it instead; nothing
+     * else in the tick needs to stop, the tray and the wallpaper still live. */
+    if (expo_active(server)) steps = 0;
 
     /* Physics steps: as many whole 1/60 steps as the real time since the last
      * tick paid for (see the accumulator at the top). Usually one. */

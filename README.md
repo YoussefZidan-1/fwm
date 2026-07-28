@@ -596,6 +596,7 @@ fit  = "pan"
 "super+shift+c"      = "calm_all"
 "super+shift+n"      = "toggle_nocollide_all"
 "super+shift+t"      = "toggle_tiling_all"
+"super+a"            = "expo"
 "super+shift+slash"  = "show_hints"
 "super+shift+r"      = "reload_config"
 "super+shift+p"      = "wallpaper_picker"
@@ -633,6 +634,7 @@ fit  = "pan"
 | `toggle_nocollide_all` / `toggle_tiling_all` / `toggle_floating_all` | same, but every window / every desktop at once |
 | `group_toggle`, `group_add`, `group_next`, `group_prev` | tab-stacks: make a stack, join it, cycle tabs |
 | `launcher` | built-in app launcher |
+| `expo` | the desktop strip: the camera pulls back over the neighbouring desktops — click a window to go to it, super+drag to move it between desktops, right-click for its menu, `z` for a wider view |
 | `show_hints` | keybind cheat-sheet overlay |
 | `reload_config` | re-read the config file and apply it without restarting |
 | `wallpaper_picker` | built-in wallpaper browser; Enter applies the image at once |

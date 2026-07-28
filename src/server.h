@@ -393,6 +393,9 @@ typedef struct FwmServer {
      * also what the pill reads to draw itself pressed. */
     struct wlr_scene_buffer *modes_buffer;
     struct Launcher *launcher;
+    /* The desktop strip (expo). NULL when closed — that NULL is the mode flag
+     * every input path tests, so there is no second copy of "is it open". */
+    struct FwmExpo *expo;
     
     int running;
 } FwmServer;

@@ -222,7 +222,7 @@ tap = true
 #                 calm_all, cycle_gravity, toggle_tray,
 #                 spin_window, spin_all,
 #                 show_hints, show_errors, modes_menu, reload_config,
-#                 wallpaper_picker, launcher, EXIT
+#                 wallpaper_picker, launcher, expo, EXIT
 # tiling:         toggle_split, tile_focus:l|r|u|d, tile_move:l|r|u|d
 # tab-stacks:     group_toggle, group_next, group_prev, group_add
 #
@@ -292,6 +292,13 @@ tap = true
 # Bound to the physical "/" key, not to the "?" symbol: a symbol bind lands on
 # a different key per layout (US shift+/, RU shift+7), while "slash" resolves
 # through the layout-0 fallback and stays put on every layout.
+# The desktop strip: pull the camera back until several desktops are on screen
+# at once. Inside it: z zooms out to the whole strip and back, the arrows and
+# the wheel pan, a click goes to the window (or the empty desktop) you clicked,
+# super+drag moves a window — including onto another desktop — right-click
+# opens a menu for the window under the cursor, and Escape or the same bind
+# leaves on whatever you are looking at.
+"super+a"            = "expo"
 "super+shift+slash"  = "show_hints"
 "super+shift+r"      = "reload_config"
 "super+shift+p"      = "wallpaper_picker"
