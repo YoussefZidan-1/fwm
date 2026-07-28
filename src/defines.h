@@ -97,7 +97,18 @@
 /* A desktop with no wallpaper still has to read as a slot on the strip, and
  * the drum's end caps want to read as a lid rather than as another desktop. */
 #define EXPO_CARD_GREY      0.13f
-#define EXPO_CAP_GREY       0.07f
+/* Inside the drum: the floor it stands on and the back of the far wall. Both
+ * are translucent and take the UI's own dark tint, so the ring reads as an
+ * object standing on the wallpaper rather than as a hole cut in it — a solid
+ * plate in the middle of the ring is exactly what looked wrong. The far wall
+ * keeps a hint of its desktop printed on the inside. */
+#define EXPO_FLOOR_ALPHA    0.80f
+#define EXPO_INNER_ALPHA    0.88f
+#define EXPO_INNER_IMAGE    0.22f
+/* How far the camera pulls back as it rises, as a fraction of the tilt in
+ * radians. Without it, lifting over the ring walks the near wall off the
+ * bottom of the screen and fills the frame with floor. */
+#define EXPO_TILT_PULLBACK  1.0
 /* How fast a pan (arrows, wheel) chases where it was sent, 1/s. Quicker than
  * the zoom: a step sideways should feel like a nudge, not like a journey. */
 #define EXPO_PAN_SPEED      14.0

@@ -243,7 +243,11 @@ static double expo_radius(FwmExpo *e) {
  * deliberately does NOT follow `dist`: if it did, pulling the camera back
  * would narrow the lens by the same amount and nothing would appear to move. */
 static double expo_dist(FwmExpo *e) {
-    return EXPO_CAM_DIST * expo_pitch(e) * e->dist;
+    /* Rising over the ring also backs away from it, or the near wall walks off
+     * the bottom of the screen and the view becomes floor. The wheel still
+     * has the final say; this only keeps the default flight framed. */
+    double lift = 1.0 + EXPO_TILT_PULLBACK * fabs(e->tilt);
+    return EXPO_CAM_DIST * expo_pitch(e) * e->dist * lift;
 }
 
 static double expo_focal(FwmExpo *e) {
@@ -276,14 +280,22 @@ static ExpoPt expo_facet_point(FwmExpo *e, ExpoPt a, ExpoPt b, double s, double 
     return p;
 }
 
-/* Ring space → a projected vertex. The tilt is undone here, which is the whole
- * of the camera: everything else is one perspective divide. */
+/* Ring space → a projected vertex.
+ *
+ * The camera swings about the CENTRE of the ring, not about the desktop in
+ * front of it: tilting then lifts you over the whole drum, which stays in the
+ * middle of the view, instead of pivoting on one card and swinging the rest of
+ * the ring out of frame. The centre is a radius behind the front of the strip,
+ * so the eye stands D + R from it — and at R = 0, or no tilt, every term below
+ * cancels back to the flat `D - z` the strip started with. */
 static struct scene3d_vert expo_project(FwmExpo *e, ExpoPt p, double u, double v) {
     double ct = cos(e->tilt), st = sin(e->tilt);
-    double y =  p.y * ct + p.z * st;
-    double z = -p.y * st + p.z * ct;
+    double r = expo_radius(e);
+    double pz = p.z + r;                 /* about the ring's centre */
+    double y =  p.y * ct + pz * st;
+    double z = -p.y * st + pz * ct;
 
-    double w = expo_dist(e) - z;
+    double w = expo_dist(e) + r - z;
     double f = expo_focal(e);
     struct scene3d_vert out = {
         .x = (float)(e->server->screen_width / 2.0 + f * p.x / (w > 1.0 ? w : 1.0)),
@@ -356,9 +368,10 @@ static void expo_ray(FwmExpo *e, double sx, double sy, ExpoPt *origin, ExpoPt *d
     /* Camera space runs (X w, Y w, D - w) as w grows; rotating that back into
      * ring space is linear in w, so the eye is the w = 0 end and the direction
      * is what one unit of w adds. */
+    double r = expo_radius(e);
     origin->x = 0.0;
-    origin->y = -d * st;
-    origin->z =  d * ct;
+    origin->y = -(d + r) * st;
+    origin->z =  (d + r) * ct - r;       /* back out of the ring's centre */
     dir->x = X;
     dir->y = Y * ct + st;
     dir->z = Y * st - ct;
@@ -587,17 +600,19 @@ static void expo_quad(FwmExpo *e, ExpoPt a, ExpoPt b, double s0, double s1,
  * needed: a facet on the far side of the drum comes out wound backwards, and
  * so does one folded past the horizon. It is also the only test that stays
  * right once the camera can be anywhere. */
-static bool expo_quad_visible(FwmExpo *e, const struct scene3d_vert q[4]) {
-    for (int i = 0; i < 4; i++)
-        if (q[i].w <= 1.0f) return false;
-
+static bool expo_quad_front(const struct scene3d_vert q[4]) {
     const struct scene3d_vert *ring[4] = { &q[QTL], &q[QTR], &q[QBR], &q[QBL] };
     double area = 0.0;
     for (int i = 0; i < 4; i++) {
         const struct scene3d_vert *p = ring[i], *n = ring[(i + 1) % 4];
         area += (double)p->x * n->y - (double)n->x * p->y;
     }
-    if (area <= 0.0) return false;      /* y is down, so front-facing is positive */
+    return area > 0.0;                 /* y is down, so front-facing is positive */
+}
+
+static bool expo_quad_onscreen(FwmExpo *e, const struct scene3d_vert q[4]) {
+    for (int i = 0; i < 4; i++)
+        if (q[i].w <= 1.0f) return false;
 
     float lo = q[0].x, hi = q[0].x, top = q[0].y, bot = q[0].y;
     for (int i = 1; i < 4; i++) {
@@ -608,6 +623,10 @@ static bool expo_quad_visible(FwmExpo *e, const struct scene3d_vert q[4]) {
     }
     return hi >= -8.0f && lo <= e->server->screen_width + 8.0f
         && bot >= -8.0f && top <= e->server->screen_height + 8.0f;
+}
+
+static bool expo_quad_visible(FwmExpo *e, const struct scene3d_vert q[4]) {
+    return expo_quad_onscreen(e, q) && expo_quad_front(q);
 }
 
 /* The same quad grown by `m` screen px, for the frame drawn behind a card or a
@@ -699,10 +718,45 @@ static void expo_draw_card(FwmExpo *e, int d, int looking_at, double open,
     }
 }
 
-/* One end of the drum, so a ring looked at from above is a lid and not a view
- * into its own far side. Drawn as separate triangles rather than one fan: a
- * segment can have a corner behind the eye, and dropping it must not tear the
- * rest apart. */
+/* The back of a card, which is the inside of the far wall. Worth drawing rather
+ * than culling: looking into an open drum and seeing the desktops printed
+ * faintly on the inside of it is what the shape actually is, and it is the
+ * answer to why the middle used to be a black plate. */
+/* The UI's own panel colour, premultiplied, at `a`. Everything drawn inside the
+ * drum uses it: the ring then belongs to the same interface as the tray and the
+ * menus rather than being a black shape in the middle of the screen. */
+static void expo_ui_tint(float out[4], double a) {
+    const FwmTheme *th = theme_get();
+    out[0] = (float)(th->pill[0] * a);
+    out[1] = (float)(th->pill[1] * a);
+    out[2] = (float)(th->pill[2] * a);
+    out[3] = (float)a;
+}
+
+static void expo_draw_inner(FwmExpo *e, int d, const struct scene3d_vert q[4]) {
+    float tint[4];
+    expo_ui_tint(tint, EXPO_INNER_ALPHA);
+    scene3d_quad_solid(tint, q);
+
+    for (int i = 0; i < e->wp_n; i++) {
+        struct wlr_texture *tex = e->wp_tex[i];
+        if (!tex || tex->width <= 0) continue;
+        const struct wlr_fbox *crop = &e->wp_crop[d][i];
+        struct scene3d_vert w[4];
+        memcpy(w, q, sizeof(w));
+        float uu0 = (float)(crop->x / tex->width);
+        float uu1 = (float)((crop->x + crop->width) / tex->width);
+        w[QTL].u = w[QBL].u = uu0;
+        w[QTR].u = w[QBR].u = uu1;
+        scene3d_quad(tex, w, EXPO_INNER_IMAGE);
+    }
+}
+
+/* The floor the drum stands on — or its ceiling, seen from below. NOT a lid
+ * over the top: a lid is a black plate where the inside of the ring should be,
+ * which is exactly what it looked like. Drawn as separate triangles rather
+ * than one fan: a segment can have a corner behind the eye, and dropping it
+ * must not tear the rest apart. */
 static void expo_draw_cap(FwmExpo *e, double wy) {
     double r = expo_radius(e);
     if (r <= 0.0) return;
@@ -727,8 +781,9 @@ static void expo_draw_cap(FwmExpo *e, double wy) {
             expo_project(e, p1, 0.0, 0.0),
         };
         if (tri[1].w <= 1.0f || tri[2].w <= 1.0f) continue;
-        scene3d_fan_solid((float[4]){EXPO_CAP_GREY, EXPO_CAP_GREY,
-                                     EXPO_CAP_GREY, 1.0f}, tri, 3);
+        float tint[4];
+        expo_ui_tint(tint, EXPO_FLOOR_ALPHA);
+        scene3d_fan_solid(tint, tri, 3);
     }
 }
 
@@ -775,11 +830,6 @@ static void expo_draw_gl(FwmExpo *e) {
     double scale = expo_scale(e);
     int looking_at = expo_view_desktop(server);
 
-    /* The lid the camera is on the outside of, first: the near cards are drawn
-     * over it, and the far ones are wound backwards and never drawn at all. */
-    if (e->tilt > 0.001) expo_draw_cap(e, 0);
-    else if (e->tilt < -0.001) expo_draw_cap(e, server->screen_height);
-
     /* Far to near. A flat facet cannot intersect another, so the order of the
      * whole card — its edge, its wallpaper and its windows together — is all
      * the depth sorting a drum needs. */
@@ -797,6 +847,22 @@ static void expo_draw_gl(FwmExpo *e) {
             int t = order[j]; order[j] = order[j - 1]; order[j - 1] = t;
         }
     }
+    /* Inside first, then the floor it stands on, then the wall facing us. Three
+     * passes rather than one, because the floor belongs between the two halves
+     * of the ring and a single sorted pass has nowhere to put it. */
+    for (int i = 0; i < FWM_DESKTOPS; i++) {
+        int d = order[i];
+        ExpoPt a, b;
+        expo_facet_ends(e, d, &a, &b);
+        struct scene3d_vert q[4];
+        expo_quad(e, a, b, 0.0, 1.0, 0, server->screen_height, 0.0, 1.0, q);
+        if (expo_quad_onscreen(e, q) && !expo_quad_front(q))
+            expo_draw_inner(e, d, q);
+    }
+
+    if (e->tilt > 0.001) expo_draw_cap(e, server->screen_height);
+    else if (e->tilt < -0.001) expo_draw_cap(e, 0);
+
     for (int i = 0; i < FWM_DESKTOPS; i++)
         expo_draw_card(e, order[i], looking_at, open, scale);
 
@@ -1538,11 +1604,15 @@ bool expo_handle_button(FwmServer *server, uint32_t button, bool pressed,
         return true;
     }
 
-    if (button == BTN_MIDDLE) {
-        /* Fly round the ring: sideways turns it, up and down lifts the camera
-         * over it. The middle button because the left one carries windows and
-         * the right one opens their menu — and because a gesture nobody knows
-         * about is better off on a button nobody presses by accident. */
+    struct wlr_keyboard *kb = wlr_seat_get_keyboard(server->seat);
+    uint32_t mods = kb ? wlr_keyboard_get_modifiers(kb) : 0;
+
+    /* Fly round the ring: sideways turns it, up and down lifts the camera over
+     * it. Two ways in, because one of them assumes hardware: the middle button
+     * for a mouse that has one, and alt+left for a touchpad, which is the
+     * gesture every 3D viewer has used for thirty years. Super+left is taken —
+     * that carries windows — and the right button opens their menu. */
+    if (button == BTN_MIDDLE || (button == BTN_LEFT && (mods & WLR_MODIFIER_ALT))) {
         if (!pressed) { e->orbiting = 0; return true; }
         if (!expo_can_orbit(e)) return true;
         e->orbiting = 1;
@@ -1550,6 +1620,9 @@ bool expo_handle_button(FwmServer *server, uint32_t button, bool pressed,
         e->orbit_y = ly;
         return true;
     }
+
+    /* A release always ends the flight, whichever button began it. */
+    if (!pressed && e->orbiting) { e->orbiting = 0; return true; }
 
     if (button == BTN_RIGHT) {
         if (pressed) {
@@ -1578,9 +1651,6 @@ bool expo_handle_button(FwmServer *server, uint32_t button, bool pressed,
     }
 
     ExpoItem *it = expo_item_at(e, lx, ly);
-
-    struct wlr_keyboard *kb = wlr_seat_get_keyboard(server->seat);
-    uint32_t mods = kb ? wlr_keyboard_get_modifiers(kb) : 0;
     if (it && (mods & WLR_MODIFIER_LOGO)) {
         /* Super+drag moves the window, including across desktops — the reason
          * the strip is a window manager and not a screenshot. */

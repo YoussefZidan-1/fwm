@@ -636,7 +636,7 @@ fit  = "pan"
 | `group_toggle`, `group_add`, `group_next`, `group_prev` | tab-stacks: make a stack, join it, cycle tabs |
 | `launcher` | built-in app launcher |
 | `toggle_wrap` | close the desktop strip into a ring: stepping past the last desktop arrives on the first (`x` inside expo) |
-| `expo` | the desktop strip: the camera pulls back over the neighbouring desktops — click a window to go to it, super+drag to move it between desktops, right-click for its menu, `z` for a wider view and, from there, middle-drag to fly around the ring |
+| `expo` | the desktop strip: the camera pulls back over the neighbouring desktops — click a window to go to it, super+drag to move it between desktops, right-click for its menu, `z` for a wider view and, from there, middle-drag (or alt+drag) to fly around the ring |
 | `show_hints` | keybind cheat-sheet overlay |
 | `reload_config` | re-read the config file and apply it without restarting |
 | `wallpaper_picker` | built-in wallpaper browser; Enter applies the image at once |

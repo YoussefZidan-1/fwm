@@ -308,9 +308,10 @@ tap = true
 # into a ring, and Escape or the same bind leaves on what you are looking at.
 #
 # z steps back further, and at that step the ring can be flown around: drag
-# with the MIDDLE button to turn it and to lift the camera over it, the wheel
-# then moves in and out, up/down arrows tilt a step at a time. The camera comes
-# back level by itself the moment you ask for a desktop again.
+# with the middle button — or alt+left, for a touchpad — to turn it and to lift
+# the camera over it; the wheel then moves in and out, up/down arrows tilt a
+# step at a time. The camera looks at the middle of the ring, not at one
+# desktop, and comes back level by itself the moment you ask for a desktop.
 "super+a"            = "expo"
 "super+shift+slash"  = "show_hints"
 "super+shift+r"      = "reload_config"
