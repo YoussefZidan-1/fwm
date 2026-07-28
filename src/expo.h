@@ -54,6 +54,10 @@ void expo_tick(struct FwmServer *server, double dt);
  * than freezing on the desktop it was entered from. */
 bool expo_view_position(struct FwmServer *server, double *pos);
 int expo_view_desktop(struct FwmServer *server);
+/* The same, but where the strip is HEADED rather than where it is: what a
+ * next/prev step has to be measured from, or two steps in quick succession
+ * both resolve to the same neighbour. -1 when the strip is closed. */
+int expo_target_desktop(struct FwmServer *server);
 
 /* Send the strip to a desktop, eased, without touching the live camera. False
  * when the strip is not up, so a caller can fall through to its own way of

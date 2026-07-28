@@ -902,7 +902,7 @@ static void handle_cursor_axis(struct wl_listener *listener, void *data) {
             /* Step from where the camera is HEADED, not where it is: spinning
              * the wheel several notches must advance several desktops rather
              * than fight the slide still in flight. */
-            int here = expo_view_desktop(server);
+            int here = expo_target_desktop(server);
             if (here < 0) here = server->target_camera_x / server->screen_width;
             int d = here + (event->delta > 0.0 ? 1 : -1);
             int seam = 0;

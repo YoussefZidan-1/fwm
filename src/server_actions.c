@@ -220,7 +220,12 @@ static const char *terminal_command(FwmServer *server) {
  * from desktop 9 means that particular desktop, and travelling there past the
  * eight in between is what the user asked for. */
 static int resolve_desktop_ex(FwmServer *server, const char *arg, int *seam) {
-    int here = server->target_camera_x / server->screen_width;
+    /* Where "here" is. While the desktop strip is up that is where the STRIP is
+     * looking, not where camera_x is parked — the camera does not move until
+     * the strip closes, so stepping from the parked desktop meant next/prev
+     * resolved to the same neighbour however far you had already travelled. */
+    int here = expo_target_desktop(server);
+    if (here < 0) here = server->target_camera_x / server->screen_width;
     int d, step = 0;
     if (strcmp(arg, "next") == 0) {
         d = here + 1; step = 1;

@@ -73,6 +73,10 @@ struct FwmExpo {
      * screen — 1.0 is exactly what you were looking at a moment ago, which is
      * what makes entering and leaving a single continuous movement. */
     double zoom, zoom_target;
+    /* How much of a full circle the strip spans: EXPO_ARC_FRAC while it is a
+     * line, 1 once the ring is closed, and eased between the two so `x` bends
+     * the strip shut instead of teleporting its far end. */
+    double ring, ring_target;
     /* Free horizontal offset from the home desktop, strip px. Eased like the
      * zoom: an arrow key that teleported the strip sideways left you with no
      * idea which way it had gone. */
@@ -99,7 +103,7 @@ struct FwmExpo {
      * 60fps forever. The flat path has no such problem — setting a node to the
      * position it already has is a no-op in wlr_scene — so this is the price of
      * drawing by hand, and it is one comparison. */
-    double drawn_zoom, drawn_pan, drawn_drag_x, drawn_drag_y;
+    double drawn_zoom, drawn_ring, drawn_pan, drawn_drag_x, drawn_drag_y;
     int drawn_cam, drawn_items, drawn_wrap;
     void *drawn_hover, *drawn_drag;
     struct wlr_texture *wp_tex[EXPO_MAX_WP_LAYERS];
@@ -192,7 +196,10 @@ static double expo_radius(FwmExpo *e) {
     if (!e->gl) return 0.0;
     double k = expo_openness(e);
     if (k < 0.02) return 0.0;
-    return FWM_DESKTOPS * expo_pitch(e) / (2.0 * M_PI) / k;
+    /* The ten desktops span `ring` of a circle, so a smaller ring is a wider
+     * arc: the same length of strip bent less. */
+    double ring = e->ring > 0.05 ? e->ring : 0.05;
+    return FWM_DESKTOPS * expo_pitch(e) / (2.0 * M_PI * ring) / k;
 }
 
 /* Viewer distance from the front of the strip. The focal length derived from
@@ -326,27 +333,46 @@ static void expo_point(FwmExpo *e, double sx, double sy,
  * camera_x/screen_width is when the strip is closed. The tray reads it so its
  * marker keeps saying where you are while the strip pans; without that it went
  * on pointing at the desktop you entered from. */
-bool expo_view_position(FwmServer *server, double *pos) {
-    FwmExpo *e = server->expo;
-    if (!e) return false;
-    double p = (expo_center(e) - server->screen_width / 2.0) / expo_pitch(e);
+static double expo_position_for(FwmExpo *e, double pan) {
+    FwmServer *server = e->server;
+    double centre = server->camera_x + server->screen_width / 2.0
+                  + e->home * expo_gap(e) + pan;
+    double p = (centre - server->screen_width / 2.0) / expo_pitch(e);
     if (server->config.camera.wrap) {
         p = fmod(p, (double)FWM_DESKTOPS);
         if (p < 0.0) p += FWM_DESKTOPS;
     }
     if (p < 0.0) p = 0.0;
     if (p > FWM_DESKTOPS - 1) p = FWM_DESKTOPS - 1;
+    return p;
+}
+
+bool expo_view_position(FwmServer *server, double *pos) {
+    FwmExpo *e = server->expo;
+    if (!e) return false;
+    double p = expo_position_for(e, e->pan);
     *pos = p;
     return true;
 }
 
-int expo_view_desktop(FwmServer *server) {
-    double p;
-    if (!expo_view_position(server, &p)) return -1;
-    int d = (int)lround(p);
+static int expo_desktop_at(FwmExpo *e, double pan) {
+    int d = (int)lround(expo_position_for(e, pan));
     if (d < 0) d = 0;
     if (d >= FWM_DESKTOPS) d = FWM_DESKTOPS - 1;
     return d;
+}
+
+int expo_view_desktop(FwmServer *server) {
+    FwmExpo *e = server->expo;
+    return e ? expo_desktop_at(e, e->pan) : -1;
+}
+
+int expo_target_desktop(FwmServer *server) {
+    /* Where the strip is HEADED, which is what a step must be measured from:
+     * firing next twice in quick succession has to advance two desktops rather
+     * than fight a pan still in flight. Same rule the tray's wheel follows. */
+    FwmExpo *e = server->expo;
+    return e ? expo_desktop_at(e, e->pan_target) : -1;
 }
 
 /* ── the pictures ─────────────────────────────────────────────────────── */
@@ -585,6 +611,7 @@ static void expo_draw_item(FwmExpo *e, ExpoItem *it, double scale) {
 static bool expo_canvas_current(FwmExpo *e) {
     FwmServer *server = e->server;
     bool same = e->drawn_zoom == e->zoom
+             && e->drawn_ring == e->ring
              && e->drawn_pan == e->pan
              && e->drawn_cam == server->camera_x
              && e->drawn_items == e->n_items
@@ -596,6 +623,7 @@ static bool expo_canvas_current(FwmExpo *e) {
     if (same) return true;
 
     e->drawn_zoom = e->zoom;
+    e->drawn_ring = e->ring;
     e->drawn_pan = e->pan;
     e->drawn_cam = server->camera_x;
     e->drawn_items = e->n_items;
@@ -786,7 +814,8 @@ bool expo_active(FwmServer *server) {
 bool expo_animating(FwmServer *server) {
     FwmExpo *e = server->expo;
     return e && (fabs(e->zoom - e->zoom_target) > 0.001
-              || fabs(e->pan - e->pan_target) > 0.5);
+              || fabs(e->pan - e->pan_target) > 0.5
+              || fabs(e->ring - e->ring_target) > 0.001);
 }
 
 static void expo_open(FwmServer *server) {
@@ -805,6 +834,8 @@ static void expo_open(FwmServer *server) {
     e->zoom = 1.0;
     e->zoom_target = EXPO_ZOOM_NEAR;
     e->drawn_zoom = -1.0;   /* nothing drawn yet; the first layout must run */
+    e->ring = e->ring_target =
+        server->config.camera.wrap ? 1.0 : EXPO_ARC_FRAC;
     e->home = (server->camera_x + server->screen_width / 2) / server->screen_width;
     if (e->home < 0) e->home = 0;
     if (e->home >= FWM_DESKTOPS) e->home = FWM_DESKTOPS - 1;
@@ -891,6 +922,13 @@ static void expo_close(FwmServer *server, int desktop) {
     server->camera_x = desktop * server->screen_width;
     e->pan = was_looking_at - (server->camera_x + server->screen_width / 2.0
                                + e->home * expo_gap(e));
+    if (server->config.camera.wrap) {
+        /* On a ring the rebased offset can be most of a circle even though the
+         * picture did not move; fly the short way home. */
+        double circ = FWM_DESKTOPS * expo_pitch(e);
+        while (e->pan >  circ / 2.0) e->pan -= circ;
+        while (e->pan < -circ / 2.0) e->pan += circ;
+    }
     e->pan_target = 0.0;
     server->target_camera_x = server->camera_x;
     server->cam_anim = 0;
@@ -973,6 +1011,14 @@ void expo_tick(FwmServer *server, double dt) {
     if (fabs(pgap) > 0.5) e->pan += pgap * (1.0 - exp(-EXPO_PAN_SPEED * dt));
     else                  e->pan = e->pan_target;
 
+    /* Read from the config every frame rather than tracked: `x`, a `fwmctl
+     * set` and a config reload all mean the same thing here, and none of them
+     * has to know the strip is open. */
+    e->ring_target = server->config.camera.wrap ? 1.0 : EXPO_ARC_FRAC;
+    double rgap = e->ring_target - e->ring;
+    if (fabs(rgap) > 0.001) e->ring += rgap * (1.0 - exp(-EXPO_RING_SPEED * dt));
+    else                    e->ring = e->ring_target;
+
     if (e->leaving && e->zoom <= 1.0005) {
         expo_teardown(server);
         return;
@@ -1009,6 +1055,18 @@ static ExpoItem *expo_item_at(FwmExpo *e, double lx, double ly) {
  * lost in. */
 static void expo_clamp_pan(FwmExpo *e) {
     double pitch = expo_pitch(e);
+
+    if (e->server->config.camera.wrap) {
+        /* A ring has no ends to stop at: keep going and the tenth desktop is
+         * followed by the first. Only the accumulated number is bounded, and
+         * folding it by a whole circumference is invisible — every card is
+         * placed modulo that same circumference. */
+        double circ = FWM_DESKTOPS * pitch;
+        while (e->pan_target >  circ / 2.0) { e->pan_target -= circ; e->pan -= circ; }
+        while (e->pan_target < -circ / 2.0) { e->pan_target += circ; e->pan += circ; }
+        return;
+    }
+
     double half = e->server->screen_width / (2.0 * expo_scale(e));
     double lo = -half - e->home * pitch;
     double hi = (FWM_DESKTOPS - 1 - e->home) * pitch + half;
@@ -1039,6 +1097,15 @@ bool expo_goto_desktop(FwmServer *server, int d) {
      * expo_center is camera_x + screen_width/2 + home * gap + pan, with
      * camera_x == home * screen_width — which leaves this. */
     e->pan_target = (d - e->home) * expo_pitch(e);
+    if (server->config.camera.wrap) {
+        /* Round the short way. Stepping from desktop 9 to 0 must travel one
+         * card, not nine backwards — the same rule server_goto_desktop follows
+         * outside the strip, except that here it is a movement and not a jump,
+         * because on a ring there is a picture of the way round. */
+        double circ = FWM_DESKTOPS * expo_pitch(e);
+        while (e->pan_target - e->pan >  circ / 2.0) e->pan_target -= circ;
+        while (e->pan_target - e->pan < -circ / 2.0) e->pan_target += circ;
+    }
     expo_clamp_pan(e);
     return true;
 }

@@ -108,6 +108,14 @@
  * The curvature is scaled by how far the strip has opened, so at the live view
  * it is exactly zero and entering does not bend anything: the flat mapping is
  * the k = 0 case of the same projection, not a separate code path. */
+/* How much of a full circle the strip spans while it is a LINE. Less than one
+ * is what makes it read as a strip with two ends rather than a ring you happen
+ * to be looking at the near side of; `x` closes it the rest of the way, and
+ * the travel between the two is the animation of closing. */
+#define EXPO_ARC_FRAC       0.55
+/* How fast that closing runs, 1/s. Slower than the zoom on purpose: it is a
+ * change of shape, and one that is over before it is seen has not been seen. */
+#define EXPO_RING_SPEED     5.0
 /* Viewer distance from the front of the strip. Smaller is a wider lens: more
  * dramatic, and quicker to look wrong at the edges of the screen. */
 #define EXPO_CAM_DIST       2.2
