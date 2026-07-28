@@ -157,7 +157,7 @@ FwmView *view_from_surface(FwmServer *server, struct wlr_surface *surface) {
 void idle_inhibit_refresh(FwmServer *server) {
     if (!server->idle_notifier || !server->idle_inhibit) return;
 
-    int visible_d = (server->camera_x + server->screen_width / 2) / server->screen_width;
+    int visible_d = server_active_desktop(server);
     int inhibited = 0;
     struct wlr_idle_inhibitor_v1 *inh;
     wl_list_for_each(inh, &server->idle_inhibit->inhibitors, link) {
@@ -259,15 +259,14 @@ static void handle_xdg_activation_request_activate(struct wl_listener *listener,
 
     PhysicsBody *pb = physics_find_body(&server->physics, view->id);
     int target_d = (pb && pb->desktop_id >= 0 && pb->desktop_id < 10) ? pb->desktop_id : -1;
-    int visible_d = (server->camera_x + server->screen_width / 2) / server->screen_width;
+    int visible_d = server_active_desktop(server);
 
     if (target_d >= 0 && target_d != visible_d) {
         /* Off-screen window. Panning the camera away from what the user is
          * working on is the disruptive part of activation, so only "always"
          * may do it; "same_desktop" drops the request instead. */
         if (policy != FOCUS_ACTIVATE_ALWAYS) return;
-        server->target_camera_x = target_d * server->screen_width;
-        server->cam_free = 0; /* discrete jump: eased slide, not the free chase */
+        server_output_show_desktop(server, server_active_output(server), target_d, 0);
     }
     server_focus_view(server, view);
 }

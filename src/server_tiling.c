@@ -115,7 +115,7 @@ static void tile_move_to(FwmServer *server, FwmView *view, PhysicsBody *pb, int 
         view->y = pb->y;
         if (view->scene_tree) {
             wlr_scene_node_set_position(&view->scene_tree->node,
-                                        (int)lround(view->x - server->camera_x),
+                                        (int)lround(view->x),
                                         (int)lround(view->y));
         }
     }

@@ -28,14 +28,6 @@
 
 #include "server.h"
 
-struct FwmOutput {
-    struct wl_list link;
-    FwmServer *server;
-    struct wlr_output *wlr_output;
-    struct wl_listener frame;
-    struct wl_listener destroy;
-};
-
 /* Pointers are tracked only so a config reload can reach the touchpads that
  * are already plugged in — wlr_cursor keeps its device list private, and the
  * libinput settings are per device. */
@@ -73,8 +65,8 @@ void server_camera_settled(FwmServer *server);
  * look like one screen of travel instead of a cut. `dir` is +1 when the view
  * moved right off the last desktop onto the first. Stop is idempotent and safe
  * at any time — closing the strip and losing an output both call it. */
-void server_wrap_slide_start(FwmServer *server, int dir);
-void server_wrap_slide_stop(FwmServer *server);
+void server_wrap_slide_start(FwmServer *server, FwmOutput *out, int dir);
+void server_wrap_slide_stop(FwmServer *server, FwmOutput *out);
 /* Park the camera on desktop `d`. `seam` marks a step that crossed the ring's
  * join, which is jumped rather than slid. Also the one place that hands the
  * move to the desktop strip when it is open. */
@@ -130,6 +122,9 @@ void pointer_apply_input_config(FwmServer *server, struct wlr_input_device *devi
 
 /* ── server_output.c ──────────────────────────────────────────────────── */
 void server_output_register(FwmServer *server);
+/* Re-place every monitor from the current [[output]] entries. Called on reload;
+ * a monitor arriving applies its own entry as it joins. */
+void server_outputs_apply_config(FwmServer *server);
 
 /* ── server_pointer.c ─────────────────────────────────────────────────── */
 void server_pointer_register(FwmServer *server);

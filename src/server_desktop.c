@@ -133,7 +133,7 @@ static void desktop_leave_tiling(FwmServer *server, int d) {
         view_set_size(view, view->width, view->height);
         if (view->scene_tree) {
             wlr_scene_node_set_position(&view->scene_tree->node,
-                                        (int)lround(view->x - server->camera_x),
+                                        (int)lround(view->x),
                                         (int)lround(view->y));
         }
     }

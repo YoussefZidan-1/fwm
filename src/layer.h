@@ -46,6 +46,11 @@ void layer_shell_init(struct FwmServer *server);
  * anything that changes the set of surfaces or the output size. */
 void layer_arrange(struct FwmServer *server);
 
+/* Close every layer surface that belongs to an output that is going away. A
+ * bar keeps a pointer to the monitor it asked for, so leaving it alive would
+ * leave that pointer dangling. Call before the output is freed. */
+void layer_output_gone(struct FwmServer *server, struct wlr_output *output);
+
 /* Hand the keyboard to the topmost layer surface that wants it, or back to the
  * focused window when none does. */
 void layer_update_keyboard_focus(struct FwmServer *server);

@@ -90,6 +90,32 @@ anim_ms    = 350.0
 free_speed = 14.0
 wrap       = false
 
+# ── monitors ────────────────────────────────────────────────────────────
+# Each monitor shows one of the ten desktops and switches on its own; a
+# desktop bind moves whichever screen the pointer is on. Without an [[output]]
+# entry a monitor is placed to the right of the ones already there and takes
+# the lowest desktop nobody else has, so this section is only needed to say
+# otherwise.
+#
+# `name` is what fwm logs at startup ("output HDMI-A-1: 1920x1080") — the same
+# name wlr-randr and swaymsg use. x/y are the top-left corner in layout
+# coordinates and must be given together; the monitor at 0,0 is the primary
+# one, which is where the welcome and error panels open and whose size every
+# desktop takes. `desktop` is what that screen comes up on, and `enabled =
+# false` leaves it dark. Reloading the config re-applies all of it.
+#
+#   [[output]]
+#   name    = "eDP-1"        # the laptop panel, on the left, primary
+#   x       = 0
+#   y       = 0
+#   desktop = 0
+#
+#   [[output]]
+#   name    = "HDMI-A-1"     # the external screen to the right of it
+#   x       = 1366
+#   y       = 0
+#   desktop = 1
+
 # What an app is allowed to do when it asks to be raised (xdg-activation):
 # a link opening in an already-running browser, a chat client jumping to a
 # message. The annoying part is not the focus change but the camera leaving

@@ -120,8 +120,9 @@ static void server_consume_impacts(FwmServer *server) {
     double squash = server->config.effects.squash;
     if (shake <= 0.0 && squash <= 0.0) { server->physics.impact_count = 0; return; }
 
-    int visible_d = (server->camera_x + server->screen_width / 2) / server->screen_width;
-    double want = 0.0;
+    /* An impact shakes the monitor SHOWING the desktop it happened on — and
+     * only that one. A window landing on desktop 3 must not jolt the screen
+     * next to it that is showing desktop 7. */
     for (int i = 0; i < server->physics.impact_count; i++) {
         const PhysicsImpact *im = &server->physics.impacts[i];
         /* A contact point sits ON the surface it hit, so a wall impact lands
@@ -133,115 +134,126 @@ static void server_consume_impacts(FwmServer *server) {
         int impact_d = (int)(im->x / server->screen_width);
         if (impact_d < 0) impact_d = 0;
         if (impact_d > 9) impact_d = 9;
-        if (impact_d != visible_d) continue;
+        FwmOutput *out = server_output_showing(server, impact_d);
+        if (!out) continue;   /* nobody is watching that desktop */
 
         /* The normal points from A to B, so it faces the contact for A and
          * away from it for B — flip it for B. */
         server_squash_from_impact(server, im->id_a,  im->nx,  im->ny, im->speed);
         server_squash_from_impact(server, im->id_b, -im->nx, -im->ny, im->speed);
 
+        if (shake <= 0.0) continue;
         double f = im->speed / SHAKE_FULL_SPEED;
         if (f > 1.0) f = 1.0;
         /* Squared so gentle bumps stay subtle and only real slams shake hard. */
         double mag = shake * SHAKE_MAX_PX * f * f;
-        if (mag > want) want = mag;
-    }
-    if (shake <= 0.0) want = 0.0;
-    /* Take the strongest impact of the frame rather than summing: three windows
-     * landing together should not triple the shake. */
-    if (want > server->shake_mag) {
-        server->shake_mag = want;
-        server->shake_t = 0.0;
+        /* Take the strongest impact of the frame rather than summing: three
+         * windows landing together should not triple the shake. */
+        if (mag > out->shake_mag) {
+            out->shake_mag = mag;
+            out->shake_t = 0.0;
+        }
     }
 }
 
 /* Advanced at FRAME time, like the other purely visual ramps (see
  * server_animate) — on the physics timer it would beat against vsync. */
-/* Both the shake and the seam slide move the world without moving the camera,
- * so they have to agree on where it ends up rather than each writing its own
- * answer over the other's. */
-static void server_world_offset(FwmServer *server, int ox, int oy) {
-    if (server->wrap_slide > 0.0)
-        ox += (int)lround(server->wrap_dir * server->wrap_slide);
-    if (server->layer_windows)
-        wlr_scene_node_set_position(&server->layer_windows->node, ox, oy);
-    if (server->layer_background)
-        wlr_scene_node_set_position(&server->layer_background->node, ox, oy);
-    if (server->wrap_ghost) {
+/* Both the shake and the seam slide move what one monitor draws without moving
+ * its camera, so they have to agree on where things end up rather than each
+ * writing its own answer over the other's. The sum lands in render_dx/dy, which
+ * server_place_node adds to every window on that monitor's desktop.
+ *
+ * It used to be an offset on the shared layer trees; with independent screens
+ * that shook both of them at once. */
+static void output_render_offset(FwmServer *server, FwmOutput *out, int ox, int oy) {
+    if (out->wrap_slide > 0.0)
+        ox += (int)lround(out->wrap_dir * out->wrap_slide);
+    out->render_dx = ox;
+    out->render_dy = oy;
+
+    /* The wallpaper travels with the world it belongs to. */
+    if (out->wallpaper) {
+        wallpaper_set_origin(out->wallpaper, out->box.x + ox, out->box.y + oy);
+        wallpaper_update(out->wallpaper, out->camera_x);
+    }
+    if (out->wrap_ghost) {
         /* A screen behind the world, in the direction it came from. */
-        wlr_scene_node_set_position(&server->wrap_ghost->node,
-                                    ox - server->wrap_dir * server->screen_width, oy);
+        wlr_scene_node_set_position(&out->wrap_ghost->node,
+                                    out->box.x + ox - out->wrap_dir * server->screen_width,
+                                    out->box.y + oy);
     }
 }
 
-/* Start the slide. The caller has already put the camera on the far side of the
- * join; this is what stops that being a cut. */
-void server_wrap_slide_start(FwmServer *server, int dir) {
-    if (server->screen_width <= 0 || dir == 0) return;
-    server_wrap_slide_stop(server);
+/* Start the slide. The caller has already put this monitor's camera on the far
+ * side of the join; this is what stops that being a cut. */
+void server_wrap_slide_start(FwmServer *server, FwmOutput *out, int dir) {
+    if (!out || server->screen_width <= 0 || dir == 0) return;
+    server_wrap_slide_stop(server, out);
 
-    /* Photograph what the screen showed a moment ago — before the camera
+    /* Photograph what this screen showed a moment ago — before the camera
      * jumped, this was called; see server_goto_desktop. */
     struct wlr_buffer *buf = snapshot_alloc(server, server->screen_width,
                                             server->screen_height);
     if (!buf) return;
-    if (!snapshot_world(server, buf)) { wlr_buffer_drop(buf); return; }
+    if (!snapshot_world(server, out, buf)) { wlr_buffer_drop(buf); return; }
 
-    /* NOT a child of layer_windows, which is the tree being offset: the ghost
-     * travels the opposite way, and inside that tree its own offset would be
-     * added to the world's instead of opposing it. It sits beside it in the
-     * scene root, one place above, since it is in front of the desktop
-     * arriving until it has left. */
-    server->wrap_ghost = wlr_scene_buffer_create(&server->scene->tree, buf);
-    if (!server->wrap_ghost) { wlr_buffer_drop(buf); return; }
-    server->wrap_ghost_buf = wlr_buffer_lock(buf);
+    /* In the scene root rather than inside the window tree: the ghost travels
+     * the opposite way to the world, and it sits one place above the windows,
+     * being in front of the desktop arriving until it has left. */
+    out->wrap_ghost = wlr_scene_buffer_create(&server->scene->tree, buf);
+    if (!out->wrap_ghost) { wlr_buffer_drop(buf); return; }
+    out->wrap_ghost_buf = wlr_buffer_lock(buf);
     wlr_buffer_drop(buf);
-    wlr_scene_node_place_above(&server->wrap_ghost->node,
+    wlr_scene_node_place_above(&out->wrap_ghost->node,
                                &server->layer_windows->node);
 
-    server->wrap_dir = dir;
-    server->wrap_slide = server->screen_width;
+    out->wrap_dir = dir;
+    out->wrap_slide = server->screen_width;
 }
 
-void server_wrap_slide_stop(FwmServer *server) {
-    if (server->wrap_ghost) {
-        wlr_scene_node_destroy(&server->wrap_ghost->node);
-        server->wrap_ghost = NULL;
+void server_wrap_slide_stop(FwmServer *server, FwmOutput *out) {
+    (void)server;
+    if (!out) return;
+    if (out->wrap_ghost) {
+        wlr_scene_node_destroy(&out->wrap_ghost->node);
+        out->wrap_ghost = NULL;
     }
-    if (server->wrap_ghost_buf) {
-        wlr_buffer_unlock(server->wrap_ghost_buf);
-        server->wrap_ghost_buf = NULL;
+    if (out->wrap_ghost_buf) {
+        wlr_buffer_unlock(out->wrap_ghost_buf);
+        out->wrap_ghost_buf = NULL;
     }
-    server->wrap_slide = 0.0;
-}
-
-static void server_wrap_tick(FwmServer *server, double dt) {
-    if (server->wrap_slide <= 0.0) return;
-
-    double per_ms = server->screen_width / WRAP_SLIDE_MS;
-    server->wrap_slide -= per_ms * dt * 1000.0;
-    if (server->wrap_slide <= 1.0) server_wrap_slide_stop(server);
+    out->wrap_slide = 0.0;
 }
 
 void server_shake_tick(FwmServer *server, double dt) {
-    server_wrap_tick(server, dt);
+    FwmOutput *out;
+    wl_list_for_each(out, &server->outputs, link) {
+        if (out->wrap_slide > 0.0) {
+            double per_ms = server->screen_width / WRAP_SLIDE_MS;
+            out->wrap_slide -= per_ms * dt * 1000.0;
+            if (out->wrap_slide <= 1.0) server_wrap_slide_stop(server, out);
+        }
 
-    if (server->shake_mag <= 0.01) {
-        if (server->shake_mag != 0.0) server->shake_mag = 0.0;
-        server_world_offset(server, 0, 0);
-        return;
+        if (out->shake_mag <= 0.01) {
+            if (out->shake_mag != 0.0) out->shake_mag = 0.0;
+            if (out->render_dx || out->render_dy || out->wrap_slide > 0.0)
+                output_render_offset(server, out, 0, 0);
+            continue;
+        }
+        out->shake_t += dt;
+        out->shake_mag *= exp(-SHAKE_DECAY * dt);
+
+        /* Two different frequencies, or the offset would travel a straight
+         * diagonal instead of reading as a shake. */
+        int ox = (int)lround(out->shake_mag * sin(out->shake_t * 38.0));
+        int oy = (int)lround(out->shake_mag * sin(out->shake_t * 47.0 + 1.3));
+
+        /* Only the world shakes. The tray and panels stay put: UI jittering
+         * under the cursor reads as a glitch, not as impact. */
+        output_render_offset(server, out, ox, oy);
     }
-    server->shake_t += dt;
-    server->shake_mag *= exp(-SHAKE_DECAY * dt);
-
-    /* Two different frequencies, or the offset would travel a straight
-     * diagonal instead of reading as a shake. */
-    int ox = (int)lround(server->shake_mag * sin(server->shake_t * 38.0));
-    int oy = (int)lround(server->shake_mag * sin(server->shake_t * 47.0 + 1.3));
-
-    /* Only the world shakes. The tray and panels stay put: UI jittering under
-     * the cursor reads as a glitch, not as impact. */
-    server_world_offset(server, ox, oy);
+    /* The windows follow the offsets that just changed. */
+    server_views_place(server);
 }
 
 /* How long the compositor may sit without driving a frame itself. Not a
@@ -257,10 +269,14 @@ static int server_is_busy(FwmServer *server) {
     if (server->interactive.action != FWM_ACTION_NONE) return 1;
     if (expo_animating(server)) return 1;             /* the strip zooming */
     if (expo_live_active(server)) return 1;           /* front desktop kept live */
-    if (server->camera_x != server->target_camera_x || server->cam_anim) return 1;
-    if (server->shake_mag > 0.0) return 1;
-    if (server->wrap_slide > 0.0) return 1;            /* sliding across the join */
-    if (server->wallpaper_prev) return 1;              /* wallpaper cross-fade */
+    FwmOutput *bo;
+    wl_list_for_each(bo, &server->outputs, link) {
+        if (bo->camera_x != bo->target_camera_x || bo->cam_anim) return 1;
+        if (bo->wallpaper_prev) return 1;              /* wallpaper cross-fade */
+        if (bo->shake_mag > 0.0) return 1;
+        if (bo->wrap_slide > 0.0) return 1;            /* sliding across the join */
+    }
+
     if (!wl_list_empty(&server->ghosts)) return 1;     /* close animations */
     if (launcher_is_open(server->launcher)) return 1;  /* spring tiles */
     if (cairo_overlay_animating()) return 1;
@@ -311,9 +327,25 @@ void server_schedule_frames(FwmServer *server) {
  * tick is nearly free: presenting nothing leaves the scene undamaged, and
  * wlr_scene_output_commit returns immediately when nothing needs a frame. */
 static int video_wake_ms(FwmServer *server) {
-    int ms = wallpaper_video_interval_ms(server->wallpaper);
+    /* The fastest of the monitors' wallpapers: one timer serves them all, so
+     * it has to keep up with whichever is playing at the highest rate. */
+    int ms = 0;
+    FwmOutput *o;
+    wl_list_for_each(o, &server->outputs, link) {
+        int m = wallpaper_video_interval_ms(o->wallpaper);
+        if (m > 0 && (ms == 0 || m < ms)) ms = m;
+    }
     if (ms <= 0) return 0;
     return ms > 1 ? ms / 2 : 1;
+}
+
+/* Any monitor's wallpaper still playing video. */
+static bool any_wallpaper_playing(FwmServer *server) {
+    FwmOutput *o;
+    wl_list_for_each(o, &server->outputs, link) {
+        if (wallpaper_playing(o->wallpaper)) return true;
+    }
+    return false;
 }
 
 /* Fires at twice the playing video wallpaper's own fps. Uploading the next
@@ -323,12 +355,15 @@ static int video_wake_ms(FwmServer *server) {
  * video wallpaper. */
 static int video_timer_cb(void *data) {
     FwmServer *server = data;
-    wallpaper_present(server->wallpaper);
-    wallpaper_present(server->wallpaper_prev);
+    FwmOutput *o;
+    wl_list_for_each(o, &server->outputs, link) {
+        wallpaper_present(o->wallpaper);
+        wallpaper_present(o->wallpaper_prev);
+    }
     server_schedule_frames(server);
 
     int ms = video_wake_ms(server);
-    if (wallpaper_playing(server->wallpaper) && ms > 0) {
+    if (any_wallpaper_playing(server) && ms > 0) {
         wl_event_source_timer_update(server->video_timer, ms);
     } else {
         server->video_timer_on = 0; /* paused/gone: stop until re-armed */
@@ -356,7 +391,7 @@ void server_reclaim_memory(void) {
 void server_video_sync(FwmServer *server) {
     if (!server->video_timer) return;
     int ms = video_wake_ms(server);
-    int want = wallpaper_playing(server->wallpaper) && ms > 0;
+    int want = any_wallpaper_playing(server) && ms > 0;
     if (want && !server->video_timer_on) {
         server->video_timer_on = 1;
         wl_event_source_timer_update(server->video_timer, ms);
@@ -519,8 +554,8 @@ static void server_drag_swing(FwmServer *server, double dt) {
     if (!b || !b->spin || dt <= 0.0) return;
 
     /* The cursor, in the same world coordinates the bodies live in. */
-    double px = server->cursor->x + server->camera_x;
-    double py = server->cursor->y;
+    double px, py;
+    server_cursor_world(server, &px, &py);
 
     if (!server->interactive.pivot_have) {
         server->interactive.pivot_x = px;
@@ -598,8 +633,8 @@ void server_drag_swing_place(FwmServer *server) {
     PhysicsBody *b = physics_find_body(&server->physics, view->id);
     if (!b || !b->spin || !server->interactive.pivot_have) return;
 
-    double px = server->cursor->x + server->camera_x;
-    double py = server->cursor->y;
+    double px, py;
+    server_cursor_world(server, &px, &py);
 
     /* The angle as it is being DRAWN this frame, not as of the last step: the
      * window hangs off the pivot at whatever angle the viewer can see, or the
@@ -622,10 +657,7 @@ void server_drag_swing_place(FwmServer *server) {
     b->y = ny;
     view->x = (int)lround(nx);
     view->y = (int)lround(ny);
-    if (view->scene_tree) {
-        wlr_scene_node_set_position(&view->scene_tree->node,
-                                    (int)lround(nx - server->camera_x), (int)lround(ny));
-    }
+    if (view->scene_tree) server_place_node(server, &view->scene_tree->node, nx, ny);
 }
 
 /* The camera has come to rest. Called from the tick when a slide or a pan
@@ -639,7 +671,7 @@ void server_camera_settled(FwmServer *server) {
      * Otherwise focus stays on the window you left behind and typing goes to a
      * desktop you can no longer see. Covers every way of getting here — the
      * view: binds, the tray, edge auto-scroll, a three-finger swipe. */
-    int arrived = server->camera_x / server->screen_width;
+    int arrived = server_active_desktop(server);
     if (arrived != server->focus_desktop) {
         server->focus_desktop = arrived;
         server_refocus(server, arrived, NULL);
@@ -723,69 +755,77 @@ static int physics_tick_cb(void *data) {
     // Desktop-switch camera slide: fixed-duration ease-in-out instead of the
     // old exponential chase (fast jump + 1px/tick crawl tail). If the target
     // changes mid-flight, restart from the current position so it stays smooth.
-    if (server->camera_x != server->target_camera_x || server->cam_anim) {
+    //
+    // Per monitor: each screen slides its own camera, so switching desktops on
+    // one of them leaves the other where it was.
+    int any_settled = 0;
+    FwmOutput *out;
+    wl_list_for_each(out, &server->outputs, link) {
+        if (out->camera_x == out->target_camera_x && !out->cam_anim) continue;
+
         // X11 clients place popups from their last-configured root coords;
         // tell them where they are once the camera comes to rest.
         int cam_settled = 0;
 
-        if (server->cam_free) {
+        if (out->cam_free) {
             // Continuous pan under a held bind: framerate-independent
             // exponential chase, same form as the tile glide. Unlike the slide
             // below it has no notion of "start over", so a target that moves
             // every 40ms costs nothing — the camera tracks it immediately and
             // coasts the last few px once the key is released.
-            server->cam_anim = 0;
-            int gap = server->target_camera_x - server->camera_x;
+            out->cam_anim = 0;
+            int gap = out->target_camera_x - out->camera_x;
             if (gap != 0) {
                 double speed = server->config.camera.free_speed;
                 double k = speed > 0.0 ? 1.0 - exp(-speed * dt) : 1.0;
                 int step = (int)lround(gap * k);
                 if (step == 0) step = gap > 0 ? 1 : -1; // never stall sub-pixel
-                server->camera_x += step;
+                out->camera_x += step;
                 // Snap the last pixel: edge auto-scroll only ever fires while
                 // camera_x == target_camera_x exactly.
-                if (abs(server->target_camera_x - server->camera_x) <= 1) {
-                    server->camera_x = server->target_camera_x;
+                if (abs(out->target_camera_x - out->camera_x) <= 1) {
+                    out->camera_x = out->target_camera_x;
                 }
-                cam_settled = server->camera_x == server->target_camera_x;
+                cam_settled = out->camera_x == out->target_camera_x;
             }
         } else {
-            if (!server->cam_anim || server->cam_anim_to != server->target_camera_x) {
-                server->cam_anim = 1;
-                server->cam_anim_from = server->camera_x;
-                server->cam_anim_to = server->target_camera_x;
-                server->cam_anim_t = 0.0;
+            if (!out->cam_anim || out->cam_anim_to != out->target_camera_x) {
+                out->cam_anim = 1;
+                out->cam_anim_from = out->camera_x;
+                out->cam_anim_to = out->target_camera_x;
+                out->cam_anim_t = 0.0;
             }
             double cam_ms = server->config.camera.anim_ms;
-            server->cam_anim_t += cam_ms > 0.0 ? dt * 1000.0 / cam_ms : 1.0;
-            double t = server->cam_anim_t;
+            out->cam_anim_t += cam_ms > 0.0 ? dt * 1000.0 / cam_ms : 1.0;
+            double t = out->cam_anim_t;
             if (t >= 1.0) {
-                server->camera_x = server->cam_anim_to;
-                server->cam_anim = 0;
+                out->camera_x = out->cam_anim_to;
+                out->cam_anim = 0;
                 cam_settled = 1;
             } else {
                 // Cubic ease-in-out.
                 double e = t < 0.5 ? 4.0 * t * t * t
                                    : 1.0 - pow(-2.0 * t + 2.0, 3.0) / 2.0;
-                server->camera_x = server->cam_anim_from
-                    + (int)lround((server->cam_anim_to - server->cam_anim_from) * e);
+                out->camera_x = out->cam_anim_from
+                    + (int)lround((out->cam_anim_to - out->cam_anim_from) * e);
             }
         }
 
-        if (cam_settled) server_camera_settled(server);
+        wallpaper_update(out->wallpaper, out->camera_x);
+        any_settled |= cam_settled;
 
-        // Sync non-dragged windows relative to camera
+        // Every window this monitor shows moves with it. Cheap enough to sweep
+        // the whole list: server_place_node sends the ones it is not showing
+        // off the layout, which is where they already are.
         FwmView *view;
         wl_list_for_each(view, &server->views, link) {
-            if (view->id != dragged_win && view->scene_tree) {
-                PhysicsBody *body = physics_find_body(&server->physics, view->id);
-                if (body) {
-                    wlr_scene_node_set_position(&view->scene_tree->node, (int)lround(body->x - server->camera_x), (int)lround(body->y));
-                }
-            }
+            if (view->id == dragged_win || !view->scene_tree) continue;
+            PhysicsBody *body = physics_find_body(&server->physics, view->id);
+            if (body) server_place_node(server, &view->scene_tree->node, body->x, body->y);
         }
     }
-    
+    if (any_settled) server_camera_settled(server);
+
     // Tile-glide animations: ease windows toward their tile slots (Hyprland-
     // style) instead of teleporting. Exponential approach is frame-rate
     // independent; the physics bridge sees these as external writes and keeps
@@ -864,7 +904,7 @@ static int physics_tick_cb(void *data) {
         int bar_n = 0;
         const float *bar_lvl = cava_levels(server->cava, &bar_n);
         if (bar_lvl && bar_n > 0) {
-            int bar_desk = (server->camera_x + server->screen_width / 2) / server->screen_width;
+            int bar_desk = server_active_desktop(server);
             physics_set_bars(&server->physics, bar_lvl, bar_n,
                              (double)bar_desk * server->screen_width,
                              (double)server->screen_width,
@@ -894,7 +934,7 @@ static int physics_tick_cb(void *data) {
             if (body && !body->pinned && view->id != dragged_win) {
                 view->x = body->x;
                 view->y = body->y;
-                wlr_scene_node_set_position(&view->scene_tree->node, (int)lround(body->x - server->camera_x), (int)lround(body->y));
+                server_place_node(server, &view->scene_tree->node, body->x, body->y);
             }
         }
     }
@@ -903,21 +943,32 @@ static int physics_tick_cb(void *data) {
     // (overlays outrank windows in the scene, so the surface can't cover it).
     // Fake fullscreen keeps the tray — that's its point. Checking every tick
     // also covers desktop switches and the fullscreen window closing.
-    int active_d = (server->camera_x + server->screen_width / 2) / server->screen_width;
-    bool real_fs = false;    /* hides the tray */
-    bool wp_covered = false; /* hides the wallpaper: real OR fake fullscreen */
-    FwmView *fsv;
-    wl_list_for_each(fsv, &server->views, link) {
-        PhysicsBody *fb = physics_find_body(&server->physics, fsv->id);
-        if (!fb || !fb->fullscreen || fb->desktop_id != active_d) continue;
-        wp_covered = true;
-        if (fsv->fs_real) { real_fs = true; break; } /* strongest: also hides tray */
+    /* Per monitor: a fullscreen window on one screen must not blank the other
+     * screen's tray or freeze its wallpaper. */
+    bool any_real_fs = false;
+    FwmOutput *fo;
+    wl_list_for_each(fo, &server->outputs, link) {
+        bool real_fs = false;    /* hides this monitor's tray */
+        bool wp_covered = false; /* hides its wallpaper: real OR fake fullscreen */
+        FwmView *fsv;
+        wl_list_for_each(fsv, &server->views, link) {
+            PhysicsBody *fb = physics_find_body(&server->physics, fsv->id);
+            if (!fb || !fb->fullscreen || fb->desktop_id != fo->desktop) continue;
+            wp_covered = true;
+            if (fsv->fs_real) { real_fs = true; break; } /* also hides the tray */
+        }
+        /* Real fullscreen hides the tray; fake fullscreen deliberately keeps
+         * it. A user-hidden tray stays hidden through both. */
+        if (fo->tray_buffer)
+            wlr_scene_node_set_enabled(&fo->tray_buffer->node,
+                                       !real_fs && !server->tray_hidden);
+        /* Either kind fully hides the wallpaper (fake fills the work area and
+         * the tray covers the strip above it), so pause a video behind it: the
+         * decode thread then blocks on its full queue and stops burning CPU. */
+        wallpaper_set_paused(fo->wallpaper, wp_covered);
+        any_real_fs |= real_fs;
     }
-    /* Real fullscreen hides the tray; fake fullscreen deliberately keeps it.
-     * A user-hidden tray stays hidden through both. */
-    if (server->tray_buffer)
-        wlr_scene_node_set_enabled(&server->tray_buffer->node,
-                                   !real_fs && !server->tray_hidden);
+    bool real_fs = any_real_fs;
 
     /* The modes menu hangs off a pill that is no longer on screen — and unlike
      * the tray it is not merely disabled, it is a panel floating over a
@@ -925,10 +976,6 @@ static int physics_tick_cb(void *data) {
     if (server->modes_buffer && (real_fs || server->tray_hidden))
         server_close_modes_menu(server);
 
-    /* Either kind of fullscreen fully hides the wallpaper (fake fills the work
-     * area and the tray covers the strip above it), so pause a video behind it:
-     * the decode thread then blocks on its full queue and stops burning CPU. */
-    wallpaper_set_paused(server->wallpaper, wp_covered);
     server_video_sync(server); /* (dis)arm the video-frame timer for the new state */
 
     // Redraw tray if data changed
@@ -936,8 +983,10 @@ static int physics_tick_cb(void *data) {
 
     idle_inhibit_refresh(server);
 
-    // Parallax: shift each wallpaper layer by a fraction of the camera offset.
-    wallpaper_update(server->wallpaper, server->camera_x);
+    // Parallax: shift each wallpaper layer by a fraction of its own monitor's
+    // camera offset.
+    wl_list_for_each(fo, &server->outputs, link)
+        wallpaper_update(fo->wallpaper, fo->camera_x);
 
     /* While anything is actually moving we drive the frame loop ourselves at
      * the full tick rate. Once everything settles we drop to a slow heartbeat

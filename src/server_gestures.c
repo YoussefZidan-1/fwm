@@ -55,24 +55,28 @@ static int gesture_allowed(FwmServer *server) {
  * restarts its fixed-duration ease each time it is retargeted. */
 static void pan_follow(FwmServer *server) {
     int max_x = (GESTURE_DESKTOPS - 1) * server->screen_width;
-    server->target_camera_x = gesture_pan_camera(&server->gesture,
+    FwmOutput *out = server_active_output(server);
+    if (!out) return;
+    out->target_camera_x = gesture_pan_camera(&server->gesture,
                                                  &server->config.gestures,
                                                  server->gesture_base_camera, max_x);
-    server->cam_free = 1;
+    out->cam_free = 1;
 }
 
 /* Fingers off: park the strip on one desktop. */
 static void pan_settle(FwmServer *server, uint32_t time_msec) {
+    FwmOutput *out = server_active_output(server);
+    if (!out) return;
     int d = gesture_pan_target(&server->gesture, &server->config.gestures,
-                               server->target_camera_x, server->screen_width,
+                               out->target_camera_x, server->screen_width,
                                GESTURE_DESKTOPS, time_msec);
-    server->target_camera_x = d * server->screen_width;
-    server->cam_free = 0; /* the eased slide finishes the last stretch */
+    out->cam_free = 0; /* the eased slide finishes the last stretch */
+    server_output_show_desktop(server, out, d, 0);
 
     /* Released exactly where it already was: the tick's settle branch only runs
      * while the camera has somewhere to go, so nothing would re-home the
      * keyboard or tell the panels which desktop this is. */
-    if (server->camera_x == server->target_camera_x && !server->cam_anim) {
+    if (out->camera_x == out->target_camera_x && !out->cam_anim) {
         server_camera_settled(server);
     }
 }
@@ -89,7 +93,10 @@ static void handle_swipe_begin(struct wl_listener *listener, void *data) {
 
     /* Where a pan would start from: where the camera is HEADED, so a swipe that
      * interrupts a desktop slide picks it up rather than dragging from behind. */
-    server->gesture_base_camera = server->target_camera_x;
+    {
+        FwmOutput *out = server_active_output(server);
+        server->gesture_base_camera = out ? out->target_camera_x : 0;
+    }
 
     if (!server->gesture.claimed) {
         wlr_pointer_gestures_v1_send_swipe_begin(server->pointer_gestures,

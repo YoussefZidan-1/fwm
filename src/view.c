@@ -145,7 +145,7 @@ void view_set_size(FwmView *view, int width, int height) {
         // X11 configure carries position too; send screen coords (X clients
         // use them as global root coordinates for e.g. popup placement).
         wlr_xwayland_surface_configure(view->xwl_surface,
-            (int16_t)(view->x - view->server->camera_x), (int16_t)view->y,
+            (int16_t)view->x, (int16_t)view->y,
             (uint16_t)width, (uint16_t)height);
     }
 }
@@ -508,7 +508,7 @@ void view_map(FwmView *view) {
     int have_rule = config_match_rules(&view->server->config,
                                        view_app_id(view), view_title(view), &rule);
 
-    int current_desktop = view->server->target_camera_x / view->server->screen_width;
+    int current_desktop = server_active_desktop(view->server);
     if (have_rule && rule.desktop >= 0) current_desktop = rule.desktop;
 
     /* A window from an application this session relaunched goes back where it
@@ -516,14 +516,17 @@ void view_map(FwmView *view) {
      * wins over what merely happened to be true last time. */
     int restored = session_claim_desktop(view->server, view);
     if (restored >= 0 && !(have_rule && rule.desktop >= 0)) current_desktop = restored;
-    int cx = current_desktop * view->server->screen_width + (view->server->screen_width - initial_w) / 2;
+    /* Centred on its desktop — which IS one screen now, so this lands in the
+     * middle of whichever monitor is showing it. */
+    int cx = current_desktop * view->server->screen_width
+           + (view->server->screen_width - initial_w) / 2;
     int cy = (view->server->screen_height - initial_h) / 2;
     
     view->x = cx;
     view->y = cy;
     
     view_set_size(view, view->width, view->height);
-    wlr_scene_node_set_position(&view->scene_tree->node, view->x - view->server->camera_x, view->y);
+    server_place_node(view->server, &view->scene_tree->node, view->x, view->y);
     view_update_border_geometry(view);
 
     PhysicsBody *body = physics_sync_body(&view->server->physics, view->id, view->x, view->y, view->width, view->height, view->server->screen_width);
@@ -607,7 +610,7 @@ void view_unmap(FwmView *view) {
     /* Which desktop to re-home the keyboard on, read before the body goes. */
     PhysicsBody *ub = physics_find_body(&view->server->physics, view->id);
     int home_desktop = ub ? ub->desktop_id
-                          : view->server->target_camera_x / view->server->screen_width;
+                          : server_active_desktop(view->server);
 
     group_remove(view->server, view); /* no-op when not grouped */
     physics_remove_body(&view->server->physics, view->id);
@@ -653,7 +656,7 @@ void view_unmap(FwmView *view) {
             ghost->x = view->x - geo.x;
             ghost->y = view->y - geo.y;
             wlr_scene_node_set_position(&ghost->scene_buffer->node,
-                                        (int)ghost->x - view->server->camera_x, (int)ghost->y);
+                                        (int)ghost->x, (int)ghost->y);
             wlr_scene_node_raise_to_top(&ghost->scene_buffer->node);
             wl_list_insert(&view->server->ghosts, &ghost->link);
         } else {

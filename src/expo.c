@@ -104,7 +104,7 @@ static void expo_teardown(FwmServer *server) {
     /* Never hand the desktop back while the session is locked: lock.c hid
      * these trees for its own reasons and it, not the strip, decides when they
      * come back. */
-    if (!lock_is_active(server)) expo_set_world_visible(server, true);
+    if (!lock_is_active(server)) expo_set_world_visible(server, e->out, true);
     free(e);
 }
 
@@ -154,12 +154,16 @@ static void expo_open(FwmServer *server) {
       if (t) { e->zoom = e->zoom_target = EXPO_ZOOM_FAR; e->tilt = e->tilt_target = atof(t);
                const char *dd = getenv("FWM_TEST_ORBIT_DIST");
                if (dd) e->dist = e->dist_target = atof(dd); } }
-    e->home = (server->camera_x + server->screen_width / 2) / server->screen_width;
+    e->out = server_active_output(server);
+    if (!e->out) { free(e); return; }
+    e->home = e->out->desktop;
     if (e->home < 0) e->home = 0;
     if (e->home >= FWM_DESKTOPS) e->home = FWM_DESKTOPS - 1;
 
     e->tree = wlr_scene_tree_create(&server->scene->tree);
     if (!e->tree) { free(e); return; }
+    /* The whole strip lives on its monitor. */
+    wlr_scene_node_set_position(&e->tree->node, e->out->box.x, e->out->box.y);
     /* Above the windows it is replacing, below the tray it is not. */
     wlr_scene_node_place_below(&e->tree->node, &server->layer_overlay->node);
 
@@ -204,8 +208,8 @@ static void expo_open(FwmServer *server) {
     /* Nothing may be sliding under the strip: the slide is a render-only offset
      * on the very trees about to be hidden, and it would still be there when
      * they came back. */
-    server_wrap_slide_stop(server);
-    expo_set_world_visible(server, false);
+    server_wrap_slide_stop(server, e->out);
+    expo_set_world_visible(server, e->out, false);
     expo_layout(e);
 
     expo_selftest(e);
@@ -221,8 +225,9 @@ static void expo_open(FwmServer *server) {
 
     /* The strip's keys are not binds — they belong to the mode and are in
      * nobody's config — so nothing else could tell anyone what they are. */
-    e->hints = expo_hints_show(server->layer_overlay, server->screen_width,
-                               server->screen_height, expo_can_orbit(e));
+    e->hints = expo_hints_show(server->layer_overlay, e->out->box.x, e->out->box.y,
+                               server->screen_width, server->screen_height,
+                               expo_can_orbit(e));
     e->hints_reveal = e->hints_reveal_target = 1.0;
     e->hints_timer = EXPO_HINT_SHOW_S;
 }
@@ -255,8 +260,9 @@ void expo_close(FwmServer *server, int desktop) {
      * frame the destination is chosen, only travel there. */
     double was_looking_at = expo_center(e);
     e->home = desktop;
-    server->camera_x = desktop * server->screen_width;
-    e->pan = was_looking_at - (server->camera_x + server->screen_width / 2.0
+    server_output_show_desktop(server, e->out, desktop, 0);
+    e->out->camera_x = e->out->target_camera_x;
+    e->pan = was_looking_at - (e->out->camera_x + server->screen_width / 2.0
                                + e->home * expo_gap(e));
     if (server->config.camera.wrap) {
         /* On a ring the rebased offset can be most of a circle even though the
@@ -266,11 +272,10 @@ void expo_close(FwmServer *server, int desktop) {
         while (e->pan < -lap / 2.0) e->pan += lap;
     }
     e->pan_target = 0.0;
-    server->target_camera_x = server->camera_x;
-    server->cam_anim = 0;
-    server->cam_free = 0;
+    e->out->cam_anim = 0;
+    e->out->cam_free = 0;
     server_camera_settled(server);
-    if (server->wallpaper) wallpaper_update(server->wallpaper, server->camera_x);
+    wallpaper_update(e->out->wallpaper, e->out->camera_x);
     server_request_tray_redraw(server);
 }
 
@@ -485,7 +490,10 @@ void expo_tick(FwmServer *server, double dt) {
      * goes looking for them along the bottom. */
     if (e->hints) {
         if (!e->leaving) {
-            if (expo_hints_hit(server->screen_height, server->cursor->y)) {
+            /* The cursor in THIS monitor's frame: the bar is along the bottom
+             * of the strip's screen, not of the layout. */
+            if (expo_hints_hit(server->screen_height,
+                               server->cursor->y - e->out->box.y)) {
                 e->hints_reveal_target = 1.0;
                 e->hints_timer = EXPO_HINT_LINGER_S;
             } else if (e->hints_timer > 0.0) {

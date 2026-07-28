@@ -18,6 +18,7 @@
 #include <stdbool.h>
 
 struct FwmServer;
+struct FwmOutput;
 struct wlr_buffer;
 struct wlr_scene_node;
 
@@ -58,6 +59,7 @@ bool snapshot_subtree(struct FwmServer *server, struct wlr_buffer *dst,
  * The wallpaper is drawn from the copy it keeps rather than from the layer on
  * screen: the live one is a cairo overlay whose pixels are gone by then, which
  * is why the first version of this came out black behind the windows. */
-bool snapshot_world(struct FwmServer *server, struct wlr_buffer *dst);
+bool snapshot_world(struct FwmServer *server, struct FwmOutput *out,
+                    struct wlr_buffer *dst);
 
 #endif /* FWM_SNAPSHOT_H */

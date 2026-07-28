@@ -231,12 +231,33 @@ static void cmd_windows(FwmServer *server, struct Buf *b) {
 static void cmd_state(FwmServer *server, struct Buf *b) {
     int count = wl_list_length(&server->views);
     int desktop = server->screen_width > 0
-                  ? (server->camera_x + server->screen_width / 2) / server->screen_width : 0;
+                  ? server_active_desktop(server) : 0;
     buf_puts(b, "{\"ok\":true,");
     buf_printf(b, "\"desktop\":%d,\"camera_x\":%d,\"windows\":%d,",
-               desktop, server->camera_x, count);
+               desktop, server_active_output(server)
+                            ? server_active_output(server)->camera_x : 0, count);
     buf_printf(b, "\"screen_width\":%d,\"screen_height\":%d,",
                server->screen_width, server->screen_height);
+
+    /* One entry per monitor: which desktop it is showing and where it sits.
+     * With independent screens "which desktop am I on" has more than one
+     * answer, and this is the only place that gives all of them. */
+    buf_puts(b, "\"outputs\":[");
+    {
+        FwmOutput *o;
+        int first = 1;
+        wl_list_for_each(o, &server->outputs, link) {
+            if (!first) buf_puts(b, ",");
+            first = 0;
+            buf_puts(b, "{\"name\":");
+            buf_json_string(b, o->wlr_output->name);
+            buf_printf(b, ",\"desktop\":%d,\"camera_x\":%d,\"target_camera_x\":%d,"
+                          "\"x\":%d,\"y\":%d,\"width\":%d,\"height\":%d}",
+                       o->desktop, o->camera_x, o->target_camera_x,
+                       o->box.x, o->box.y, o->box.width, o->box.height);
+        }
+    }
+    buf_puts(b, "],");
     buf_printf(b, "\"gravity\":%.3f,\"locked\":%s,",
                server->physics.gravity_scale, server->locked ? "true" : "false");
 

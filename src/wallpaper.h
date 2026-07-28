@@ -29,6 +29,11 @@ FwmWallpaper *wallpaper_create(struct wlr_scene_tree *parent, const FwmConfig *c
                                int screen_w, int screen_h);
 
 /* Reposition every layer for the current horizontal camera offset. */
+/* Move the whole set onto its monitor, in layout coordinates. The layers are
+ * built as if the screen started at 0,0, so this is what puts a second
+ * monitor's wallpaper on the second monitor. */
+void wallpaper_set_origin(FwmWallpaper *wp, int x, int y);
+
 void wallpaper_update(FwmWallpaper *wp, int camera_x);
 
 /* Advance any video layers: call once per rendered frame. Cheap and a no-op

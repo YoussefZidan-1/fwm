@@ -172,7 +172,13 @@ renderer.
 ### Desktop integration
 Runs the software you already use: **XWayland** (X11 apps as ordinary physics windows), **layer-shell** (waybar, mako, rofi, swaybg), **ext-session-lock** (hyprlock, swaylock), **idle protocols** (swayidle, no blanking during video), **xdg-activation**, **screencopy** (screenshots, screen share), **gamma-control** (wlsunset), **pointer constraints** (games and mouse-look), **pointer-gestures** (touchpad swipes and pinches reach the app when fwm has no bind for them), **foreign-toplevel** (taskbars), plus drag-and-drop and primary selection.
 
-Known gaps: no HiDPI / fractional output scale, no multimonitor, no IME (xkb layouts do work).
+**Multiple monitors** are independent screens sharing one set of ten desktops (the i3 arrangement). Each monitor shows one desktop and switches on its own: a desktop bind moves the screen the pointer is on, and asking for a desktop that is already up on the other monitor trades the two rather than showing it twice. Every monitor gets its own wallpaper, fitted to its own size, its own status strip reporting its own desktop, and its own desktop strip (`expo`) — opening one leaves the other screen working. Sending a window to a desktop puts it on whichever monitor is showing it. Monitors can be plugged and unplugged while fwm runs; a new one comes up on the lowest desktop nobody else has.
+
+Where each monitor sits is `[[output]]` in `config.toml` — `name` as fwm logs it, `x`/`y` for the top-left corner, `desktop` for what it comes up on, `enabled = false` to leave one dark. The monitor at `0,0` is the primary: its size is the size of every desktop, and it is where the welcome and error panels open. Without an entry a monitor goes to the right of the ones already there and takes the lowest free desktop. A config reload re-applies the lot, monitors changing places included.
+
+The desktop's size is the primary monitor's, so a second monitor of a different size shows that same desktop letterboxed or clipped rather than a differently-shaped one.
+
+Known gaps: no HiDPI / fractional output scale, no IME (xkb layouts do work).
 
 ---
 

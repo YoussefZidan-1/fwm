@@ -29,7 +29,8 @@
 
 void expo_build_cards(FwmExpo *e) {
     FwmServer *server = e->server;
-    FwmWallpaper *wp = server->wallpaper;
+    FwmOutput *cout = server_active_output(server);
+    FwmWallpaper *wp = cout ? cout->wallpaper : NULL;
     int layers = wallpaper_layer_count(wp);
     if (layers > EXPO_MAX_WP_LAYERS) layers = EXPO_MAX_WP_LAYERS;
 

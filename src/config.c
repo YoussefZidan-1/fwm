@@ -757,6 +757,83 @@ static double rule_number(FwmConfig *cfg, toml_table_t *tbl, const char *key,
     return d.u.d;
 }
 
+/* [[output]]: where each monitor sits and what it starts on. Everything is
+ * optional except the name — an entry that names nothing cannot be matched to
+ * a monitor, so it is reported rather than silently ignored. */
+static void load_outputs(toml_table_t *root, FwmConfig *cfg) {
+    cfg->output_count = 0;
+
+    toml_array_t *arr = toml_array_in(root, "output");
+    if (!arr) return;
+
+    int n = toml_array_nelem(arr);
+    if (n <= 0) return;
+    if (n > CONFIG_MAX_OUTPUTS) {
+        config_report_error(cfg, "too many [[output]] entries (%d) — only the first %d are used",
+                            n, CONFIG_MAX_OUTPUTS);
+        n = CONFIG_MAX_OUTPUTS;
+    }
+
+    for (int i = 0; i < n; i++) {
+        toml_table_t *tbl = toml_table_at(arr, i);
+        if (!tbl) continue;
+
+        ConfigOutput *o = &cfg->outputs[cfg->output_count];
+        memset(o, 0, sizeof(*o));
+        o->desktop = -1;
+        o->enabled = 1;
+
+        toml_datum_t name = toml_string_in(tbl, "name");
+        if (!name.ok) {
+            config_report_error(cfg, "[[output]] #%d: no name — entry ignored", i + 1);
+            continue;
+        }
+        snprintf(o->name, sizeof(o->name), "%s", name.u.s);
+        free(name.u.s);
+
+        toml_datum_t x = toml_int_in(tbl, "x");
+        toml_datum_t y = toml_int_in(tbl, "y");
+        if (x.ok != y.ok) {
+            config_report_error(cfg, "[[output]] %s: x and y must be given together — position ignored",
+                                o->name);
+        } else if (x.ok) {
+            /* Negative is legal: a monitor may sit left of the origin. The cap
+             * only keeps a typo from putting a screen a million px away, where
+             * nothing would ever be drawn on it. */
+            if (x.u.i < -32768 || x.u.i > 32768 || y.u.i < -32768 || y.u.i > 32768) {
+                config_report_error(cfg, "[[output]] %s: position %lld,%lld out of range — ignored",
+                                    o->name, (long long)x.u.i, (long long)y.u.i);
+            } else {
+                o->have_pos = 1;
+                o->x = (int)x.u.i;
+                o->y = (int)y.u.i;
+            }
+        }
+
+        toml_datum_t desk = toml_int_in(tbl, "desktop");
+        if (desk.ok) {
+            if (desk.u.i < 0 || desk.u.i >= 10)
+                config_report_error(cfg, "[[output]] %s: desktop %lld out of range 0..9 — ignored",
+                                    o->name, (long long)desk.u.i);
+            else
+                o->desktop = (int)desk.u.i;
+        }
+
+        toml_datum_t en = toml_bool_in(tbl, "enabled");
+        if (en.ok) o->enabled = en.u.b ? 1 : 0;
+
+        cfg->output_count++;
+    }
+}
+
+const ConfigOutput *config_find_output(const FwmConfig *cfg, const char *name) {
+    if (!cfg || !name) return NULL;
+    for (int i = 0; i < cfg->output_count; i++) {
+        if (strcmp(cfg->outputs[i].name, name) == 0) return &cfg->outputs[i];
+    }
+    return NULL;
+}
+
 static void load_rules(toml_table_t *root, FwmConfig *cfg) {
     cfg->rules      = NULL;
     cfg->rule_count = 0;
@@ -936,6 +1013,7 @@ void config_load(FwmConfig *cfg, const char *path) {
     load_wallpaper(root, cfg);
     load_wallpaper_picker(root, cfg);
     load_rules(root, cfg);
+    load_outputs(root, cfg);
 
     toml_free(root);
 }

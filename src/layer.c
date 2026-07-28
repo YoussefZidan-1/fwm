@@ -32,30 +32,46 @@ static struct wlr_scene_tree *tree_for_layer(FwmServer *server,
     return server->ls_top;
 }
 
+/* A bar belongs to ONE monitor, so each output is arranged on its own: the
+ * surfaces that named it, against its box in layout coordinates. Giving every
+ * surface the whole world (which is what a single-output compositor could get
+ * away with) would stretch a bar across both screens. */
 void layer_arrange(FwmServer *server) {
     if (server->screen_width <= 0 || server->screen_height <= 0) return;
 
-    struct wlr_box full = { 0, 0, server->screen_width, server->screen_height };
-    struct wlr_box usable = full;
+    /* One usable area is kept, the primary's: it is what fake fullscreen and
+     * the tiling layout read, and our own chrome lives there. */
+    struct wlr_box primary_usable = { 0, 0, server->screen_width, server->screen_height };
 
-    /* Two passes, as the protocol requires: surfaces that reserve space are
-     * placed first so the rest see the area that is actually left. */
-    for (int pass = 0; pass < 2; pass++) {
-        for (int l = ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND;
-             l <= ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY; l++) {
-            FwmLayerSurface *ls;
-            wl_list_for_each(ls, &server->layer_surfaces, link) {
-                struct wlr_layer_surface_v1 *s = ls->layer_surface;
-                if (!s->surface->mapped || !s->initialized) continue;
-                if ((int)s->current.layer != l) continue;
-                int reserves = s->current.exclusive_zone > 0;
-                if (reserves != (pass == 0)) continue;
-                wlr_scene_layer_surface_v1_configure(ls->scene, &full, &usable);
+    struct wlr_output_layout_output *lo;
+    wl_list_for_each(lo, &server->output_layout->outputs, link) {
+        struct wlr_box full;
+        wlr_output_layout_get_box(server->output_layout, lo->output, &full);
+        if (full.width <= 0 || full.height <= 0) continue;
+        struct wlr_box usable = full;
+
+        /* Two passes, as the protocol requires: surfaces that reserve space are
+         * placed first so the rest see the area that is actually left. */
+        for (int pass = 0; pass < 2; pass++) {
+            for (int l = ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND;
+                 l <= ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY; l++) {
+                FwmLayerSurface *ls;
+                wl_list_for_each(ls, &server->layer_surfaces, link) {
+                    struct wlr_layer_surface_v1 *s = ls->layer_surface;
+                    if (!s->surface->mapped || !s->initialized) continue;
+                    if (s->output != lo->output) continue;
+                    if ((int)s->current.layer != l) continue;
+                    int reserves = s->current.exclusive_zone > 0;
+                    if (reserves != (pass == 0)) continue;
+                    wlr_scene_layer_surface_v1_configure(ls->scene, &full, &usable);
+                }
             }
         }
+
+        if (full.x == 0 && full.y == 0) primary_usable = usable;
     }
 
-    server->usable_area = usable;
+    server->usable_area = primary_usable;
 }
 
 /* Topmost surface asking for the keyboard wins; EXCLUSIVE outranks ON_DEMAND
@@ -143,8 +159,15 @@ static void layer_handle_commit(struct wl_listener *listener, void *data) {
      * yet, so layer_arrange() (which only places mapped surfaces) would skip
      * it and the client would wait forever. Configure this one directly. */
     if (s->initial_commit) {
-        struct wlr_box full = { 0, 0, ls->server->screen_width, ls->server->screen_height };
-        struct wlr_box usable = ls->server->usable_area;
+        /* Its own output, not the world — see layer_arrange. */
+        struct wlr_box full;
+        wlr_output_layout_get_box(ls->server->output_layout, s->output, &full);
+        if (full.width <= 0 || full.height <= 0)
+            full = (struct wlr_box){ 0, 0, ls->server->screen_width, ls->server->screen_height };
+        /* usable_area is the primary's; anything on another monitor gets that
+         * monitor whole, which is true until something reserves space there. */
+        struct wlr_box usable = (full.x == 0 && full.y == 0)
+                              ? ls->server->usable_area : full;
         if (usable.width <= 0 || usable.height <= 0) usable = full;
         wlr_scene_layer_surface_v1_configure(ls->scene, &full, &usable);
         return;
@@ -158,6 +181,16 @@ static void layer_handle_commit(struct wl_listener *listener, void *data) {
     }
     layer_arrange(ls->server);
     layer_update_keyboard_focus(ls->server);
+}
+
+void layer_output_gone(FwmServer *server, struct wlr_output *output) {
+    FwmLayerSurface *ls, *tmp;
+    wl_list_for_each_safe(ls, tmp, &server->layer_surfaces, link) {
+        /* Destroying it runs layer_handle_destroy, which takes it off the
+         * list — hence the safe walk. */
+        if (ls->layer_surface->output == output)
+            wlr_layer_surface_v1_destroy(ls->layer_surface);
+    }
 }
 
 static void layer_handle_destroy(struct wl_listener *listener, void *data) {
@@ -192,13 +225,14 @@ static void handle_new_layer_surface(struct wl_listener *listener, void *data) {
     FwmServer *server = wl_container_of(listener, server, new_layer_surface);
     struct wlr_layer_surface_v1 *surface = data;
 
-    /* Single-output compositor: clients that do not name an output get ours. */
+    /* A client that names no output gets the primary — the one at the layout
+     * origin, which is also where our own chrome is. */
     if (!surface->output) {
         struct wlr_output_layout_output *lo;
         struct wlr_output *first = NULL;
         wl_list_for_each(lo, &server->output_layout->outputs, link) {
-            first = lo->output;
-            break;
+            if (!first) first = lo->output;
+            if (lo->x == 0 && lo->y == 0) { first = lo->output; break; }
         }
         if (!first) {
             wlr_log(WLR_ERROR, "layer surface with no output to place it on");

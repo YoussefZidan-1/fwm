@@ -225,7 +225,7 @@ static int resolve_desktop_ex(FwmServer *server, const char *arg, int *seam) {
      * the strip closes, so stepping from the parked desktop meant next/prev
      * resolved to the same neighbour however far you had already travelled. */
     int here = expo_target_desktop(server);
-    if (here < 0) here = server->target_camera_x / server->screen_width;
+    if (here < 0) here = server_active_desktop(server);
     int d, step = 0;
     if (strcmp(arg, "next") == 0) {
         d = here + 1; step = 1;
@@ -257,9 +257,15 @@ void server_goto_desktop(FwmServer *server, int d, int seam) {
     if (d < 0 || d >= FWM_DESKTOPS || server->screen_width <= 0) return;
     if (expo_goto_desktop(server, d)) return;
 
-    int was = server->camera_x;
-    server->target_camera_x = d * server->screen_width;
-    server->cam_free = 0;
+    /* The monitor under the pointer is the one that switches: on two screens a
+     * desktop bind has to mean one of them, and "the one you are working on"
+     * is the only answer that needs no extra keys. */
+    FwmOutput *out = server_active_output(server);
+    if (!out || out->desktop == d) return;
+
+    int was = out->camera_x;
+    out->cam_free = 0;
+    server_output_show_desktop(server, out, d, seam);
     if (!seam) return;
 
     /* Photographed before the camera moves, and started after: the slide shows
@@ -267,12 +273,9 @@ void server_goto_desktop(FwmServer *server, int d, int seam) {
      * comes in the other. Direction is the way the STEP went, not the way
      * camera_x jumped — those are opposite at the join, which is the whole
      * reason the jump needs covering. */
-    server_wrap_slide_start(server, server->target_camera_x < was ? 1 : -1);
-
-    server->camera_x = server->target_camera_x;
-    server->cam_anim = 0;
+    server_wrap_slide_start(server, out, out->target_camera_x < was ? 1 : -1);
     server_camera_settled(server);
-    if (server->wallpaper) wallpaper_update(server->wallpaper, server->camera_x);
+    wallpaper_update(out->wallpaper, out->camera_x);
     server_request_tray_redraw(server);
 }
 
@@ -311,7 +314,7 @@ void server_dispatch_action(FwmServer *server, const char *action) {
             view_send_close(server->focused_view);
         }
     } else if (strcmp(action, "toggle_tiling") == 0) {
-        server_toggle_desktop_tiling(server, server->target_camera_x / server->screen_width);
+        server_toggle_desktop_tiling(server, server_active_desktop(server));
     } else if (strncmp(action, "tile_focus:", 11) == 0) {
         int d; BspNode *leaf;
         if (tile_action_ctx(server, &d, &leaf)) {
@@ -345,6 +348,7 @@ void server_dispatch_action(FwmServer *server, const char *action) {
             server->hints_buffer = NULL;
         } else {
             server->hints_buffer = hints_show(server->layer_overlay, server->screen_width, server->screen_height, &server->config);
+            server_panel_to_active_output(server, server->hints_buffer);
         }
     } else if (strcmp(action, "wallpaper_picker") == 0) {
         bool was_open = launcher_is_open(server->launcher);
@@ -358,6 +362,7 @@ void server_dispatch_action(FwmServer *server, const char *action) {
         } else {
             server->errors_buffer = errors_show(server->layer_overlay, server->screen_width,
                                                 server->screen_height, &server->config);
+            server_panel_to_active_output(server, server->errors_buffer);
         }
         server_request_tray_redraw(server);
     } else if (strcmp(action, "modes_menu") == 0) {
@@ -512,8 +517,11 @@ void server_dispatch_action(FwmServer *server, const char *action) {
          * the screen instead of leaving a bar-shaped hole. Physics windows need
          * no help — nothing ever kept them out of that strip. */
         server->tray_hidden = !server->tray_hidden;
-        if (server->tray_buffer)
-            wlr_scene_node_set_enabled(&server->tray_buffer->node, !server->tray_hidden);
+        FwmOutput *to;
+        wl_list_for_each(to, &server->outputs, link) {
+            if (to->tray_buffer)
+                wlr_scene_node_set_enabled(&to->tray_buffer->node, !server->tray_hidden);
+        }
 
         for (int d = 0; d < 10; d++) {
             if (server->desktop_mode[d] == DESKTOP_MODE_TILING)
@@ -531,7 +539,7 @@ void server_dispatch_action(FwmServer *server, const char *action) {
         }
         server_request_tray_redraw(server);
     } else if (strcmp(action, "toggle_floating") == 0) {
-        server_toggle_desktop_floating(server, server->target_camera_x / server->screen_width);
+        server_toggle_desktop_floating(server, server_active_desktop(server));
     } else if (strcmp(action, "toggle_floating_all") == 0) {
         int all_floating = 1;
         for (int d = 0; d < 10; d++) {
@@ -565,8 +573,10 @@ void server_dispatch_action(FwmServer *server, const char *action) {
         server_spawn(cmd);
     } else if (strncmp(action, "move_camera:", 12) == 0) {
         int amt = atoi(action + 12);
+        FwmOutput *out = server_active_output(server);
+        if (!out) return;
         int last = (FWM_DESKTOPS - 1) * server->screen_width;
-        int new_target = server->target_camera_x + amt;
+        int new_target = out->target_camera_x + amt;
         int seam = 0;
 
         /* On a ring the free pan runs off one end onto the other, keeping
@@ -583,16 +593,28 @@ void server_dispatch_action(FwmServer *server, const char *action) {
             if (new_target < 0) new_target = 0;
             if (new_target > last) new_target = last;
         }
-        server->target_camera_x = new_target;
-        server->cam_free = 1; // continuous pan, not a desktop jump
+        out->target_camera_x = new_target;
+        out->cam_free = 1; // continuous pan, not a desktop jump
+        /* A free pan is not a desktop switch, but it does change which desktop
+         * this monitor is on top of — and the swap rule has to keep holding. */
+        int panned_d = server_desktop_at_x(server, new_target + server->screen_width / 2.0);
+        FwmOutput *clash = server_output_showing(server, panned_d);
+        if (clash && clash != out) {
+            clash->desktop = out->desktop;
+            clash->camera_x = clash->target_camera_x = clash->desktop * server->screen_width;
+            clash->cam_anim = 0;
+            wallpaper_update(clash->wallpaper, clash->camera_x);
+        }
+        out->desktop = panned_d;
         if (seam) {
-            server_wrap_slide_start(server, amt > 0 ? 1 : -1);
-            server->camera_x = new_target;
-            server->cam_anim = 0;
+            server_wrap_slide_start(server, out, amt > 0 ? 1 : -1);
+            out->camera_x = new_target;
+            out->cam_anim = 0;
             server_camera_settled(server);
-            if (server->wallpaper) wallpaper_update(server->wallpaper, server->camera_x);
+            wallpaper_update(out->wallpaper, out->camera_x);
             server_request_tray_redraw(server);
         }
+        server_views_place(server);
     } else if (strcmp(action, "expo") == 0) {
         expo_toggle(server);
     } else if (strcmp(action, "launcher") == 0) {
@@ -633,7 +655,7 @@ void server_dispatch_action_external(FwmServer *server, const char *action) {
 /* ── modes menu ───────────────────────────────────────────────────────── */
 
 void server_modes_state(FwmServer *server, ModesState *out) {
-    int d = (server->camera_x + server->screen_width / 2) / server->screen_width;
+    int d = server_active_desktop(server);
     if (d < 0) d = 0;
     if (d > 9) d = 9;
     out->tiling   = server->desktop_mode[d] == DESKTOP_MODE_TILING;
@@ -668,7 +690,11 @@ void server_toggle_modes_menu(FwmServer *server) {
     if (server->modes_buffer) {
         server_close_modes_menu(server);
     } else {
-        if (!server->tray_buffer || server->tray_hidden) return;
+        /* The menu hangs off the pill in the ACTIVE monitor's tray — that is
+         * the strip the pointer is at, and the one the modes it shows belong
+         * to. */
+        FwmOutput *out = server_active_output(server);
+        if (!out || !out->tray_buffer || server->tray_hidden) return;
         /* The pill is dropped on a screen too narrow to hold it, and then there
          * is nothing to hang the menu off. The keybind lands here too, so this
          * is also what stops it opening a menu pointing at nothing. */
@@ -677,7 +703,7 @@ void server_toggle_modes_menu(FwmServer *server) {
         server_modes_state(server, &st);
         server->modes_buffer = modes_menu_show(
             server->layer_overlay, server->screen_width, server->screen_height,
-            server->tray_buffer->node.x + tray_modes_pill_x(), &st);
+            out->tray_buffer->node.x + tray_modes_pill_x(), &st);
     }
     server_request_tray_redraw(server);
 }
@@ -687,7 +713,7 @@ int server_modes_menu_click(FwmServer *server, int row, int seg) {
     /* The desktop the user is looking at — which, while the strip is up, is
      * where the strip has panned to and not where camera_x is parked. */
     int d = expo_view_desktop(server);
-    if (d < 0) d = (server->camera_x + server->screen_width / 2) / server->screen_width;
+    if (d < 0) d = server_active_desktop(server);
     if (d < 0) d = 0;
     if (d > 9) d = 9;
 

@@ -13,6 +13,7 @@
  */
 
 #include "expo_internal.h"
+#include "layer.h"
 #include "snapshot.h"
 #include "wallpaper.h"
 #include "physics.h"
@@ -212,7 +213,7 @@ static bool expo_canvas_current(FwmExpo *e) {
              && e->drawn_pan == e->pan
              && e->drawn_tilt == e->tilt
              && e->drawn_dist == e->dist
-             && e->drawn_cam == server->camera_x
+             && e->drawn_cam == e->out->camera_x
              && e->drawn_items == e->n_items
              && e->drawn_wrap == server->config.camera.wrap
              && e->drawn_hover == (void *)e->hover
@@ -226,7 +227,7 @@ static bool expo_canvas_current(FwmExpo *e) {
     e->drawn_pan = e->pan;
     e->drawn_tilt = e->tilt;
     e->drawn_dist = e->dist;
-    e->drawn_cam = server->camera_x;
+    e->drawn_cam = e->out->camera_x;
     e->drawn_items = e->n_items;
     e->drawn_wrap = server->config.camera.wrap;
     e->drawn_hover = e->hover;
@@ -389,12 +390,23 @@ void expo_layout(FwmExpo *e) {
  *   underneath it, and a strip that swallowed the clock and the mode pills
  *   read as a different machine. The strip's tree sits BELOW it for that
  *   reason. */
-void expo_set_world_visible(FwmServer *server, bool visible) {
-    struct wlr_scene_tree *trees[] = {
-        server->ls_background, server->ls_bottom,
-        server->layer_windows, server->ls_top, server->ls_overlay,
-    };
-    for (size_t i = 0; i < sizeof(trees) / sizeof(trees[0]); i++)
-        if (trees[i]) wlr_scene_node_set_enabled(&trees[i]->node, visible);
+/* Take the desktop away from ONE monitor while its strip is up, and give it
+ * back afterwards. The other monitor keeps working: its windows, its bars and
+ * its wallpaper are untouched.
+ *
+ * The windows are parked off the layout rather than disabled — the enabled flag
+ * on a window's tree already belongs to the open animation, and two owners of
+ * one flag is how a window ends up invisible forever. The bars have no such
+ * second owner, so those are simply disabled. */
+void expo_set_world_visible(FwmServer *server, FwmOutput *out, bool visible) {
+    if (!out) return;
+    out->hide_world = !visible;
+    server_views_place(server);
+
+    FwmLayerSurface *ls;
+    wl_list_for_each(ls, &server->layer_surfaces, link) {
+        if (ls->layer_surface->output != out->wlr_output || !ls->scene) continue;
+        wlr_scene_node_set_enabled(&ls->scene->tree->node, visible);
+    }
 }
 

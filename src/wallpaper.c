@@ -85,6 +85,10 @@ struct FwmWallpaper {
     struct WallpaperRT *layers;
     int count;
     int pan_range; /* camera_x span mapped to a full-slack traversal (all desktops) */
+    /* Where this set sits in layout coordinates. A wallpaper belongs to one
+     * monitor, and the layers are built from 0,0 like everything screen-sized,
+     * so the monitor's own position is added here on the way to the scene. */
+    int origin_x, origin_y;
 
     /* Cross-fade in, used when the picker swaps wallpapers at runtime: the
      * outgoing set stays on screen underneath until this reaches 1. */
@@ -355,6 +359,14 @@ FwmWallpaper *wallpaper_create(struct wlr_scene_tree *parent, const FwmConfig *c
     return wp;
 }
 
+void wallpaper_set_origin(FwmWallpaper *wp, int x, int y) {
+    if (!wp) return;
+    wp->origin_x = x;
+    wp->origin_y = y;
+    for (int i = 0; i < wp->count; i++)
+        wlr_scene_node_set_position(&wp->layers[i].buffer->node, x, y);
+}
+
 void wallpaper_update(FwmWallpaper *wp, int camera_x) {
     if (!wp || wp->pan_range <= 0) return;
     // Map the camera position across the whole desktop range to [0,1], so each
@@ -367,7 +379,8 @@ void wallpaper_update(FwmWallpaper *wp, int camera_x) {
     for (int i = 0; i < wp->count; i++) {
         struct WallpaperRT *l = &wp->layers[i];
         int shift = (int)lround(l->slack * t);
-        wlr_scene_node_set_position(&l->buffer->node, -shift, 0);
+        wlr_scene_node_set_position(&l->buffer->node,
+                                    wp->origin_x - shift, wp->origin_y);
     }
 }
 

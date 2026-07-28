@@ -198,27 +198,30 @@ void server_set_wallpaper(FwmServer *server, const char *path) {
      * one is created later, so the scene draws it on top) until the fade ends.
      * A swap still in flight is finished immediately, so rapid picking cannot
      * pile up wallpapers. */
-    if (server->wallpaper_prev) {
-        wallpaper_destroy(server->wallpaper_prev);
-        server->wallpaper_prev = NULL;
-    }
-    server->wallpaper_prev = server->wallpaper;
-    server->wallpaper = wallpaper_create(server->layer_background, &server->config,
-                                         server->screen_width, server->screen_height);
-    if (server->wallpaper) {
-        wallpaper_update(server->wallpaper, server->camera_x);
-        if (server->wallpaper_prev) {
-            wallpaper_fade_in(server->wallpaper, server->config.decor.wallpaper_fade_ms);
+    FwmOutput *out;
+    wl_list_for_each(out, &server->outputs, link) {
+        if (out->wallpaper_prev) {
+            wallpaper_destroy(out->wallpaper_prev);
+            out->wallpaper_prev = NULL;
         }
-    }
-    if (!server->wallpaper || server->config.decor.wallpaper_fade_ms <= 0.0) {
-        if (server->wallpaper_prev) {
-            wallpaper_destroy(server->wallpaper_prev);
-            server->wallpaper_prev = NULL;
-            /* Instant cut: the outgoing set is gone right here, so reclaim now.
-             * With a fade it happens in server_animate instead, once the new
-             * set is opaque. */
-            server_reclaim_memory();
+        out->wallpaper_prev = out->wallpaper;
+        out->wallpaper = wallpaper_create(server->layer_background, &server->config,
+                                          out->box.width, out->box.height);
+        if (out->wallpaper) {
+            wallpaper_set_origin(out->wallpaper, out->box.x, out->box.y);
+            wallpaper_update(out->wallpaper, out->camera_x);
+            if (out->wallpaper_prev)
+                wallpaper_fade_in(out->wallpaper, server->config.decor.wallpaper_fade_ms);
+        }
+        if (!out->wallpaper || server->config.decor.wallpaper_fade_ms <= 0.0) {
+            if (out->wallpaper_prev) {
+                wallpaper_destroy(out->wallpaper_prev);
+                out->wallpaper_prev = NULL;
+                /* Instant cut: the outgoing set is gone right here, so reclaim
+                 * now. With a fade it happens in server_animate instead, once
+                 * the new set is opaque. */
+                server_reclaim_memory();
+            }
         }
     }
 
@@ -298,23 +301,33 @@ void server_apply_config(FwmServer *server, int rebuild_wallpaper) {
 
     /* Wallpaper layers are baked at load time, so rebuild them wholesale. */
     if (rebuild_wallpaper) {
-        if (server->wallpaper_prev) {
-            wallpaper_destroy(server->wallpaper_prev);
-            server->wallpaper_prev = NULL;
-        }
-        if (server->wallpaper) {
-            wallpaper_destroy(server->wallpaper);
-            server->wallpaper = NULL;
-        }
-        if (server->config.wallpaper_count > 0) {
-            server->wallpaper = wallpaper_create(server->layer_background, &server->config,
-                                                 server->screen_width, server->screen_height);
-            if (server->wallpaper) wallpaper_update(server->wallpaper, server->camera_x);
+        FwmOutput *out;
+        wl_list_for_each(out, &server->outputs, link) {
+            if (out->wallpaper_prev) {
+                wallpaper_destroy(out->wallpaper_prev);
+                out->wallpaper_prev = NULL;
+            }
+            if (out->wallpaper) {
+                wallpaper_destroy(out->wallpaper);
+                out->wallpaper = NULL;
+            }
+            if (server->config.wallpaper_count > 0) {
+                out->wallpaper = wallpaper_create(server->layer_background, &server->config,
+                                                  out->box.width, out->box.height);
+                if (out->wallpaper) {
+                    wallpaper_set_origin(out->wallpaper, out->box.x, out->box.y);
+                    wallpaper_update(out->wallpaper, out->camera_x);
+                }
+            }
         }
         /* A reload that drops a video wallpaper releases the same hundreds of
          * MB as picking a new one, and takes the same cut-not-fade path. */
         server_reclaim_memory();
     }
+
+    /* Monitors may have moved, been turned off, or been pointed at another
+     * desktop. Before the tiling below, which is sized to a screen. */
+    server_outputs_apply_config(server);
 
     /* New gaps / anim settings take effect on tiled desktops. */
     for (int d = 0; d < 10; d++) {

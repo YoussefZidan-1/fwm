@@ -189,7 +189,7 @@ void server_start_interactive_move(FwmServer *server, struct FwmView *view, uint
     server->interactive.view = view;
     server->interactive.start_x = server->cursor->x;
     server->interactive.start_y = server->cursor->y;
-    server->interactive.view_start_x = view->x - server->camera_x;
+    server->interactive.view_start_x = view->x;   /* world, not screen */
     server->interactive.view_start_y = view->y;
     server->interactive.view_start_width = view->width;
     server->interactive.view_start_height = view->height;
@@ -215,7 +215,7 @@ void server_start_interactive_resize(FwmServer *server, struct FwmView *view, ui
     server->interactive.view = view;
     server->interactive.start_x = server->cursor->x;
     server->interactive.start_y = server->cursor->y;
-    server->interactive.view_start_x = view->x - server->camera_x;
+    server->interactive.view_start_x = view->x;   /* world, not screen */
     server->interactive.view_start_y = view->y;
     server->interactive.view_start_width = view->width;
     server->interactive.view_start_height = view->height;
@@ -236,20 +236,34 @@ void server_set_fullscreen(FwmServer *server, struct FwmView *view, bool fullscr
         b->fullscreen = 1;
         b->flying = 0; b->vx = 0; b->vy = 0;
         
-        // Real fullscreen covers the whole output; fake fullscreen fills the
-        // work area below the status bar so the tray stays visible.
-        /* Fake fullscreen fills the work area: below our tray and clear of
-         * any layer-shell bar that reserved space. */
-        struct wlr_box work = server->usable_area;
-        if (work.width <= 0 || work.height <= 0) {
-            work = (struct wlr_box){ 0, 0, server->screen_width, server->screen_height };
+        /* Real fullscreen covers the whole output; fake fullscreen fills the
+         * work area — below our tray and clear of any layer-shell bar that
+         * reserved space — so the tray stays visible.
+         *
+         * "The output" is the monitor the window is standing on, not the
+         * world: on two monitors a fullscreen video must not straddle the
+         * bezel. A single-output setup gets the box it always did. */
+        /* A desktop is one screen, so fullscreen is that screen. The monitor
+         * showing this window's desktop is the one whose work area applies;
+         * with nobody showing it, the desktop's own size is the answer. */
+        FwmOutput *mon = server_output_showing(server, d);
+        struct wlr_box screen = { 0, 0, server->screen_width, server->screen_height };
+        struct wlr_box work = screen;
+        if (mon && mon->usable_area.width > 0 && mon->usable_area.height > 0) {
+            /* usable_area is in layout coordinates; the desktop's own frame
+             * starts at 0,0. */
+            work = (struct wlr_box){
+                mon->usable_area.x - mon->box.x, mon->usable_area.y - mon->box.y,
+                mon->usable_area.width, mon->usable_area.height,
+            };
+            if (!wlr_box_intersection(&work, &work, &screen)) work = screen;
         }
         int reserve = server->tray_hidden ? 0 : TRAY_BOTTOM + 12;
         int top = real ? 0 : (work.y > reserve ? work.y : reserve);
         view->x = d * server->screen_width + (real ? 0 : work.x);
         view->y = top;
-        view->width = real ? server->screen_width : work.width;
-        view->height = server->screen_height - top;
+        view->width = real ? screen.width : work.width;
+        view->height = screen.height - top;
         
         // Keep the physics body in sync with the fullscreen geometry, otherwise
         // physics_tick_cb re-syncs the scene node back to the body's stale
@@ -261,7 +275,7 @@ void server_set_fullscreen(FwmServer *server, struct FwmView *view, bool fullscr
         view_set_fullscreen_hint(view, real);
         
         if (view->scene_tree) {
-            wlr_scene_node_set_position(&view->scene_tree->node, (int)lround(view->x - server->camera_x), (int)lround(view->y));
+            server_place_node(server, &view->scene_tree->node, view->x, view->y);
             wlr_scene_node_raise_to_top(&view->scene_tree->node);
         }
         view_set_border_enabled(view, 0); // borderless fullscreen
@@ -290,7 +304,7 @@ void server_set_fullscreen(FwmServer *server, struct FwmView *view, bool fullscr
             view_set_fullscreen_hint(view, false);
             
             if (view->scene_tree) {
-                wlr_scene_node_set_position(&view->scene_tree->node, (int)lround(view->x - server->camera_x), (int)lround(view->y));
+                server_place_node(server, &view->scene_tree->node, view->x, view->y);
             }
             view_set_border_enabled(view, 1);
             view->fs_real = 0;
@@ -312,10 +326,10 @@ void server_set_fullscreen(FwmServer *server, struct FwmView *view, bool fullscr
 }
 
 void server_request_tray_redraw(FwmServer *server) {
-    if (!server->tray_buffer) return;
     /* Nothing to draw into an invisible node — and this runs every physics
      * tick, so skipping it is the point of hiding the tray, not a micro-opt. */
     if (server->tray_hidden) return;
+    if (wl_list_empty(&server->outputs)) return;
     
     TrayData data = {0};
     for (int i = 0; i < 10; i++) {
@@ -366,33 +380,16 @@ void server_request_tray_redraw(FwmServer *server) {
     data.error_expanded = server->errors_buffer != NULL;
     data.mode_name = (server->key_mode >= 0 && server->key_mode < server->config.mode_count)
                          ? server->config.modes[server->key_mode].name : NULL;
-    /* While the desktop strip is up, camera_x is parked and the strip's own pan
-     * is what moved — so ask it instead, or the marker would sit on the desktop
-     * the strip was entered from however far it had travelled. */
-    if (!expo_view_position(server, &data.active_pos)) {
-        data.active_pos = (double)server->camera_x / server->screen_width;
-    }
-    if (data.active_pos < 0.0) data.active_pos = 0.0;
-    if (data.active_pos > 9.0) data.active_pos = 9.0;
-    data.active_desktop = (int)lround(data.active_pos);
-    if (data.active_desktop < 0) data.active_desktop = 0;
-
-    /* Modes pill. Layout is per-desktop, so it reports the desktop the camera
-     * is on; gravity and cava are global. Read live rather than tracked, which
-     * is what lets a keybind, `fwmctl set` and the menu all show up here without
+    /* Modes pill. Gravity, cava and the ring are global; the per-desktop half
+     * is filled in per monitor below. Read live rather than tracked, which is
+     * what lets a keybind, `fwmctl set` and the menu all show up here without
      * any of them knowing the pill exists. */
     {
-        int d = data.active_desktop;
-        if (d > 9) d = 9;
-        data.modes_tiling   = server->desktop_mode[d] == DESKTOP_MODE_TILING;
-        data.modes_floating = server->desktop_mode[d] == DESKTOP_MODE_FLOATING;
         data.modes_gravity  = server->physics.gravity_scale > 0.0;
         data.modes_cava     = server->config.cava.mode;
         data.modes_ring     = server->config.camera.wrap;
         data.modes_open     = server->modes_buffer != NULL;
     }
-    if (data.active_desktop >= 10) data.active_desktop = 9;
-    
     if (server->focused_view) {
         PhysicsBody *b = physics_find_body(&server->physics, server->focused_view->id);
         if (b) {
@@ -405,5 +402,40 @@ void server_request_tray_redraw(FwmServer *server) {
         }
     }
     
-    tray_redraw(server->tray_buffer, &data);
+    /* Each monitor's strip reports ITS OWN desktop: the marker, the layout
+     * pill and the window name all belong to the screen they are drawn on. */
+    FwmOutput *out;
+    wl_list_for_each(out, &server->outputs, link) {
+        if (!out->tray_buffer) continue;
+        TrayData d2 = data;
+
+        /* While the desktop strip is up, the camera is parked and the strip's
+         * own pan is what moved — so ask it instead, or the marker would sit on
+         * the desktop the strip was entered from however far it travelled. */
+        if (!expo_view_position(server, &d2.active_pos))
+            d2.active_pos = (double)out->camera_x / server->screen_width;
+        if (d2.active_pos < 0.0) d2.active_pos = 0.0;
+        if (d2.active_pos > 9.0) d2.active_pos = 9.0;
+        d2.active_desktop = (int)lround(d2.active_pos);
+        if (d2.active_desktop < 0) d2.active_desktop = 0;
+        if (d2.active_desktop > 9) d2.active_desktop = 9;
+
+        /* Layout is per-desktop, so the pill reports this monitor's desktop;
+         * gravity and cava are global. */
+        d2.modes_tiling   = server->desktop_mode[d2.active_desktop] == DESKTOP_MODE_TILING;
+        d2.modes_floating = server->desktop_mode[d2.active_desktop] == DESKTOP_MODE_FLOATING;
+
+        /* The focused window belongs to whichever monitor is showing its
+         * desktop; the others have nothing to say about it. */
+        if (server->focused_view) {
+            PhysicsBody *fb = physics_find_body(&server->physics, server->focused_view->id);
+            if (!fb || fb->desktop_id != out->desktop) {
+                d2.win_name = NULL;
+                d2.speed = d2.angle = d2.mass = 0.0;
+                d2.flying = 0;
+            }
+        }
+
+        tray_redraw(out->tray_buffer, &d2);
+    }
 }

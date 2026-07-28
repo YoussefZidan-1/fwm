@@ -159,6 +159,12 @@ static void draw_hints(cairo_t *cr, int w, int h, void *data) {
  * second and the caller does not have to carry the size around. */
 static double g_w, g_h;
 
+/* The strip's monitor, in layout coordinates. The bar is drawn in the shared
+ * overlay tree (it must outrank the strip, which is not in that tree), so it
+ * is the one part of the strip that does not inherit the monitor's position
+ * and has to be told it. */
+static int g_ox, g_oy;
+
 static void place(struct wlr_scene_buffer *buf, int screen_w, int screen_h,
                   double w, double h, double reveal) {
     if (reveal < 0.0) reveal = 0.0;
@@ -167,8 +173,8 @@ static void place(struct wlr_scene_buffer *buf, int screen_w, int screen_h,
      * bar reads as a bug, and the point of taking it away is the space. */
     double home = screen_h - h - HINT_BOTTOM;
     double gone = screen_h + 2.0;
-    wlr_scene_node_set_position(&buf->node, (int)((screen_w - w) / 2.0),
-                                (int)(gone + (home - gone) * reveal));
+    wlr_scene_node_set_position(&buf->node, g_ox + (int)((screen_w - w) / 2.0),
+                                g_oy + (int)(gone + (home - gone) * reveal));
 }
 
 void expo_hints_place(struct wlr_scene_buffer *buf, int screen_w, int screen_h,
@@ -181,7 +187,10 @@ bool expo_hints_hit(int screen_h, double ly) {
 }
 
 struct wlr_scene_buffer *expo_hints_show(struct wlr_scene_tree *parent,
+                                         int origin_x, int origin_y,
                                          int screen_w, int screen_h, bool flight) {
+    g_ox = origin_x;
+    g_oy = origin_y;
     /* Sized for the WIDER of the two sets, once: the panel then never changes
      * shape when the zoom step does, and the row inside it is centred. */
     double h = 0.0, h2 = 0.0;

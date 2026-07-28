@@ -278,8 +278,6 @@ bool server_init(FwmServer *server) {
     physics_init(&server->physics);
     server_apply_physics_config(server);
     
-    server->camera_x = 0;
-    server->target_camera_x = 0;
     
     /* The simulation heartbeat and the video-wallpaper pacer, both owned by
      * server_tick.c along with their callbacks. */
@@ -346,8 +344,7 @@ void server_destroy(FwmServer *server) {
      * server_request_tray_redraw(). That guards on a NULL tray_buffer — but a
      * freed pointer is not NULL, so it sailed through the guard and read the
      * released scene buffer. Same reasoning as the IPC handle above. */
-    if (server->tray_buffer) cairo_overlay_destroy(server->tray_buffer);
-    server->tray_buffer = NULL;
+    /* The trays and wallpapers belong to the monitors and go with them. */
     if (server->hints_buffer) cairo_overlay_destroy(server->hints_buffer);
     server->hints_buffer = NULL;
     if (server->welcome_buffer) cairo_overlay_destroy(server->welcome_buffer);
@@ -360,14 +357,13 @@ void server_destroy(FwmServer *server) {
      * left pointing at freed levels. */
     if (server->cava) cava_destroy(server->cava);
     server->cava = NULL;
-    if (server->wallpaper_prev) wallpaper_destroy(server->wallpaper_prev);
-    server->wallpaper_prev = NULL;
-    if (server->wallpaper) wallpaper_destroy(server->wallpaper);
-    server->wallpaper = NULL;
     launcher_destroy(server->launcher);
     server->launcher = NULL;
     expo_destroy(server);
-    server_wrap_slide_stop(server);   /* holds a buffer and a scene node */
+    {   /* each monitor's join-slide holds a buffer and a scene node */
+        FwmOutput *o;
+        wl_list_for_each(o, &server->outputs, link) server_wrap_slide_stop(server, o);
+    }
 
     /* The rotation shaders belong to the renderer's GL context; they have to go
      * while that context still exists. */
@@ -414,6 +410,7 @@ void server_destroy(FwmServer *server) {
     server_remove_listener(&server->new_toplevel_decoration);
     server_remove_listener(&server->new_input);
     server_remove_listener(&server->new_output);
+    server_remove_listener(&server->output_layout_change);
     server_remove_listener(&server->cursor_motion);
     server_remove_listener(&server->cursor_motion_absolute);
     server_remove_listener(&server->cursor_button);

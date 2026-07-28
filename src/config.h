@@ -493,6 +493,30 @@ typedef struct {
 
 #define CONFIG_MAX_RULES 64
 
+/* Rarely more than three; the cap only stops a typo'd file from allocating. */
+#define CONFIG_MAX_OUTPUTS 8
+
+/*
+ * Where a monitor sits, and what it starts on.
+ *
+ *   [[output]]
+ *   name    = "HDMI-A-1"     # as fwm logs it at startup
+ *   x       = 1366           # top-left in layout coordinates; both or neither
+ *   y       = 0
+ *   desktop = 3              # the desktop it comes up on
+ *   enabled = false          # leave it dark
+ *
+ * Without an entry a monitor is placed to the right of the ones already there
+ * and takes the lowest free desktop, which is what fwm did before this existed.
+ */
+typedef struct {
+    char name[64];
+    int  have_pos;   /* x/y were given */
+    int  x, y;
+    int  desktop;    /* -1: take whatever is free */
+    int  enabled;    /* 0 only when the file says so */
+} ConfigOutput;
+
 typedef struct {
     /* Compiled matchers; the has_* flag says whether the regex_t is live. */
     int     has_app_id;
@@ -591,6 +615,8 @@ typedef struct {
     int             wallpaper_count;
     ConfigRule     *rules;
     int             rule_count;
+    ConfigOutput    outputs[CONFIG_MAX_OUTPUTS];
+    int             output_count;
     /* [wallpaper_picker] dir — where the built-in picker looks for images.
      * "~" is expanded at load. */
     char            wallpaper_dir[512];
@@ -638,6 +664,9 @@ void config_option_get(const FwmConfig *cfg, const ConfigOption *opt,
  * if nothing matched. app_id/title may be NULL. */
 int config_match_rules(const FwmConfig *cfg, const char *app_id, const char *title,
                        ConfigRule *out);
+
+/* The [[output]] entry for a monitor of this name, or NULL. */
+const ConfigOutput *config_find_output(const FwmConfig *cfg, const char *name);
 
 /* The bind whose key and modifiers match, or NULL. `mods` must equal the
  * bind's own mask exactly — a bind on super+q does not fire for super+shift+q.

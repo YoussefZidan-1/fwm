@@ -57,7 +57,7 @@ double expo_scale(FwmExpo *e) {
 
 /* Strip coordinate the middle of the screen is looking at. */
 double expo_center(FwmExpo *e) {
-    return e->server->camera_x + e->server->screen_width / 2.0
+    return e->out->camera_x + e->server->screen_width / 2.0
          + e->home * expo_gap(e) + e->pan;
 }
 
@@ -302,7 +302,7 @@ bool expo_point(FwmExpo *e, double sx, double sy,
  * on pointing at the desktop you entered from. */
 static double expo_position_for(FwmExpo *e, double pan) {
     FwmServer *server = e->server;
-    double centre = server->camera_x + server->screen_width / 2.0
+    double centre = e->out->camera_x + server->screen_width / 2.0
                   + e->home * expo_gap(e) + pan;
     double p = (centre - server->screen_width / 2.0) / expo_pitch(e);
     if (server->config.camera.wrap) {

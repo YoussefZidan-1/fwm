@@ -820,8 +820,10 @@ static void launcher_open(Launcher *l) {
      * emerge from the bottom edge instead of the buffer holding the whole
      * spawn runway (which cost ~1.5 MB extra per frame buffer). */
     l->panel_h = (int)(BAR_H + BAR_GAP + MAX_SHOW * (TILE_H + TILE_GAP) + 120.0);
-    l->px = (server->screen_width - l->panel_w) / 2;
-    l->py = server->screen_height / 5;
+    /* Centred on the monitor the user is at, not at the layout origin. */
+    FwmOutput *lo = server_active_output(server);
+    l->px = (lo ? lo->box.x : 0) + (server->screen_width - l->panel_w) / 2;
+    l->py = (lo ? lo->box.y : 0) + server->screen_height / 5;
 
     l->query[0] = '\0';
     refilter(l);

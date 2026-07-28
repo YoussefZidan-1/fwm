@@ -142,7 +142,10 @@ bool server_drag_motion(FwmServer *server, double lx, double ly,
         if (max_world_x < min_world_x) max_world_x = min_world_x;
         if (max_y < min_y) max_y = min_y;
         
-        int target_world_x = server->interactive.view_start_x + server->camera_x + dx;
+        /* view_start_x is already a world coordinate, and dx is a distance:
+          * a hand moving n px across a monitor moves the window n px through
+          * the world, whichever monitor that is. */
+        int target_world_x = server->interactive.view_start_x + dx;
         int target_world_y = server->interactive.view_start_y + dy;
         int want_x = target_world_x, want_y = target_world_y;
         
@@ -169,10 +172,8 @@ bool server_drag_motion(FwmServer *server, double lx, double ly,
             view->x = target_world_x;
             view->y = target_world_y;
 
-            if (view->scene_tree) {
-                wlr_scene_node_set_position(&view->scene_tree->node,
-                    (int)lround(view->x - server->camera_x), (int)lround(view->y));
-            }
+            if (view->scene_tree)
+                server_place_node(server, &view->scene_tree->node, view->x, view->y);
         }
 
         // Shift velocity history
@@ -296,10 +297,13 @@ bool server_drag_motion(FwmServer *server, double lx, double ly,
          * the last desktop spun the world round the ring until the hand moved
          * away, which is not "the window would not cross" but looks a great
          * deal like it. */
-        if (server->camera_x == server->target_camera_x
-            && server->wrap_slide <= 0.0) {
-            int current_d = server->target_camera_x / server->screen_width;
-            int step = lx >= server->screen_width - 10 ? 1 : (lx <= 10 ? -1 : 0);
+        FwmOutput *eo = server_output_at(server, lx, ly);
+        if (eo && eo->camera_x == eo->target_camera_x
+            && eo->wrap_slide <= 0.0) {
+            int current_d = eo->desktop;
+            /* The edge of THIS monitor, not of the layout. */
+            double ex = lx - eo->box.x;
+            int step = ex >= eo->box.width - 10 ? 1 : (ex <= 10 ? -1 : 0);
             if (step) {
                 /* Dragging a window off the end of a ring puts it on the other
                  * end, which is the whole point of the ring — the window is
@@ -345,14 +349,14 @@ bool server_drag_motion(FwmServer *server, double lx, double ly,
         if (n->ratio < 0.1f) n->ratio = 0.1f;
         if (n->ratio > 0.9f) n->ratio = 0.9f;
         
-        int d = server->target_camera_x / server->screen_width;
-        server_apply_tiling(server, d);
+        server_apply_tiling(server, server_active_desktop(server));
     } else if (server->interactive.action == FWM_ACTION_TWIST) {
         FwmView *view = server->interactive.view;
         PhysicsBody *pb = view ? physics_find_body(&server->physics, view->id) : NULL;
         if (pb && pb->spin) {
-            double cx = view->x + view->width  / 2.0 - server->camera_x;
-            double cy = view->y + view->height / 2.0;
+            double cx, cy;
+            server_world_to_screen(server, view->x + view->width / 2.0,
+                                   view->y + view->height / 2.0, &cx, &cy);
             double a = atan2(ly - cy, lx - cx);
 
             /* atan2 jumps by 2π at the back of the circle; unwrap against the
@@ -404,6 +408,12 @@ bool server_drag_motion(FwmServer *server, double lx, double ly,
  * bind) and the caller must not treat it as a click. */
 bool server_drag_press(FwmServer *server, uint32_t button, double lx, double ly,
                        const struct timespec *nowp) {
+    /* The press in world coordinates: everything below that talks to a body or
+     * a layout works in the world, and the monitor under the cursor is what
+     * says which desktop's world that is. */
+    double wx, wy;
+    server_screen_to_world(server, lx, ly, &wx, &wy);
+
     struct timespec now = *nowp;
     (void)now;
     (void)button;
@@ -468,8 +478,9 @@ bool server_drag_press(FwmServer *server, uint32_t button, double lx, double ly,
                      * bind: a tiled, pinned or fullscreen window has nowhere to
                      * turn to. */
                     if (pb && server_can_spin(pb) && server->config.effects.spin > 0.0) {
-                        double cx = view->x + view->width  / 2.0 - server->camera_x;
-                        double cy = view->y + view->height / 2.0;
+                        double cx, cy;
+                        server_world_to_screen(server, view->x + view->width / 2.0,
+                                               view->y + view->height / 2.0, &cx, &cy);
                         /* Spinning it with no kick: the hand supplies the
                          * rotation from here, and physics only takes over at
                          * the release. */
@@ -484,7 +495,7 @@ bool server_drag_press(FwmServer *server, uint32_t button, double lx, double ly,
                 } else if (strcmp(verb, FWM_MOUSE_RESIZE) == 0) {
                     if (tiling) {
                         int d = pb ? pb->desktop_id : 0;
-                        BspNode *node = bsp_find_border(server->bsp_roots[d], lx + server->camera_x, ly, 40);
+                        BspNode *node = bsp_find_border(server->bsp_roots[d], wx, wy, 40);
                         if (node) {
                             server->interactive.action = FWM_ACTION_BSP_RESIZE;
                             server->interactive.bsp_node = node;
@@ -497,7 +508,7 @@ bool server_drag_press(FwmServer *server, uint32_t button, double lx, double ly,
                         server->interactive.view = view;
                         server->interactive.start_x = lx;
                         server->interactive.start_y = ly;
-                        server->interactive.view_start_x = view->x - server->camera_x;
+                        server->interactive.view_start_x = view->x;
                         server->interactive.view_start_y = view->y;
                         server->interactive.view_start_width = view->width;
                         server->interactive.view_start_height = view->height;
@@ -508,7 +519,7 @@ bool server_drag_press(FwmServer *server, uint32_t button, double lx, double ly,
                         server->interactive.view = view;
                         server->interactive.start_x = lx;
                         server->interactive.start_y = ly;
-                        server->interactive.view_start_x = view->x - server->camera_x;
+                        server->interactive.view_start_x = view->x;
                         server->interactive.view_start_y = view->y;
                         server->interactive.view_start_width = view->width;
                         server->interactive.view_start_height = view->height;
@@ -531,8 +542,8 @@ bool server_drag_press(FwmServer *server, uint32_t button, double lx, double ly,
                         {
                             double cx = view->x + view->width  / 2.0;
                             double cy = view->y + view->height / 2.0;
-                            double ox = (lx + server->camera_x) - cx;
-                            double oy = ly - cy;
+                            double ox = wx - cx;
+                            double oy = wy - cy;
                             double ang = pb ? pb->angle : 0.0;
                             double c = cos(-ang), s = sin(-ang);
                             server->interactive.grab_lx = c * ox - s * oy;
@@ -553,7 +564,7 @@ bool server_drag_press(FwmServer *server, uint32_t button, double lx, double ly,
                          * all, so there would be nothing to lag behind. */
                         if (!tiling) {
                             view_jelly_begin(view, server->config.effects.jelly,
-                                             (lx + server->camera_x) - view->x,
+                                             wx - view->x,
                                              ly - view->y);
                         }
                     }
@@ -614,9 +625,10 @@ void server_drag_release(FwmServer *server, double lx, double ly) {
                     uint32_t target_id = 0;
                     for (int i = 0; i < count; i++) {
                         BspNode *n = leaves[i];
-                        int sx = n->x - server->camera_x;
+                        double sx, sy;
+                        if (!server_world_to_screen(server, n->x, n->y, &sx, &sy)) continue;
                         if (server->interactive.cur_x >= sx && server->interactive.cur_x <= sx + n->w &&
-                            server->interactive.cur_y >= n->y && server->interactive.cur_y <= n->y + n->h) {
+                            server->interactive.cur_y >= sy && server->interactive.cur_y <= sy + n->h) {
                             target_id = n->id;
                             break;
                         }

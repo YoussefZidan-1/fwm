@@ -29,8 +29,9 @@ static void handle_request_activate(struct wl_listener *listener, void *data) {
      * user action on that window, so it always pans. */
     PhysicsBody *pb = physics_find_body(&view->server->physics, view->id);
     if (pb && pb->desktop_id >= 0 && pb->desktop_id < 10) {
-        view->server->target_camera_x = pb->desktop_id * view->server->screen_width;
-        view->server->cam_free = 0;
+        /* Bring the window's desktop up on the monitor the user is at. */
+        server_output_show_desktop(view->server, server_active_output(view->server),
+                                   pb->desktop_id, 0);
     }
     server_focus_view(view->server, view);
 }

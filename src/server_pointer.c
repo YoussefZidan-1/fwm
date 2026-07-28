@@ -111,6 +111,19 @@ struct FwmView *view_at(FwmServer *server, double lx, double ly,
     return tree->node.data;
 }
 
+/* The status strip under the pointer, and where in it the cursor is. NULL when
+ * the pointer is not over a monitor that has one — every tray hit test below
+ * goes through this, so a click on the second monitor's strip talks to THAT
+ * strip. */
+static struct wlr_scene_buffer *tray_under_pointer(FwmServer *server,
+                                                   double *tx, double *ty) {
+    FwmOutput *o = server_output_at(server, server->cursor->x, server->cursor->y);
+    if (!o || !o->tray_buffer) return NULL;
+    if (tx) *tx = server->cursor->x - o->tray_buffer->node.x;
+    if (ty) *ty = server->cursor->y - o->tray_buffer->node.y;
+    return o->tray_buffer;
+}
+
 static void handle_cursor_motion(struct wl_listener *listener, void *data) {
     FwmServer *server = wl_container_of(listener, server, cursor_motion);
     struct wlr_pointer_motion_event *event = data;
@@ -136,8 +149,10 @@ static void handle_cursor_motion(struct wl_listener *listener, void *data) {
         if (cv) {
             double nx = server->cursor->x + event->delta_x;
             double ny = server->cursor->y + event->delta_y;
-            double sx = nx - (cv->x - server->camera_x);
-            double sy = ny - cv->y;
+            double vsx, vsy;
+            server_world_to_screen(server, cv->x, cv->y, &vsx, &vsy);
+            double sx = nx - vsx;
+            double sy = ny - vsy;
             if (!pixman_region32_contains_point(&server->active_constraint->region,
                                                 (int)sx, (int)sy, NULL)) {
                 server_notify_activity(server);
@@ -247,11 +262,10 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
     // Config-error pill in the tray: toggles the detail panel. Handled before
     // anything else so the click never reaches a window underneath.
     if (event->state == WL_POINTER_BUTTON_STATE_PRESSED && event->button == BTN_LEFT &&
-        server->interactive.action == FWM_ACTION_NONE && server->tray_buffer &&
+        server->interactive.action == FWM_ACTION_NONE &&
         server->config.error_count > 0) {
-        double tx = server->cursor->x - server->tray_buffer->node.x;
-        double ty = server->cursor->y - server->tray_buffer->node.y;
-        if (tray_error_pill_hit(tx, ty)) {
+        double tx, ty;
+        if (tray_under_pointer(server, &tx, &ty) && tray_error_pill_hit(tx, ty)) {
             server_dispatch_action(server, "show_errors");
             server->group_click = 1; /* swallow the matching release */
             return;
@@ -278,10 +292,10 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
          * toggle and the pill branch below owns it. The tray-buffer test comes
          * FIRST because the coordinates are derived from it. */
         int on_pill = 0;
-        if (server->tray_buffer) {
-            on_pill = tray_modes_pill_hit(
-                server->cursor->x - server->tray_buffer->node.x,
-                server->cursor->y - server->tray_buffer->node.y);
+        {
+            double tx, ty;
+            if (tray_under_pointer(server, &tx, &ty))
+                on_pill = tray_modes_pill_hit(tx, ty);
         }
         if (!on_pill) {
             server_close_modes_menu(server);
@@ -293,10 +307,9 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
 
     // Modes pill in the tray: opens and closes the menu.
     if (event->state == WL_POINTER_BUTTON_STATE_PRESSED && event->button == BTN_LEFT &&
-        server->interactive.action == FWM_ACTION_NONE && server->tray_buffer) {
-        double tx = server->cursor->x - server->tray_buffer->node.x;
-        double ty = server->cursor->y - server->tray_buffer->node.y;
-        if (tray_modes_pill_hit(tx, ty)) {
+        server->interactive.action == FWM_ACTION_NONE) {
+        double tx, ty;
+        if (tray_under_pointer(server, &tx, &ty) && tray_modes_pill_hit(tx, ty)) {
             server_toggle_modes_menu(server);
             server->group_click = 1;
             return;
@@ -305,10 +318,9 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
 
     // Desktop indicators: a left click jumps to that desktop.
     if (event->state == WL_POINTER_BUTTON_STATE_PRESSED && event->button == BTN_LEFT &&
-        server->interactive.action == FWM_ACTION_NONE && server->tray_buffer) {
-        double tx = server->cursor->x - server->tray_buffer->node.x;
-        double ty = server->cursor->y - server->tray_buffer->node.y;
-        int d = tray_desktop_hit(tx, ty);
+        server->interactive.action == FWM_ACTION_NONE) {
+        double tx, ty;
+        int d = tray_under_pointer(server, &tx, &ty) ? tray_desktop_hit(tx, ty) : -1;
         if (d >= 0) {
             server_goto_desktop(server, d, 0);
             server->group_click = 1; /* swallow the matching release */
@@ -381,16 +393,16 @@ static void handle_cursor_axis(struct wl_listener *listener, void *data) {
     // it never also scrolls whatever window happens to be under the tray.
     // Vertical only: a touchpad sends both axes in one frame, and honouring
     // horizontal too would step two desktops per gesture.
-    if (server->tray_buffer && event->delta != 0.0 &&
-        event->orientation == WL_POINTER_AXIS_VERTICAL_SCROLL) {
-        double tx = server->cursor->x - server->tray_buffer->node.x;
-        double ty = server->cursor->y - server->tray_buffer->node.y;
-        if (tray_desktop_island_hit(tx, ty)) {
+    double stx, sty;
+    if (event->delta != 0.0 &&
+        event->orientation == WL_POINTER_AXIS_VERTICAL_SCROLL &&
+        tray_under_pointer(server, &stx, &sty)) {
+        if (tray_desktop_island_hit(stx, sty)) {
             /* Step from where the camera is HEADED, not where it is: spinning
              * the wheel several notches must advance several desktops rather
              * than fight the slide still in flight. */
             int here = expo_target_desktop(server);
-            if (here < 0) here = server->target_camera_x / server->screen_width;
+            if (here < 0) here = server_active_desktop(server);
             int d = here + (event->delta > 0.0 ? 1 : -1);
             int seam = 0;
             if (d < 0 || d >= FWM_DESKTOPS) {

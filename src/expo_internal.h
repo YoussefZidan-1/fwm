@@ -54,6 +54,9 @@ typedef struct {
 
 struct FwmExpo {
     FwmServer *server;
+    /* The monitor the strip belongs to: it opens on the screen the pointer is
+     * on, shows that screen's desktops and lands its choice there. */
+    FwmOutput *out;
 
     struct wlr_scene_tree *tree;
     struct wlr_scene_rect *backdrop;
@@ -192,7 +195,7 @@ void expo_live_pass(FwmExpo *e, double now);
 /* ── expo_draw.c ──────────────────────────────────────────────────────── */
 void expo_layout(FwmExpo *e);
 void expo_canvas_dirty(FwmExpo *e);
-void expo_set_world_visible(FwmServer *server, bool visible);
+void expo_set_world_visible(FwmServer *server, FwmOutput *out, bool visible);
 
 /* ── expo_input.c ─────────────────────────────────────────────────────── */
 void expo_clamp_pan(FwmExpo *e);

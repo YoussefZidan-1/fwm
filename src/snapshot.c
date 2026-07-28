@@ -113,7 +113,7 @@ bool snapshot_subtree(FwmServer *server, struct wlr_buffer *dst,
     return wlr_render_pass_submit(pass);
 }
 
-bool snapshot_world(FwmServer *server, struct wlr_buffer *dst) {
+bool snapshot_world(FwmServer *server, FwmOutput *out, struct wlr_buffer *dst) {
     if (!server->wlr_renderer || !dst) return false;
 
     struct wlr_render_pass *pass =
@@ -131,14 +131,15 @@ bool snapshot_world(FwmServer *server, struct wlr_buffer *dst) {
      * whose CPU side the wallpaper then freed, so importing them again yields
      * nothing at all. It is the same trap the desktop strip's cards fell into
      * twice; see wallpaper.h. */
-    FwmWallpaper *wp = server->wallpaper;
+    FwmOutput *sout = out ? out : server_active_output(server);
+    FwmWallpaper *wp = sout ? sout->wallpaper : NULL;
     for (int i = 0; i < wallpaper_layer_count(wp); i++) {
         struct wlr_buffer *src = wallpaper_layer_buffer(wp, i);
         if (!src) continue;
         struct wlr_texture *tex = wlr_texture_from_buffer(server->wlr_renderer, src);
         if (!tex) continue;
         struct wlr_fbox crop;
-        wallpaper_layer_crop(wp, i, server->camera_x,
+        wallpaper_layer_crop(wp, i, sout ? sout->camera_x : 0,
                              server->screen_width, server->screen_height, &crop);
         wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){
             .texture = tex,
@@ -164,9 +165,13 @@ bool snapshot_world(FwmServer *server, struct wlr_buffer *dst) {
         if (furniture[i]) wlr_scene_node_set_enabled(&furniture[i]->node, false);
     }
 
+    /* Only this monitor's slice of the layout: the scene is laid out across
+     * every screen, and the picture wanted is the one screen. */
     struct snapshot_ctx ctx = {
         .pass = pass, .renderer = server->wlr_renderer,
-        .origin_x = 0, .origin_y = 0, .scale = 1.0,
+        .origin_x = sout ? -sout->box.x : 0,
+        .origin_y = sout ? -sout->box.y : 0,
+        .scale = 1.0,
     };
     wlr_scene_node_for_each_buffer(&server->scene->tree.node, snapshot_add_buffer, &ctx);
 

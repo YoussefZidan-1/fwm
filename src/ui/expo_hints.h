@@ -30,7 +30,11 @@
  * the camera is allowed off its seat — what flying around it costs. */
 
 /* Create the panel, centred along the bottom. `flight` picks the second set. */
+/* `origin_x`/`origin_y` place the bar on the strip's own monitor: it lives in
+ * the shared overlay tree, so unlike the rest of the strip it does not inherit
+ * that monitor's position. */
 struct wlr_scene_buffer *expo_hints_show(struct wlr_scene_tree *parent,
+                                         int origin_x, int origin_y,
                                          int screen_w, int screen_h, bool flight);
 
 /* Redraw for a change of zoom step. Cheap and idempotent: it only redraws when

@@ -57,6 +57,69 @@ typedef enum {
 
 struct FwmView;
 struct Launcher;
+struct FwmServer;
+
+/* One monitor.
+ *
+ * The world is a strip of FWM_DESKTOPS columns, each the size of the primary
+ * monitor. A monitor is a WINDOW ONTO that strip: it shows one column, the one
+ * its `desktop` names, and `camera_x` is where its left edge sits in world
+ * coordinates. Two monitors are two independent windows onto the same strip —
+ * which is what makes them independent screens rather than one wide desktop.
+ *
+ * A desktop is shown by at most one monitor at a time. Windows on a desktop
+ * that no monitor is showing are parked off the layout (see server_place_node);
+ * nothing draws them and nothing has to remember they are hidden. */
+typedef struct FwmOutput {
+    struct wl_list link;
+    struct FwmServer *server;
+    struct wlr_output *wlr_output;
+    struct wlr_box box;      /* position and size in layout coordinates */
+    int enabled;             /* 0 when [[output]] turned this screen off */
+
+    int desktop;             /* which of the ten columns this monitor shows */
+    int camera_x;            /* world x of this monitor's left edge */
+    int target_camera_x;
+    /* Desktop-switch slide: timed ease-in-out from cam_anim_from to
+     * cam_anim_to; retargets smoothly if target_camera_x changes mid-flight. */
+    int cam_anim;
+    int cam_anim_from, cam_anim_to;
+    double cam_anim_t;
+    /* Continuous free pan (a held move_camera: bind). Must NOT use the slide
+     * above: that animator restarts its fixed-duration ease every time the
+     * target moves, and a held bind moves it every 40ms, so the camera only
+     * ever completed the slowest ~1% of an ease-in-out and then caught up in
+     * one jump on release. Free pan chases the target exponentially instead. */
+    int cam_free;
+
+    /* This monitor's own wallpaper, fitted to its own size, panned by its own
+     * camera. */
+    struct FwmWallpaper *wallpaper;
+    struct FwmWallpaper *wallpaper_prev;  /* outgoing set, alive during a fade */
+    /* Its own status strip, at the top of this monitor. */
+    struct wlr_scene_buffer *tray_buffer;
+    struct wlr_box usable_area;           /* this monitor minus exclusive zones */
+
+    /* Impact shake, and the slide across the ring's join. Both move what this
+     * ONE monitor draws without moving its camera — the camera must not move,
+     * or edge auto-scroll and the active-desktop test would see the offset —
+     * so they are added on the way to the scene (server_place_node) instead of
+     * by shifting a tree every monitor shares. */
+    double shake_mag;   /* px; decays to 0 */
+    double shake_t;     /* seconds since the last impact, drives the oscillation */
+    double wrap_slide;  /* px still to travel; 0 when nothing is sliding */
+    int wrap_dir;       /* +1 travelling right, -1 left */
+    struct wlr_scene_buffer *wrap_ghost;   /* the desktop being left */
+    struct wlr_buffer *wrap_ghost_buf;
+    int render_dx, render_dy;              /* the two of them, resolved */
+    /* The desktop strip has taken this screen over: its windows are parked off
+     * the layout until the strip closes. Per monitor, so opening the strip on
+     * one screen leaves the other one working. */
+    int hide_world;
+
+    struct wl_listener frame;
+    struct wl_listener destroy;
+} FwmOutput;
 
 typedef struct {
     FwmInteractiveAction action;
@@ -149,8 +212,6 @@ typedef struct FwmServer {
     struct wlr_scene_tree *ls_bottom;
     struct wlr_scene_tree *ls_top;
     struct wlr_scene_tree *ls_overlay;
-    struct FwmWallpaper *wallpaper;
-    struct FwmWallpaper *wallpaper_prev; /* outgoing set, alive during a cross-fade */
     /* Audio spectrum bars along the bottom of the screen. NULL whenever [cava]
      * is off, fwm was built without PipeWire, or no capture stream could be
      * opened — all three are ordinary, and every use site must expect NULL. */
@@ -186,6 +247,9 @@ typedef struct FwmServer {
     
     /* Inputs */
     struct wl_listener new_output;
+    /* Fires after an output joins, leaves or changes mode — the single place
+     * the world is resized to fit every monitor. */
+    struct wl_listener output_layout_change;
     struct wl_listener new_input;
     struct wl_listener cursor_motion;
     struct wl_listener cursor_motion_absolute;
@@ -340,19 +404,6 @@ typedef struct FwmServer {
     
     /* Physics and desktop coordinates */
     PhysicsWorld physics;
-    int camera_x;
-    int target_camera_x;
-    /* Desktop-switch slide: timed ease-in-out from cam_anim_from to
-     * cam_anim_to; retargets smoothly if target_camera_x changes mid-flight. */
-    int cam_anim;
-    int cam_anim_from, cam_anim_to;
-    double cam_anim_t;
-    /* Continuous free pan (a held move_camera: bind). Must NOT use the slide
-     * above: that animator restarts its fixed-duration ease every time the
-     * target moves, and a held bind moves it every 40ms, so the camera only
-     * ever completed the slowest ~1% of an ease-in-out and then caught up in
-     * one jump on release. Free pan chases the target exponentially instead. */
-    int cam_free;
     /* Impact shake. Deliberately a RENDER-ONLY offset applied to the world
      * layer trees: camera_x must not move, because edge auto-scroll and the
      * active-desktop test compare it against target_camera_x exactly. */
@@ -361,22 +412,13 @@ typedef struct FwmServer {
     struct wl_event_source *test_action_timer;
     int focus_desktop;  /* desktop server_refocus last homed the keyboard on */
     int tick_idle;      /* physics timer is on the slow heartbeat */
-    double shake_mag;   /* px; decays to 0 */
-    double shake_t;     /* seconds since the last impact, drives the oscillation */
-    /* The slide across the ring's join. The camera has already jumped when this
-     * starts — the join is never drawn, and there is nothing between desktop
-     * ten and desktop one to draw — so the animation is a lie told carefully:
-     * the world is put back a screen's width and eased into place while a
-     * photograph of the desktop being left travels the other way. RENDER-ONLY,
-     * like the shake, and for the same reason: camera_x must not move, or the
-     * active-desktop test and edge auto-scroll would see the offset. */
-    double wrap_slide;  /* px still to travel; 0 when nothing is sliding */
-    int wrap_dir;       /* +1 travelling right, -1 left */
-    struct wlr_scene_buffer *wrap_ghost;   /* the desktop being left */
-    struct wlr_buffer *wrap_ghost_buf;
+
+    /* The size of ONE desktop, taken from the primary monitor. The world is a
+     * strip of FWM_DESKTOPS columns this wide, and each monitor shows one of
+     * them through its own camera — see FwmOutput and server_output.c. */
     int screen_width;
     int screen_height;
-    
+
     BspNode *bsp_roots[10];
     int desktop_mode[10];
     
@@ -392,7 +434,6 @@ typedef struct FwmServer {
     struct timespec last_anim; /* frame-time clock for visual animations */
     
     /* UI scene nodes */
-    struct wlr_scene_buffer *tray_buffer;
     /* Tray hidden by the user (toggle_tray). Unlike the automatic hide under a
      * real-fullscreen window, this also gives the strip back: tile_area and
      * fake fullscreen stop reserving TRAY_BOTTOM, so windows grow into it. */
@@ -425,6 +466,56 @@ void server_schedule_frames(FwmServer *server);
  * `skip` excludes a view that is unmapping but still listed; NULL otherwise. */
 void server_refocus(FwmServer *server, int desktop, struct FwmView *skip);
 void server_focus_view(FwmServer *server, struct FwmView *view);
+/* ── monitors ─────────────────────────────────────────────────────────────
+ * The world is a strip of FWM_DESKTOPS columns of screen_width; each monitor
+ * shows one column. These are how the rest of the compositor asks "which
+ * screen?" — see FwmOutput above and server_output.c. */
+
+/* The monitor at the layout origin. NULL only before the first one arrives. */
+FwmOutput *server_primary_output(FwmServer *server);
+/* The monitor a LAYOUT point (the cursor, a scene node) is on, or NULL. */
+FwmOutput *server_output_at(FwmServer *server, double lx, double ly);
+/* The monitor the user is working on: the one under the pointer, else the
+ * primary. What a bind means when it says "this desktop". */
+FwmOutput *server_active_output(FwmServer *server);
+/* The monitor showing desktop `d`, or NULL when none is. */
+FwmOutput *server_output_showing(FwmServer *server, int d);
+/* The desktop of the active monitor, and the desktop a world x falls on. */
+int server_active_desktop(FwmServer *server);
+int server_desktop_at_x(FwmServer *server, double wx);
+
+/* World coordinates to layout coordinates, through the monitor showing that
+ * point's desktop. False when no monitor is showing it. */
+bool server_world_to_screen(FwmServer *server, double wx, double wy,
+                            double *sx, double *sy);
+/* Place a scene node at a world position. A window on a desktop that nobody is
+ * showing is parked far off the layout: no monitor covers that area, so it is
+ * not drawn and no visibility flag has to be tracked and put back. */
+void server_place_node(FwmServer *server, struct wlr_scene_node *node,
+                       double wx, double wy);
+/* Move a freshly opened centred panel onto the monitor the user is at. */
+void server_panel_to_active_output(FwmServer *server, struct wlr_scene_buffer *panel);
+
+/* Every window and ghost put back where it belongs. Call after anything that
+ * changes which monitor shows which desktop. */
+void server_views_place(FwmServer *server);
+
+/* Layout coordinates back to world, through the monitor at that point — the
+ * inverse of server_world_to_screen. False when the point is off every
+ * monitor. The pointer is the caller that matters: a click means "this world
+ * position on THIS monitor's desktop". */
+bool server_screen_to_world(FwmServer *server, double lx, double ly,
+                            double *wx, double *wy);
+/* The cursor in world coordinates. Falls back to the active monitor's camera
+ * when the pointer is somehow off every screen, so callers always get a
+ * usable answer. */
+void server_cursor_world(FwmServer *server, double *wx, double *wy);
+
+/* Show desktop `d` on monitor `out`. If another monitor is already showing it
+ * the two trade places, so a desktop is never on two screens at once. `seam`
+ * marks a step across the ring's join, which is jumped rather than slid. */
+void server_output_show_desktop(FwmServer *server, FwmOutput *out, int d, int seam);
+
 void server_apply_tiling(FwmServer *server, int desktop);
 /* Re-run tile positioning against the sizes clients actually committed. Called
  * when a tiled window commits a size different from the one it was asked for. */
