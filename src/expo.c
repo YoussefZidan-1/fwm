@@ -73,10 +73,10 @@ struct FwmExpo {
      * screen — 1.0 is exactly what you were looking at a moment ago, which is
      * what makes entering and leaving a single continuous movement. */
     double zoom, zoom_target;
-    /* How much of a full circle the strip spans: EXPO_ARC_FRAC while it is a
-     * line, 1 once the ring is closed, and eased between the two so `x` bends
-     * the strip shut instead of teleporting its far end. */
-    double ring, ring_target;
+    /* How far open the seam is: 1 while the strip is a line, 0 once the ring is
+     * closed, eased between the two so `x` brings the two ends together
+     * instead of teleporting one of them. */
+    double seam, seam_target;
     /* Free horizontal offset from the home desktop, strip px. Eased like the
      * zoom: an arrow key that teleported the strip sideways left you with no
      * idea which way it had gone. */
@@ -103,7 +103,7 @@ struct FwmExpo {
      * 60fps forever. The flat path has no such problem — setting a node to the
      * position it already has is a no-op in wlr_scene — so this is the price of
      * drawing by hand, and it is one comparison. */
-    double drawn_zoom, drawn_ring, drawn_pan, drawn_drag_x, drawn_drag_y;
+    double drawn_zoom, drawn_seam, drawn_pan, drawn_drag_x, drawn_drag_y;
     int drawn_cam, drawn_items, drawn_wrap;
     void *drawn_hover, *drawn_drag;
     struct wlr_texture *wp_tex[EXPO_MAX_WP_LAYERS];
@@ -190,16 +190,28 @@ static double expo_center(FwmExpo *e) {
 
 /* Radius the strip is bent to, in strip px. 0 means flat — the live view, and
  * the first frames of opening. */
+/* One lap of the ring: the ten cards, plus the seam standing between the last
+ * and the first. Closing the ring shrinks the seam to nothing.
+ *
+ * Everything that goes round — where a card is placed, where a screen point
+ * lands, how far a pan is folded — measures by THIS, not by the ten cards
+ * alone. They are the same number only when the ring is shut, and the
+ * difference is exactly what used to make the end card jump. */
+static double expo_lap(FwmExpo *e) {
+    return FWM_DESKTOPS * expo_pitch(e)
+         + EXPO_SEAM_PITCHES * expo_pitch(e) * e->seam;
+}
+
 static double expo_radius(FwmExpo *e) {
     /* A scene node cannot be a trapezoid, so the fallback path is flat and
      * says so here rather than in six places downstream. */
     if (!e->gl) return 0.0;
     double k = expo_openness(e);
     if (k < 0.02) return 0.0;
-    /* The ten desktops span `ring` of a circle, so a smaller ring is a wider
-     * arc: the same length of strip bent less. */
-    double ring = e->ring > 0.05 ? e->ring : 0.05;
-    return FWM_DESKTOPS * expo_pitch(e) / (2.0 * M_PI * ring) / k;
+    /* A longer lap is a bigger circle: an open strip is bent more gently than
+     * a closed one, which falls out of the seam rather than being a second
+     * knob to tune. */
+    return expo_lap(e) / (2.0 * M_PI) / k;
 }
 
 /* Viewer distance from the front of the strip. The focal length derived from
@@ -277,13 +289,15 @@ static void expo_unproject(FwmExpo *e, double sx, double sy,
  * circle, and only for drawing: the world underneath stays a straight line,
  * for all the reasons closing it properly would cost (mem:ideas/desktop-ring). */
 static double expo_desktop_strip_x(FwmExpo *e, int desktop) {
+    /* Always round the nearest way, whether or not the ring is CLOSED: the
+     * strip lies on a circle either way, and the seam is what says the two ends
+     * have not met. Skipping this while the strip was a "line" is what made the
+     * end card appear out of nowhere as the seam shrank. */
     double x = (double)desktop * expo_pitch(e);
-    if (!e->server->config.camera.wrap) return x;
-
-    double circ = FWM_DESKTOPS * expo_pitch(e);
+    double lap = expo_lap(e);
     double centre = expo_center(e) - e->server->screen_width / 2.0;
-    while (x - centre >  circ / 2.0) x -= circ;
-    while (x - centre < -circ / 2.0) x += circ;
+    while (x - centre >  lap / 2.0) x -= lap;
+    while (x - centre < -lap / 2.0) x += lap;
     return x;
 }
 
@@ -310,14 +324,19 @@ static void expo_point(FwmExpo *e, double sx, double sy,
     expo_unproject(e, sx, sy, &u, &v);
 
     double pitch = expo_pitch(e);
-    double strip_x = expo_center(e) + u;
-    if (e->server->config.camera.wrap) {
-        double circ = FWM_DESKTOPS * pitch;
-        strip_x = fmod(strip_x, circ);
-        if (strip_x < 0) strip_x += circ;
-    }
+    double lap = expo_lap(e);
+    double strip_x = fmod(expo_center(e) + u, lap);
+    if (strip_x < 0) strip_x += lap;
 
+    /* Past the last card is the seam. Its near half belongs to the last
+     * desktop and its far half to the first, so a point dropped in the gap
+     * lands on whichever end it is actually closer to. */
     int d = (int)floor(strip_x / pitch);
+    if (d >= FWM_DESKTOPS) {
+        double into = strip_x - FWM_DESKTOPS * pitch;
+        if (into > (lap - FWM_DESKTOPS * pitch) / 2.0) { d = 0; strip_x -= lap; }
+        else d = FWM_DESKTOPS - 1;
+    }
     if (d < 0) d = 0;
     if (d >= FWM_DESKTOPS) d = FWM_DESKTOPS - 1;
 
@@ -535,8 +554,14 @@ static bool expo_span_visible(FwmExpo *e, const struct scene3d_col *cols, int n,
                               double u0, double u1) {
     double r = expo_radius(e);
     if (r > 0.0) {
-        double lim = M_PI / 2.0 * r;   /* 90 degrees round the circle */
-        if (fabs(u0) > lim && fabs(u1) > lim) return false;
+        /* EITHER end past the horizon, not both. A quarter of the way round
+         * the ring the surface is edge-on, and past it the projection folds
+         * back toward the middle of the screen: a card with one corner over
+         * that line was drawn as a narrow sliver lying across the cards in
+         * front of it. What is lost by dropping it whole is a shape that was
+         * already less than a pixel wide. */
+        double lim = M_PI / 2.0 * r * 0.98;
+        if (fabs(u0) > lim || fabs(u1) > lim) return false;
     }
     float lo = cols[0].x, hi = cols[0].x;
     for (int i = 1; i < n; i++) {
@@ -611,7 +636,7 @@ static void expo_draw_item(FwmExpo *e, ExpoItem *it, double scale) {
 static bool expo_canvas_current(FwmExpo *e) {
     FwmServer *server = e->server;
     bool same = e->drawn_zoom == e->zoom
-             && e->drawn_ring == e->ring
+             && e->drawn_seam == e->seam
              && e->drawn_pan == e->pan
              && e->drawn_cam == server->camera_x
              && e->drawn_items == e->n_items
@@ -623,7 +648,7 @@ static bool expo_canvas_current(FwmExpo *e) {
     if (same) return true;
 
     e->drawn_zoom = e->zoom;
-    e->drawn_ring = e->ring;
+    e->drawn_seam = e->seam;
     e->drawn_pan = e->pan;
     e->drawn_cam = server->camera_x;
     e->drawn_items = e->n_items;
@@ -815,7 +840,7 @@ bool expo_animating(FwmServer *server) {
     FwmExpo *e = server->expo;
     return e && (fabs(e->zoom - e->zoom_target) > 0.001
               || fabs(e->pan - e->pan_target) > 0.5
-              || fabs(e->ring - e->ring_target) > 0.001);
+              || fabs(e->seam - e->seam_target) > 0.001);
 }
 
 static void expo_open(FwmServer *server) {
@@ -834,8 +859,7 @@ static void expo_open(FwmServer *server) {
     e->zoom = 1.0;
     e->zoom_target = EXPO_ZOOM_NEAR;
     e->drawn_zoom = -1.0;   /* nothing drawn yet; the first layout must run */
-    e->ring = e->ring_target =
-        server->config.camera.wrap ? 1.0 : EXPO_ARC_FRAC;
+    e->seam = e->seam_target = server->config.camera.wrap ? 0.0 : 1.0;
     e->home = (server->camera_x + server->screen_width / 2) / server->screen_width;
     if (e->home < 0) e->home = 0;
     if (e->home >= FWM_DESKTOPS) e->home = FWM_DESKTOPS - 1;
@@ -925,9 +949,9 @@ static void expo_close(FwmServer *server, int desktop) {
     if (server->config.camera.wrap) {
         /* On a ring the rebased offset can be most of a circle even though the
          * picture did not move; fly the short way home. */
-        double circ = FWM_DESKTOPS * expo_pitch(e);
-        while (e->pan >  circ / 2.0) e->pan -= circ;
-        while (e->pan < -circ / 2.0) e->pan += circ;
+        double lap = expo_lap(e);
+        while (e->pan >  lap / 2.0) e->pan -= lap;
+        while (e->pan < -lap / 2.0) e->pan += lap;
     }
     e->pan_target = 0.0;
     server->target_camera_x = server->camera_x;
@@ -991,6 +1015,11 @@ void expo_forget_view(FwmServer *server, FwmView *view) {
 
 /* ── animation ────────────────────────────────────────────────────────── */
 
+/* Both live with the input below; the tick needs them for the edge pan that
+ * carries a dragged window off the side of the screen. */
+static void expo_drag_to(FwmExpo *e, double lx, double ly);
+static void expo_clamp_pan(FwmExpo *e);
+
 void expo_tick(FwmServer *server, double dt) {
     FwmExpo *e = server->expo;
     if (!e) return;
@@ -1011,13 +1040,37 @@ void expo_tick(FwmServer *server, double dt) {
     if (fabs(pgap) > 0.5) e->pan += pgap * (1.0 - exp(-EXPO_PAN_SPEED * dt));
     else                  e->pan = e->pan_target;
 
+    /* Carrying a window to a desktop that is not on screen. The hand is at the
+     * edge and cannot go further, so the strip turns under it instead — and on
+     * a closed ring that means a window really can be walked all the way round,
+     * which is most of what closing the ring was for. */
+    if (e->drag && !e->leaving) {
+        double lx = server->cursor->x;
+        double band = EXPO_DRAG_EDGE_PX;
+        int dir = lx >= server->screen_width - band ? 1 : (lx <= band ? -1 : 0);
+        if (dir) {
+            /* Faster the closer to the edge: a window nudged into the band
+             * drifts, one pressed against the screen edge travels. */
+            double into = dir > 0 ? (lx - (server->screen_width - band)) / band
+                                  : (band - lx) / band;
+            if (into < 0.0) into = 0.0;
+            if (into > 1.0) into = 1.0;
+            e->pan_target += dir * into * EXPO_DRAG_PAN_SPEED * expo_pitch(e) * dt;
+            expo_clamp_pan(e);
+            /* No easing while a hand is steering: the window would lag the
+             * strip it is being carried over. */
+            e->pan = e->pan_target;
+            expo_drag_to(e, lx, server->cursor->y);
+        }
+    }
+
     /* Read from the config every frame rather than tracked: `x`, a `fwmctl
      * set` and a config reload all mean the same thing here, and none of them
      * has to know the strip is open. */
-    e->ring_target = server->config.camera.wrap ? 1.0 : EXPO_ARC_FRAC;
-    double rgap = e->ring_target - e->ring;
-    if (fabs(rgap) > 0.001) e->ring += rgap * (1.0 - exp(-EXPO_RING_SPEED * dt));
-    else                    e->ring = e->ring_target;
+    e->seam_target = server->config.camera.wrap ? 0.0 : 1.0;
+    double sgap = e->seam_target - e->seam;
+    if (fabs(sgap) > 0.001) e->seam += sgap * (1.0 - exp(-EXPO_RING_SPEED * dt));
+    else                    e->seam = e->seam_target;
 
     if (e->leaving && e->zoom <= 1.0005) {
         expo_teardown(server);
@@ -1061,9 +1114,9 @@ static void expo_clamp_pan(FwmExpo *e) {
          * followed by the first. Only the accumulated number is bounded, and
          * folding it by a whole circumference is invisible — every card is
          * placed modulo that same circumference. */
-        double circ = FWM_DESKTOPS * pitch;
-        while (e->pan_target >  circ / 2.0) { e->pan_target -= circ; e->pan -= circ; }
-        while (e->pan_target < -circ / 2.0) { e->pan_target += circ; e->pan += circ; }
+        double lap = expo_lap(e);
+        while (e->pan_target >  lap / 2.0) { e->pan_target -= lap; e->pan -= lap; }
+        while (e->pan_target < -lap / 2.0) { e->pan_target += lap; e->pan += lap; }
         return;
     }
 
@@ -1072,6 +1125,18 @@ static void expo_clamp_pan(FwmExpo *e) {
     double hi = (FWM_DESKTOPS - 1 - e->home) * pitch + half;
     if (e->pan_target < lo) e->pan_target = lo;
     if (e->pan_target > hi) e->pan_target = hi;
+}
+
+/* Put the dragged window where the cursor is. Through expo_point, so it works
+ * at any curvature and on either side of the seam. */
+static void expo_drag_to(FwmExpo *e, double lx, double ly) {
+    if (!e->drag) return;
+    int d;
+    double wx, wy;
+    expo_point(e, lx, ly, &d, &wx, &wy);
+    e->drag->wx = wx - e->drag_off_x;
+    e->drag->wy = wy - e->drag_off_y;
+    e->drag->desktop = d;
 }
 
 /* Sends the strip; expo_tick brings it. */
@@ -1102,9 +1167,9 @@ bool expo_goto_desktop(FwmServer *server, int d) {
          * card, not nine backwards — the same rule server_goto_desktop follows
          * outside the strip, except that here it is a movement and not a jump,
          * because on a ring there is a picture of the way round. */
-        double circ = FWM_DESKTOPS * expo_pitch(e);
-        while (e->pan_target - e->pan >  circ / 2.0) e->pan_target -= circ;
-        while (e->pan_target - e->pan < -circ / 2.0) e->pan_target += circ;
+        double lap = expo_lap(e);
+        while (e->pan_target - e->pan >  lap / 2.0) e->pan_target -= lap;
+        while (e->pan_target - e->pan < -lap / 2.0) e->pan_target += lap;
     }
     expo_clamp_pan(e);
     return true;
@@ -1165,12 +1230,7 @@ bool expo_handle_motion(FwmServer *server, double lx, double ly) {
     }
 
     if (e->drag) {
-        int d;
-        double wx, wy;
-        expo_point(e, lx, ly, &d, &wx, &wy);
-        e->drag->wx = wx - e->drag_off_x;
-        e->drag->wy = wy - e->drag_off_y;
-        e->drag->desktop = d;
+        expo_drag_to(e, lx, ly);
     } else {
         e->hover = expo_item_at(e, lx, ly);
     }

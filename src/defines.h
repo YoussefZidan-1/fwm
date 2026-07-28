@@ -108,14 +108,25 @@
  * The curvature is scaled by how far the strip has opened, so at the live view
  * it is exactly zero and entering does not bend anything: the flat mapping is
  * the k = 0 case of the same projection, not a separate code path. */
-/* How much of a full circle the strip spans while it is a LINE. Less than one
- * is what makes it read as a strip with two ends rather than a ring you happen
- * to be looking at the near side of; `x` closes it the rest of the way, and
- * the travel between the two is the animation of closing. */
-#define EXPO_ARC_FRAC       0.55
-/* How fast that closing runs, 1/s. Slower than the zoom on purpose: it is a
+/* The seam: how far apart the two ends of the strip stand while it is a LINE,
+ * in desktop pitches. The strip always lies on a circle — closing it is these
+ * two ends coming together, not the whole thing bending further, which is both
+ * what "join" means and the only version that still reads as a join when the
+ * ring is looked at from an angle.
+ *
+ * It also has to be the SAME number the placement wraps by. Wrapping cards by
+ * ten pitches while the circle was thirteen long is what teleported the end
+ * card while the ring closed. */
+#define EXPO_SEAM_PITCHES   3.0
+/* How fast the seam closes, 1/s. Slower than the zoom on purpose: it is a
  * change of shape, and one that is over before it is seen has not been seen. */
 #define EXPO_RING_SPEED     5.0
+/* Dragging a window to the edge of the screen turns the strip under it, so a
+ * window can be carried to a desktop that is not on screen — and, on a ring,
+ * all the way round. Trigger band in screen px, and the speed in pitches per
+ * second at the very edge. */
+#define EXPO_DRAG_EDGE_PX   90
+#define EXPO_DRAG_PAN_SPEED 1.6
 /* Viewer distance from the front of the strip. Smaller is a wider lens: more
  * dramatic, and quicker to look wrong at the edges of the screen. */
 #define EXPO_CAM_DIST       2.2
