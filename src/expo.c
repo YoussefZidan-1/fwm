@@ -81,6 +81,17 @@ struct FwmExpo {
      * zoom: an arrow key that teleported the strip sideways left you with no
      * idea which way it had gone. */
     double pan, pan_target;
+    /* The orbit: how far the camera is lifted above the ring and how far it is
+     * pulled back. Both are DEVIATIONS — they ease back to level and 1 the
+     * moment the strip is asked to do anything else, because the property
+     * worth protecting is that the strip and the live screen coincide exactly
+     * at zoom 1.0. Only offered at the far zoom step: near the strip is
+     * something you work in, and a tilted desktop is not something to work in.
+     */
+    double tilt, tilt_target;
+    double dist, dist_target;
+    int orbiting;                    /* middle button held */
+    double orbit_x, orbit_y;         /* cursor at the last orbit sample */
     int home;            /* desktop the strip was entered from */
     int leaving;         /* animating out; torn down when the zoom lands */
 
@@ -104,6 +115,7 @@ struct FwmExpo {
      * position it already has is a no-op in wlr_scene — so this is the price of
      * drawing by hand, and it is one comparison. */
     double drawn_zoom, drawn_seam, drawn_pan, drawn_drag_x, drawn_drag_y;
+    double drawn_tilt, drawn_dist;
     int drawn_cam, drawn_items, drawn_wrap;
     void *drawn_hover, *drawn_drag;
     struct wlr_texture *wp_tex[EXPO_MAX_WP_LAYERS];
@@ -173,23 +185,34 @@ static double expo_center(FwmExpo *e) {
          + e->home * expo_gap(e) + e->pan;
 }
 
-/* ── the projection ───────────────────────────────────────────────────────
- *
- * The strip lies on a cylinder whose whole circumference is the ten desktops,
- * so the card in front of you faces you and its neighbours turn away by
- * exactly their share of the circle. The curvature is scaled by how far the
- * strip has opened, which is what makes the flat view the k = 0 case of this
- * same projection rather than a second mode: at zoom 1.0 every formula below
- * reduces to the `u * scale + half a screen` the strip used before it had a
- * third dimension, and entering therefore bends nothing at first.
- *
- * Only the vertical axis turns. That is not a simplification of a nicer model:
- * it is what puts a whole COLUMN of the surface at one depth, which is what
- * lets the thing be drawn as strips of columns (see rotate.h) and inverted in
- * closed form below. */
+/* Defined further down with the input and the camera they belong to; the tick
+ * and the close path need them earlier. */
+static void expo_drag_to(FwmExpo *e, double lx, double ly);
+static void expo_clamp_pan(FwmExpo *e);
+static bool expo_can_orbit(FwmExpo *e);
+static void expo_camera_home(FwmExpo *e);
 
-/* Radius the strip is bent to, in strip px. 0 means flat — the live view, and
- * the first frames of opening. */
+/* ── the ring in space ────────────────────────────────────────────────────
+ *
+ * The strip lies on a circle whose circumference is the ten desktops plus the
+ * seam, and each desktop is a FLAT facet of that circle — a chord, not a piece
+ * of the arc. Flat is not an approximation here, it is what a desktop is; and
+ * it means a card is four corners rather than a tessellated bend, because a
+ * plane in perspective is reproduced exactly by two triangles with a real w.
+ *
+ * The camera orbits the front of the strip: `pan` turns the ring under it
+ * (that degree of freedom always existed), `tilt` lifts it above the ring, and
+ * `dist` pulls it back. All three are held as a DEVIATION that eases to zero,
+ * because the one property worth protecting is that at zoom 1.0 the strip is
+ * pixel-for-pixel the live screen — which is what makes entering and leaving
+ * one movement instead of a substitution.
+ *
+ * Ring space: x right, y down, z toward the viewer, origin at the front of the
+ * strip. At zero curvature, zero tilt and distance 1 every formula below
+ * reduces to `u * scale + half a screen`, exactly as the flat strip had it. */
+
+typedef struct { double x, y, z; } ExpoPt;
+
 /* One lap of the ring: the ten cards, plus the seam standing between the last
  * and the first. Closing the ring shrinks the seam to nothing.
  *
@@ -202,6 +225,8 @@ static double expo_lap(FwmExpo *e) {
          + EXPO_SEAM_PITCHES * expo_pitch(e) * e->seam;
 }
 
+/* Radius the strip is bent to, in strip px. 0 means flat — the live view, the
+ * first frames of opening, and the whole fallback path. */
 static double expo_radius(FwmExpo *e) {
     /* A scene node cannot be a trapezoid, so the fallback path is flat and
      * says so here rather than in six places downstream. */
@@ -214,85 +239,67 @@ static double expo_radius(FwmExpo *e) {
     return expo_lap(e) / (2.0 * M_PI) / k;
 }
 
-/* Viewer distance from the front of the strip. The focal length derived from
- * it keeps the middle of the strip exactly the size the flat mapping drew it,
- * so the zoom means the same thing in both. */
+/* Base viewer distance, and the focal length taken from it. The focal length
+ * deliberately does NOT follow `dist`: if it did, pulling the camera back
+ * would narrow the lens by the same amount and nothing would appear to move. */
 static double expo_dist(FwmExpo *e) {
-    return EXPO_CAM_DIST * expo_pitch(e);
+    return EXPO_CAM_DIST * expo_pitch(e) * e->dist;
 }
 
-/* Strip offset from the middle of the screen → projected x and view depth. The
- * depth comes back because everything else on that column — its top, its
- * bottom, its texture — is divided by the same number. */
-static void expo_project(FwmExpo *e, double u, double *sx, double *depth) {
-    double d = expo_dist(e), f = expo_scale(e) * d;
-    double r = expo_radius(e);
+static double expo_focal(FwmExpo *e) {
+    return expo_scale(e) * EXPO_CAM_DIST * expo_pitch(e);
+}
 
-    double px, dep;
+/* A point on the strip: `u` strip px from the middle of the screen, `wy` in
+ * world pixels down the desktop. */
+static ExpoPt expo_ring_point(FwmExpo *e, double u, double wy) {
+    double r = expo_radius(e);
+    ExpoPt p = { .y = wy - e->server->screen_height / 2.0 };
     if (r <= 0.0) {
-        px = u;
-        dep = d;
+        p.x = u;
+        p.z = 0.0;
     } else {
         double phi = u / r;
-        px = r * sin(phi);
-        dep = d + r * (1.0 - cos(phi));
+        p.x = r * sin(phi);
+        p.z = r * cos(phi) - r;
     }
-    if (dep < 1.0) dep = 1.0;
-    if (sx) *sx = e->server->screen_width / 2.0 + f * px / dep;
-    if (depth) *depth = dep;
+    return p;
 }
 
-/* A world y at a known depth. Vertical is not bent, so this is the plain
- * perspective divide. */
-static double expo_project_y(FwmExpo *e, double wy, double depth) {
-    double f = expo_scale(e) * expo_dist(e);
-    return e->server->screen_height / 2.0
-         + f * (wy - e->server->screen_height / 2.0) / depth;
+/* A point on a facet, given its two ends: `s` runs 0..1 across the desktop and
+ * may run past either end, which keeps a window that straddles a boundary in
+ * the plane of its own desktop instead of bending it onto the arc. */
+static ExpoPt expo_facet_point(FwmExpo *e, ExpoPt a, ExpoPt b, double s, double wy) {
+    ExpoPt p = { .x = a.x + (b.x - a.x) * s,
+                 .y = wy - e->server->screen_height / 2.0,
+                 .z = a.z + (b.z - a.z) * s };
+    return p;
 }
 
-/* The inverse: screen point → strip offset and world y. Closed form, because
- * the surface is a circle and the line of sight is a line —
- *   X = R sin(phi) / (A - R cos(phi)),   A = D + R
- * rearranges to sin(phi + atan X) = X A / (R sqrt(1 + X^2)).
- *
- * Input has to travel back down the path the pictures went out on, and it must
- * be the SAME path: one place knows about the curve, or the cursor and the
- * cards disagree the moment either is touched. */
-static void expo_unproject(FwmExpo *e, double sx, double sy,
-                           double *u, double *wy) {
-    double d = expo_dist(e), f = expo_scale(e) * d;
-    double r = expo_radius(e);
-    double X = (sx - e->server->screen_width / 2.0) / f;
+/* Ring space → a projected vertex. The tilt is undone here, which is the whole
+ * of the camera: everything else is one perspective divide. */
+static struct scene3d_vert expo_project(FwmExpo *e, ExpoPt p, double u, double v) {
+    double ct = cos(e->tilt), st = sin(e->tilt);
+    double y =  p.y * ct + p.z * st;
+    double z = -p.y * st + p.z * ct;
 
-    double uu, dep;
-    if (r <= 0.0) {
-        uu = X * d;
-        dep = d;
-    } else {
-        double A = d + r;
-        double arg = X * A / (r * sqrt(1.0 + X * X));
-        if (arg >  1.0) arg =  1.0;
-        if (arg < -1.0) arg = -1.0;
-        double phi = asin(arg) - atan(X);
-        uu = phi * r;
-        dep = A - r * cos(phi);
-        if (dep < 1.0) dep = 1.0;
-    }
-    if (u) *u = uu;
-    if (wy) *wy = e->server->screen_height / 2.0
-                + (sy - e->server->screen_height / 2.0) * dep / f;
+    double w = expo_dist(e) - z;
+    double f = expo_focal(e);
+    struct scene3d_vert out = {
+        .x = (float)(e->server->screen_width / 2.0 + f * p.x / (w > 1.0 ? w : 1.0)),
+        .y = (float)(e->server->screen_height / 2.0 + f * y / (w > 1.0 ? w : 1.0)),
+        .w = (float)w,
+        .u = (float)u, .v = (float)v,
+    };
+    return out;
 }
 
-/* Where a desktop's card stands along the strip. With the ring closed it is
- * whichever way round is nearer, so desktop 9 stands to the LEFT of desktop 0
- * instead of nine cards away. This is the one place the strip knows it is a
- * circle, and only for drawing: the world underneath stays a straight line,
- * for all the reasons closing it properly would cost (mem:ideas/desktop-ring). */
+/* Where a desktop's card stands along the strip. Always the nearest way round,
+ * whether or not the ring is CLOSED: the strip lies on a circle either way, and
+ * the seam is what says the two ends have not met. Skipping this while the
+ * strip was a "line" is what made the end card appear out of nowhere as the
+ * seam shrank. */
 static double expo_desktop_strip_x(FwmExpo *e, int desktop) {
-    /* Always round the nearest way, whether or not the ring is CLOSED: the
-     * strip lies on a circle either way, and the seam is what says the two ends
-     * have not met. Skipping this while the strip was a "line" is what made the
-     * end card appear out of nowhere as the seam shrank. */
     double x = (double)desktop * expo_pitch(e);
     double lap = expo_lap(e);
     double centre = expo_center(e) - e->server->screen_width / 2.0;
@@ -308,44 +315,96 @@ static double expo_offset(FwmExpo *e, double wx, int desktop) {
          - expo_center(e);
 }
 
-static void expo_to_screen(FwmExpo *e, double wx, double wy, int desktop,
-                           double *sx, double *sy) {
-    double depth;
-    expo_project(e, expo_offset(e, wx, desktop), sx, &depth);
-    if (sy) *sy = expo_project_y(e, wy, depth);
+/* The two ends of a desktop's facet, in ring space. */
+static void expo_facet_ends(FwmExpo *e, int desktop, ExpoPt *a, ExpoPt *b) {
+    double sw = e->server->screen_width;
+    *a = expo_ring_point(e, expo_offset(e, (double)desktop * sw, desktop), 0);
+    *b = expo_ring_point(e, expo_offset(e, ((double)desktop + 1.0) * sw, desktop), 0);
 }
 
-/* Screen point → desktop and the world point on it. The desktop is clamped
- * into range — or wrapped, on a ring — so a point in a gap belongs to the card
- * nearest it. */
-static void expo_point(FwmExpo *e, double sx, double sy,
+/* A world point on a desktop → the screen. Through the FACET, not the arc: a
+ * desktop is the chord between its two ends, and a point half way along it
+ * stands a sagitta inside the circle. Placing it on the arc instead put it a
+ * tenth of a desktop out — invisible while only the flat path used this, and
+ * hundreds of pixels of disagreement with the ray the moment anything checked
+ * one against the other. */
+static void expo_to_screen(FwmExpo *e, double wx, double wy, int desktop,
+                           double *sx, double *sy) {
+    ExpoPt a, b;
+    expo_facet_ends(e, desktop, &a, &b);
+    double s = (wx - (double)desktop * e->server->screen_width)
+             / e->server->screen_width;
+    struct scene3d_vert v = expo_project(e, expo_facet_point(e, a, b, s, wy), 0, 0);
+    if (sx) *sx = v.x;
+    if (sy) *sy = v.y;
+}
+
+/* ── input back down the same path ────────────────────────────────────────
+ *
+ * A closed-form inverse died with the free camera, and good riddance: a ray
+ * against the facets is both more general and shorter. It is still the ONE
+ * place that knows how the strip is shaped — the cursor and the cards cannot
+ * disagree, because they are the same function read in opposite directions. */
+
+/* The line of sight through a screen point, in ring space. */
+static void expo_ray(FwmExpo *e, double sx, double sy, ExpoPt *origin, ExpoPt *dir) {
+    double f = expo_focal(e), d = expo_dist(e);
+    double X = (sx - e->server->screen_width / 2.0) / f;
+    double Y = (sy - e->server->screen_height / 2.0) / f;
+    double ct = cos(e->tilt), st = sin(e->tilt);
+
+    /* Camera space runs (X w, Y w, D - w) as w grows; rotating that back into
+     * ring space is linear in w, so the eye is the w = 0 end and the direction
+     * is what one unit of w adds. */
+    origin->x = 0.0;
+    origin->y = -d * st;
+    origin->z =  d * ct;
+    dir->x = X;
+    dir->y = Y * ct + st;
+    dir->z = Y * st - ct;
+}
+
+/* Screen point → desktop and the world point on it. False when the line of
+ * sight misses the strip entirely (the backdrop, or straight through the
+ * seam), which callers must treat as "nothing there" rather than as desktop 0. */
+static bool expo_point(FwmExpo *e, double sx, double sy,
                        int *desktop, double *wx, double *wy) {
-    double u, v;
-    expo_unproject(e, sx, sy, &u, &v);
+    ExpoPt o, dir;
+    expo_ray(e, sx, sy, &o, &dir);
 
-    double pitch = expo_pitch(e);
-    double lap = expo_lap(e);
-    double strip_x = fmod(expo_center(e) + u, lap);
-    if (strip_x < 0) strip_x += lap;
+    double sw = e->server->screen_width;
+    double best_t = 0.0;
+    bool found = false;
 
-    /* Past the last card is the seam. Its near half belongs to the last
-     * desktop and its far half to the first, so a point dropped in the gap
-     * lands on whichever end it is actually closer to. */
-    int d = (int)floor(strip_x / pitch);
-    if (d >= FWM_DESKTOPS) {
-        double into = strip_x - FWM_DESKTOPS * pitch;
-        if (into > (lap - FWM_DESKTOPS * pitch) / 2.0) { d = 0; strip_x -= lap; }
-        else d = FWM_DESKTOPS - 1;
+    for (int d = 0; d < FWM_DESKTOPS; d++) {
+        ExpoPt a, b;
+        expo_facet_ends(e, d, &a, &b);
+        double ex = b.x - a.x, ez = b.z - a.z;
+        /* The facet's plane: its horizontal edge crossed with straight down,
+         * which points OUT of the drum. A ray running with that normal rather
+         * than against it is looking at the card's back, from inside the ring:
+         * it is a surface the eye cannot see, and a click must never land on
+         * it — the nearer card in front of it owns that pixel. */
+        double nx = -ez, nz = ex;
+        double denom = nx * dir.x + nz * dir.z;
+        if (denom >= -1e-9) continue;   /* edge-on, or seen from behind */
+        double t = (nx * (a.x - o.x) + nz * (a.z - o.z)) / denom;
+        if (t <= 0.0) continue;                       /* behind the viewer */
+        if (found && t >= best_t) continue;           /* something nearer already */
+
+        double hx = o.x + dir.x * t, hz = o.z + dir.z * t;
+        double len2 = ex * ex + ez * ez;
+        if (len2 < 1e-9) continue;
+        double s = ((hx - a.x) * ex + (hz - a.z) * ez) / len2;
+        if (s < 0.0 || s > 1.0) continue;             /* past the card's ends */
+
+        best_t = t;
+        found = true;
+        *desktop = d;
+        *wx = (double)d * sw + s * sw;
+        *wy = o.y + dir.y * t + e->server->screen_height / 2.0;
     }
-    if (d < 0) d = 0;
-    if (d >= FWM_DESKTOPS) d = FWM_DESKTOPS - 1;
-
-    *desktop = d;
-    /* Back into world coordinates — the gaps are drawing, not geometry — by
-     * undoing expo_offset: how far into its own card the point fell, added to
-     * where that card starts in the world. */
-    *wx = (double)d * e->server->screen_width + (strip_x - d * pitch);
-    *wy = v;
+    return found;
 }
 
 /* Where the strip is looking, as a fractional desktop index — the same number
@@ -507,129 +566,170 @@ static void expo_snap_windows(FwmExpo *e) {
     }
 }
 
-/* ── drawing the curved strip ─────────────────────────────────────────── */
+/* ── drawing the ring ─────────────────────────────────────────────────── */
 
-/* Tessellate a span of the strip into columns. `u0`/`u1` are strip offsets
- * from the middle of the screen, `wy0`/`wy1` the world top and bottom. Each
- * column carries its own depth, which is what makes the sampling
- * perspective-correct rather than a bent affine smear. */
-static int expo_columns(FwmExpo *e, double u0, double u1, double wy0, double wy1,
-                        int n, struct scene3d_col *cols) {
-    if (n < 2) n = 2;
-    if (n > SCENE3D_MAX_COLS) n = SCENE3D_MAX_COLS;
-    for (int i = 0; i < n; i++) {
-        double t = (double)i / (n - 1);
-        double u = u0 + (u1 - u0) * t;
-        double sx, depth;
-        expo_project(e, u, &sx, &depth);
-        cols[i].x = (float)sx;
-        cols[i].y_top = (float)expo_project_y(e, wy0, depth);
-        cols[i].y_bot = (float)expo_project_y(e, wy1, depth);
-        cols[i].w = (float)depth;
-        cols[i].u = (float)t;
-    }
-    return n;
+/* Vertex order everywhere below: top-left, bottom-left, top-right,
+ * bottom-right — a triangle strip, and the winding the visibility test reads. */
+enum { QTL = 0, QBL, QTR, QBR };
+
+static void expo_quad(FwmExpo *e, ExpoPt a, ExpoPt b, double s0, double s1,
+                      double wy0, double wy1, double u0, double u1,
+                      struct scene3d_vert q[4]) {
+    q[QTL] = expo_project(e, expo_facet_point(e, a, b, s0, wy0), u0, 0.0f);
+    q[QBL] = expo_project(e, expo_facet_point(e, a, b, s0, wy1), u0, 1.0f);
+    q[QTR] = expo_project(e, expo_facet_point(e, a, b, s1, wy0), u1, 0.0f);
+    q[QBR] = expo_project(e, expo_facet_point(e, a, b, s1, wy1), u1, 1.0f);
 }
 
-/* The same shape grown by `m` screen px on every side, for the frame drawn
- * behind a card or a hovered window. */
-static void expo_inflate(struct scene3d_col *cols, int n, double m) {
-    for (int i = 0; i < n; i++) {
-        cols[i].y_top -= (float)m;
-        cols[i].y_bot += (float)m;
-    }
-    cols[0].x -= (float)m;
-    cols[n - 1].x += (float)m;
-}
-
-/* Off the back of the cylinder, or off the sides of the screen.
+/* Behind the eye, turned away, or off the screen.
  *
- * The first half is not optional and applies to WINDOWS as much as to cards:
- * the strip's ten desktops are a full circle, so anything more than two and a
- * half desktops away has gone round the back — and the projection of a point
- * behind the viewer lands cheerfully in the middle of the screen. Windows left
- * out of this test were drawn on top of the cards in front of them, which is
- * exactly what it looked like. */
-static bool expo_span_visible(FwmExpo *e, const struct scene3d_col *cols, int n,
-                              double u0, double u1) {
-    double r = expo_radius(e);
-    if (r > 0.0) {
-        /* EITHER end past the horizon, not both. A quarter of the way round
-         * the ring the surface is edge-on, and past it the projection folds
-         * back toward the middle of the screen: a card with one corner over
-         * that line was drawn as a narrow sliver lying across the cards in
-         * front of it. What is lost by dropping it whole is a shape that was
-         * already less than a pixel wide. */
-        double lim = M_PI / 2.0 * r * 0.98;
-        if (fabs(u0) > lim || fabs(u1) > lim) return false;
+ * The winding test is what replaces every angle-based cull the cylinder
+ * needed: a facet on the far side of the drum comes out wound backwards, and
+ * so does one folded past the horizon. It is also the only test that stays
+ * right once the camera can be anywhere. */
+static bool expo_quad_visible(FwmExpo *e, const struct scene3d_vert q[4]) {
+    for (int i = 0; i < 4; i++)
+        if (q[i].w <= 1.0f) return false;
+
+    const struct scene3d_vert *ring[4] = { &q[QTL], &q[QTR], &q[QBR], &q[QBL] };
+    double area = 0.0;
+    for (int i = 0; i < 4; i++) {
+        const struct scene3d_vert *p = ring[i], *n = ring[(i + 1) % 4];
+        area += (double)p->x * n->y - (double)n->x * p->y;
     }
-    float lo = cols[0].x, hi = cols[0].x;
-    for (int i = 1; i < n; i++) {
-        if (cols[i].x < lo) lo = cols[i].x;
-        if (cols[i].x > hi) hi = cols[i].x;
+    if (area <= 0.0) return false;      /* y is down, so front-facing is positive */
+
+    float lo = q[0].x, hi = q[0].x, top = q[0].y, bot = q[0].y;
+    for (int i = 1; i < 4; i++) {
+        if (q[i].x < lo) lo = q[i].x;
+        if (q[i].x > hi) hi = q[i].x;
+        if (q[i].y < top) top = q[i].y;
+        if (q[i].y > bot) bot = q[i].y;
     }
-    return hi >= -8.0f && lo <= e->server->screen_width + 8.0f;
+    return hi >= -8.0f && lo <= e->server->screen_width + 8.0f
+        && bot >= -8.0f && top <= e->server->screen_height + 8.0f;
 }
 
-static void expo_draw_card(FwmExpo *e, int d, int looking_at, double open) {
-    FwmServer *server = e->server;
-    struct scene3d_col cols[SCENE3D_MAX_COLS], frame[SCENE3D_MAX_COLS];
-
-    double u0 = expo_offset(e, (double)d * server->screen_width, d);
-    double u1 = expo_offset(e, (double)(d + 1) * server->screen_width, d);
-    int n = expo_columns(e, u0, u1, 0, server->screen_height,
-                         EXPO_CARD_COLS + 1, cols);
-    if (!expo_span_visible(e, cols, n, u0, u1)) return;
-
-    /* The edge is a filled shape UNDER the card, so only its margin is ever
-     * seen — the same trick the flat path uses, and the only way to draw a
-     * frame around a turned quad without four more meshes. */
-    const FwmTheme *th = theme_get();
-    memcpy(frame, cols, n * sizeof(cols[0]));
-    expo_inflate(frame, n, EXPO_EDGE_PX * open);
-    if (d == looking_at) {
-        scene3d_solid((float[4]){(float)th->accent[0], (float)th->accent[1],
-                                 (float)th->accent[2], 1.0f}, frame, n);
-    } else {
-        scene3d_solid((float[4]){EXPO_EDGE_GREY, EXPO_EDGE_GREY,
-                                 EXPO_EDGE_GREY, 1.0f}, frame, n);
-    }
-
-    scene3d_solid((float[4]){EXPO_CARD_GREY, EXPO_CARD_GREY,
-                             EXPO_CARD_GREY, 1.0f}, cols, n);
-
-    for (int i = 0; i < e->wp_n; i++) {
-        struct wlr_texture *tex = e->wp_tex[i];
-        if (!tex || tex->width <= 0) continue;
-        const struct wlr_fbox *crop = &e->wp_crop[d][i];
-        for (int c = 0; c < n; c++) {
-            double t = (double)c / (n - 1);
-            cols[c].u = (float)((crop->x + crop->width * t) / tex->width);
-        }
-        scene3d_strip(tex, cols, n, 1.0f);
+/* The same quad grown by `m` screen px, for the frame drawn behind a card or a
+ * hovered window. Pushing each corner away from the centre is exact enough at
+ * these sizes and needs no plane of its own. */
+static void expo_inflate(struct scene3d_vert q[4], double m) {
+    double cx = 0.0, cy = 0.0;
+    for (int i = 0; i < 4; i++) { cx += q[i].x; cy += q[i].y; }
+    cx /= 4.0; cy /= 4.0;
+    for (int i = 0; i < 4; i++) {
+        double dx = q[i].x - cx, dy = q[i].y - cy;
+        double len = sqrt(dx * dx + dy * dy);
+        if (len < 1e-6) continue;
+        q[i].x += (float)(dx / len * m);
+        q[i].y += (float)(dy / len * m);
     }
 }
 
 static void expo_draw_item(FwmExpo *e, ExpoItem *it, double scale) {
-    struct scene3d_col cols[SCENE3D_MAX_COLS], frame[SCENE3D_MAX_COLS];
     if (!it->tex) return;
+    FwmServer *server = e->server;
 
-    double u0 = expo_offset(e, it->wx, it->desktop);
-    double u1 = expo_offset(e, it->wx + it->w, it->desktop);
-    int n = expo_columns(e, u0, u1, it->wy, it->wy + it->h,
-                         EXPO_WIN_COLS + 1, cols);
-    if (!expo_span_visible(e, cols, n, u0, u1)) return;
+    ExpoPt a, b;
+    expo_facet_ends(e, it->desktop, &a, &b);
+    double sw = server->screen_width;
+    double s0 = (it->wx - (double)it->desktop * sw) / sw;
+    double s1 = (it->wx + it->w - (double)it->desktop * sw) / sw;
+
+    struct scene3d_vert q[4], frame[4];
+    expo_quad(e, a, b, s0, s1, it->wy, it->wy + it->h, 0.0, 1.0, q);
+    if (!expo_quad_visible(e, q)) return;
 
     if (e->hover == it) {
         const FwmTheme *th = theme_get();
         double m = EXPO_HILIGHT_PX * scale;
         if (m < 2.0) m = 2.0;
-        memcpy(frame, cols, n * sizeof(cols[0]));
-        expo_inflate(frame, n, m);
-        scene3d_solid((float[4]){(float)th->accent[0], (float)th->accent[1],
-                                 (float)th->accent[2], 0.9f}, frame, n);
+        memcpy(frame, q, sizeof(frame));
+        expo_inflate(frame, m);
+        scene3d_quad_solid((float[4]){(float)th->accent[0], (float)th->accent[1],
+                                      (float)th->accent[2], 0.9f}, frame);
     }
-    scene3d_strip(it->tex, cols, n, 1.0f);
+    scene3d_quad(it->tex, q, 1.0f);
+}
+
+static void expo_draw_card(FwmExpo *e, int d, int looking_at, double open,
+                           double scale) {
+    ExpoPt a, b;
+    expo_facet_ends(e, d, &a, &b);
+
+    struct scene3d_vert q[4], frame[4];
+    expo_quad(e, a, b, 0.0, 1.0, 0, e->server->screen_height, 0.0, 1.0, q);
+    if (!expo_quad_visible(e, q)) return;
+
+    /* The edge is a filled shape UNDER the card, so only its margin is ever
+     * seen — the only way to frame a turned quad without four more of them. */
+    const FwmTheme *th = theme_get();
+    memcpy(frame, q, sizeof(frame));
+    expo_inflate(frame, EXPO_EDGE_PX * open);
+    if (d == looking_at) {
+        scene3d_quad_solid((float[4]){(float)th->accent[0], (float)th->accent[1],
+                                      (float)th->accent[2], 1.0f}, frame);
+    } else {
+        scene3d_quad_solid((float[4]){EXPO_EDGE_GREY, EXPO_EDGE_GREY,
+                                      EXPO_EDGE_GREY, 1.0f}, frame);
+    }
+
+    scene3d_quad_solid((float[4]){EXPO_CARD_GREY, EXPO_CARD_GREY,
+                                  EXPO_CARD_GREY, 1.0f}, q);
+
+    for (int i = 0; i < e->wp_n; i++) {
+        struct wlr_texture *tex = e->wp_tex[i];
+        if (!tex || tex->width <= 0) continue;
+        const struct wlr_fbox *crop = &e->wp_crop[d][i];
+        struct scene3d_vert w[4];
+        memcpy(w, q, sizeof(w));
+        float uu0 = (float)(crop->x / tex->width);
+        float uu1 = (float)((crop->x + crop->width) / tex->width);
+        w[QTL].u = w[QBL].u = uu0;
+        w[QTR].u = w[QBR].u = uu1;
+        scene3d_quad(tex, w, 1.0f);
+    }
+
+    /* The windows of this desktop, on top of it and under the next card: with
+     * the camera lifted, a window on the far side must not be painted over the
+     * near side, and per-facet order is what says so. */
+    for (int i = 0; i < e->n_items; i++) {
+        ExpoItem *it = &e->items[i];
+        if (it->desktop == d && it != e->drag) expo_draw_item(e, it, scale);
+    }
+}
+
+/* One end of the drum, so a ring looked at from above is a lid and not a view
+ * into its own far side. Drawn as separate triangles rather than one fan: a
+ * segment can have a corner behind the eye, and dropping it must not tear the
+ * rest apart. */
+static void expo_draw_cap(FwmExpo *e, double wy) {
+    double r = expo_radius(e);
+    if (r <= 0.0) return;
+
+    ExpoPt centre = { .x = 0.0, .y = wy - e->server->screen_height / 2.0,
+                      .z = -r };
+    struct scene3d_vert c = expo_project(e, centre, 0.0, 0.0);
+    if (c.w <= 1.0f) return;
+
+    double span = FWM_DESKTOPS * expo_pitch(e);   /* the cards, not the seam */
+    double u0 = expo_offset(e, 0, 0);
+    int segs = (int)ceil(span / r / EXPO_CAP_SEG);
+    if (segs < 3) segs = 3;
+    if (segs > SCENE3D_MAX_FAN) segs = SCENE3D_MAX_FAN;
+
+    for (int i = 0; i < segs; i++) {
+        ExpoPt p0 = expo_ring_point(e, u0 + span * i / segs, wy);
+        ExpoPt p1 = expo_ring_point(e, u0 + span * (i + 1) / segs, wy);
+        struct scene3d_vert tri[3] = {
+            c,
+            expo_project(e, p0, 0.0, 0.0),
+            expo_project(e, p1, 0.0, 0.0),
+        };
+        if (tri[1].w <= 1.0f || tri[2].w <= 1.0f) continue;
+        scene3d_fan_solid((float[4]){EXPO_CAP_GREY, EXPO_CAP_GREY,
+                                     EXPO_CAP_GREY, 1.0f}, tri, 3);
+    }
 }
 
 /* True when the picture would come out identical to the one already on screen. */
@@ -638,6 +738,8 @@ static bool expo_canvas_current(FwmExpo *e) {
     bool same = e->drawn_zoom == e->zoom
              && e->drawn_seam == e->seam
              && e->drawn_pan == e->pan
+             && e->drawn_tilt == e->tilt
+             && e->drawn_dist == e->dist
              && e->drawn_cam == server->camera_x
              && e->drawn_items == e->n_items
              && e->drawn_wrap == server->config.camera.wrap
@@ -650,6 +752,8 @@ static bool expo_canvas_current(FwmExpo *e) {
     e->drawn_zoom = e->zoom;
     e->drawn_seam = e->seam;
     e->drawn_pan = e->pan;
+    e->drawn_tilt = e->tilt;
+    e->drawn_dist = e->dist;
     e->drawn_cam = server->camera_x;
     e->drawn_items = e->n_items;
     e->drawn_wrap = server->config.camera.wrap;
@@ -671,13 +775,22 @@ static void expo_draw_gl(FwmExpo *e) {
     double scale = expo_scale(e);
     int looking_at = expo_view_desktop(server);
 
-    /* Far to near. A convex band cannot occlude itself, but the ring can bring
-     * the far side round into view, and then the order is the whole story. */
+    /* The lid the camera is on the outside of, first: the near cards are drawn
+     * over it, and the far ones are wound backwards and never drawn at all. */
+    if (e->tilt > 0.001) expo_draw_cap(e, 0);
+    else if (e->tilt < -0.001) expo_draw_cap(e, server->screen_height);
+
+    /* Far to near. A flat facet cannot intersect another, so the order of the
+     * whole card — its edge, its wallpaper and its windows together — is all
+     * the depth sorting a drum needs. */
     int order[FWM_DESKTOPS];
     double key[FWM_DESKTOPS];
     for (int d = 0; d < FWM_DESKTOPS; d++) {
+        ExpoPt a, b;
+        expo_facet_ends(e, d, &a, &b);
+        ExpoPt mid = { (a.x + b.x) / 2.0, 0.0, (a.z + b.z) / 2.0 };
         order[d] = d;
-        key[d] = fabs(expo_offset(e, ((double)d + 0.5) * server->screen_width, d));
+        key[d] = expo_project(e, mid, 0, 0).w;
     }
     for (int i = 1; i < FWM_DESKTOPS; i++) {
         for (int j = i; j > 0 && key[order[j]] > key[order[j - 1]]; j--) {
@@ -685,12 +798,9 @@ static void expo_draw_gl(FwmExpo *e) {
         }
     }
     for (int i = 0; i < FWM_DESKTOPS; i++)
-        expo_draw_card(e, order[i], looking_at, open);
+        expo_draw_card(e, order[i], looking_at, open, scale);
 
-    /* Windows over every card, not just their own: one can straddle a desktop
-     * boundary, and the card next door must not be painted over it. */
-    for (int i = 0; i < e->n_items; i++)
-        if (&e->items[i] != e->drag) expo_draw_item(e, &e->items[i], scale);
+    /* The window in hand is above everything, wherever it is being carried. */
     if (e->drag) expo_draw_item(e, e->drag, scale);
 
     scene3d_end();
@@ -807,6 +917,43 @@ static void expo_set_world_visible(FwmServer *server, bool visible) {
         if (trees[i]) wlr_scene_node_set_enabled(&trees[i]->node, visible);
 }
 
+/* FWM_TEST_ORBIT=<radians> opens the strip already zoomed out and tilted, so a
+ * nested run can be photographed from an angle no keypress can be injected to
+ * reach; FWM_TEST_ORBIT_DIST pulls the camera back as well.
+ *
+ * It also round-trips the projection against the ray that inverts it, over a
+ * grid of world points on every desktop. That check earns its keep: the ray is
+ * the one half of this that a screenshot cannot show, and it caught the two
+ * real bugs here — a facet hit from inside the drum, and expo_to_screen
+ * placing a point on the arc where the facet is a chord. Points that come back
+ * "missed" are the ones the eye cannot see either: occluded, or on the far
+ * wall. */
+static void expo_selftest(FwmExpo *e) {
+    FwmServer *server = e->server;
+    if (!getenv("FWM_TEST_ORBIT")) return;
+
+    double worst = 0.0;
+    int misses = 0, tried = 0;
+    for (int d = 0; d < FWM_DESKTOPS; d++) {
+        for (int i = 0; i <= 4; i++) for (int j = 0; j <= 4; j++) {
+            double wx = (double)d * server->screen_width
+                      + server->screen_width * i / 4.0;
+            double wy = server->screen_height * j / 4.0;
+            double sx, sy;
+            expo_to_screen(e, wx, wy, d, &sx, &sy);
+            if (sx < 0 || sx > server->screen_width) continue;
+            if (sy < 0 || sy > server->screen_height) continue;
+            tried++;
+            int gd; double gx, gy;
+            if (!expo_point(e, sx, sy, &gd, &gx, &gy) || gd != d) { misses++; continue; }
+            double err = fabs(gx - wx) + fabs(gy - wy);
+            if (err > worst) worst = err;
+        }
+    }
+    wlr_log(WLR_INFO, "expo: ray round-trip over %d points: worst %.3f px, %d hidden",
+            tried, worst, misses);
+}
+
 /* ── open and close ───────────────────────────────────────────────────── */
 
 static void expo_teardown(FwmServer *server) {
@@ -840,7 +987,9 @@ bool expo_animating(FwmServer *server) {
     FwmExpo *e = server->expo;
     return e && (fabs(e->zoom - e->zoom_target) > 0.001
               || fabs(e->pan - e->pan_target) > 0.5
-              || fabs(e->seam - e->seam_target) > 0.001);
+              || fabs(e->seam - e->seam_target) > 0.001
+              || fabs(e->tilt - e->tilt_target) > 0.0005
+              || fabs(e->dist - e->dist_target) > 0.0005);
 }
 
 static void expo_open(FwmServer *server) {
@@ -860,6 +1009,11 @@ static void expo_open(FwmServer *server) {
     e->zoom_target = EXPO_ZOOM_NEAR;
     e->drawn_zoom = -1.0;   /* nothing drawn yet; the first layout must run */
     e->seam = e->seam_target = server->config.camera.wrap ? 0.0 : 1.0;
+    e->dist = e->dist_target = 1.0;
+    { const char *t = getenv("FWM_TEST_ORBIT");
+      if (t) { e->zoom = e->zoom_target = EXPO_ZOOM_FAR; e->tilt = e->tilt_target = atof(t);
+               const char *dd = getenv("FWM_TEST_ORBIT_DIST");
+               if (dd) e->dist = e->dist_target = atof(dd); } }
     e->home = (server->camera_x + server->screen_width / 2) / server->screen_width;
     if (e->home < 0) e->home = 0;
     if (e->home >= FWM_DESKTOPS) e->home = FWM_DESKTOPS - 1;
@@ -910,6 +1064,8 @@ static void expo_open(FwmServer *server) {
     expo_set_world_visible(server, false);
     expo_layout(e);
 
+    expo_selftest(e);
+
     /* Nothing under the cursor belongs to a client any more, and a client that
      * keeps pointer focus would go on receiving motion through the strip. */
     wlr_seat_pointer_notify_clear_focus(server->seat);
@@ -929,6 +1085,7 @@ static void expo_close(FwmServer *server, int desktop) {
 
     e->leaving = 1;
     e->zoom_target = 1.0;
+    expo_camera_home(e);
     e->hover = NULL;
     e->drag = NULL;
     expo_menu_close(e);
@@ -976,6 +1133,24 @@ void expo_toggle(FwmServer *server) {
     }
 }
 
+/* The far zoom step is the looking-at-it step, and the only one the camera may
+ * leave the canonical view in. Read from the TARGET, so the controls come
+ * alive as soon as `z` is pressed rather than when the zoom finishes. */
+static bool expo_can_orbit(FwmExpo *e) {
+    /* Not on the fallback path: a scene node is an axis-aligned rectangle, and
+     * a strip that cannot even be curved certainly cannot be flown around. */
+    return e->gl && !e->leaving
+        && e->zoom_target > (EXPO_ZOOM_NEAR + EXPO_ZOOM_FAR) / 2.0;
+}
+
+/* Back to level, from anywhere. Everything that means "act on a desktop"
+ * rather than "look at the ring" goes through here. */
+static void expo_camera_home(FwmExpo *e) {
+    e->tilt_target = 0.0;
+    e->dist_target = 1.0;
+    e->orbiting = 0;
+}
+
 void expo_zoom_step(FwmServer *server) {
     FwmExpo *e = server->expo;
     if (!e || e->leaving) return;
@@ -1015,10 +1190,7 @@ void expo_forget_view(FwmServer *server, FwmView *view) {
 
 /* ── animation ────────────────────────────────────────────────────────── */
 
-/* Both live with the input below; the tick needs them for the edge pan that
- * carries a dragged window off the side of the screen. */
-static void expo_drag_to(FwmExpo *e, double lx, double ly);
-static void expo_clamp_pan(FwmExpo *e);
+
 
 void expo_tick(FwmServer *server, double dt) {
     FwmExpo *e = server->expo;
@@ -1067,6 +1239,21 @@ void expo_tick(FwmServer *server, double dt) {
     /* Read from the config every frame rather than tracked: `x`, a `fwmctl
      * set` and a config reload all mean the same thing here, and none of them
      * has to know the strip is open. */
+    /* The orbit is offered at the far zoom step only, and taken away the
+     * instant the strip comes back in — a tilted desktop is a thing to look
+     * at, not a thing to work in. */
+    if (!expo_can_orbit(e)) {
+        e->tilt_target = 0.0;
+        e->dist_target = 1.0;
+        e->orbiting = 0;
+    }
+    double tgap = e->tilt_target - e->tilt;
+    if (fabs(tgap) > 0.0005) e->tilt += tgap * (1.0 - exp(-EXPO_ORBIT_SPEED * dt));
+    else                     e->tilt = e->tilt_target;
+    double dgap = e->dist_target - e->dist;
+    if (fabs(dgap) > 0.0005) e->dist += dgap * (1.0 - exp(-EXPO_ORBIT_SPEED * dt));
+    else                     e->dist = e->dist_target;
+
     e->seam_target = server->config.camera.wrap ? 0.0 : 1.0;
     double sgap = e->seam_target - e->seam;
     if (fabs(sgap) > 0.001) e->seam += sgap * (1.0 - exp(-EXPO_RING_SPEED * dt));
@@ -1149,6 +1336,8 @@ bool expo_goto_desktop(FwmServer *server, int d) {
     FwmExpo *e = server->expo;
     if (!e || e->leaving) return false;
     if (d < 0 || d >= FWM_DESKTOPS) return true;   /* consumed; nowhere to go */
+    /* Asking for a desktop is asking to work, so the camera comes level. */
+    expo_camera_home(e);
 
     /* Centre desktop d, by panning rather than by moving camera_x.
      *
@@ -1200,6 +1389,28 @@ bool expo_handle_key(FwmServer *server, xkb_keysym_t sym) {
     case XKB_KEY_Right:
         expo_pan_by(e, expo_pitch(e));
         return true;
+    case XKB_KEY_Up:
+    case XKB_KEY_Down: {
+        /* Lift the camera over the ring. Only at the far step, where the strip
+         * is something to look at — nearer, the arrows have nothing to do and
+         * saying so by ignoring them is better than tilting the desktop the
+         * user is about to click on. */
+        if (!expo_can_orbit(e)) return true;
+        double step = sym == XKB_KEY_Up ? EXPO_TILT_STEP : -EXPO_TILT_STEP;
+        e->tilt_target += step;
+        if (e->tilt_target >  EXPO_TILT_MAX) e->tilt_target =  EXPO_TILT_MAX;
+        if (e->tilt_target < -EXPO_TILT_MAX) e->tilt_target = -EXPO_TILT_MAX;
+        return true;
+    }
+    case XKB_KEY_Page_Up:
+    case XKB_KEY_Page_Down: {
+        if (!expo_can_orbit(e)) return true;
+        e->dist_target *= sym == XKB_KEY_Page_Up ? 1.0 / EXPO_DIST_STEP
+                                                 : EXPO_DIST_STEP;
+        if (e->dist_target < EXPO_DIST_MIN) e->dist_target = EXPO_DIST_MIN;
+        if (e->dist_target > EXPO_DIST_MAX) e->dist_target = EXPO_DIST_MAX;
+        return true;
+    }
     case XKB_KEY_Return:
     case XKB_KEY_KP_Enter:
         expo_close(server, expo_view_desktop(server));
@@ -1217,6 +1428,27 @@ bool expo_handle_motion(FwmServer *server, double lx, double ly) {
     FwmExpo *e = server->expo;
     if (!e) return false;
     if (e->leaving) return true;
+
+    if (e->orbiting) {
+        double dx = lx - e->orbit_x, dy = ly - e->orbit_y;
+        e->orbit_x = lx;
+        e->orbit_y = ly;
+
+        /* Sideways is the pan the strip always had — turning the ring under a
+         * fixed camera is the same thing as flying round it, and reusing it
+         * keeps one notion of where the strip is looking. */
+        double s = expo_scale(e);
+        if (s > 1e-6) {
+            e->pan_target -= dx / s;
+            expo_clamp_pan(e);
+            e->pan = e->pan_target;      /* a hand is steering; no easing */
+        }
+        e->tilt_target += dy * EXPO_TILT_STEP / 40.0;
+        if (e->tilt_target >  EXPO_TILT_MAX) e->tilt_target =  EXPO_TILT_MAX;
+        if (e->tilt_target < -EXPO_TILT_MAX) e->tilt_target = -EXPO_TILT_MAX;
+        e->tilt = e->tilt_target;
+        return true;
+    }
 
     if (e->menu) {
         /* The menu is modal over the cards: while it is open the cursor is
@@ -1306,6 +1538,19 @@ bool expo_handle_button(FwmServer *server, uint32_t button, bool pressed,
         return true;
     }
 
+    if (button == BTN_MIDDLE) {
+        /* Fly round the ring: sideways turns it, up and down lifts the camera
+         * over it. The middle button because the left one carries windows and
+         * the right one opens their menu — and because a gesture nobody knows
+         * about is better off on a button nobody presses by accident. */
+        if (!pressed) { e->orbiting = 0; return true; }
+        if (!expo_can_orbit(e)) return true;
+        e->orbiting = 1;
+        e->orbit_x = lx;
+        e->orbit_y = ly;
+        return true;
+    }
+
     if (button == BTN_RIGHT) {
         if (pressed) {
             ExpoItem *it = expo_item_at(e, lx, ly);
@@ -1373,6 +1618,14 @@ bool expo_handle_button(FwmServer *server, uint32_t button, bool pressed,
 bool expo_handle_axis(FwmServer *server, double delta) {
     FwmExpo *e = server->expo;
     if (!e) return false;
+    if (e->orbiting) {
+        /* Mid-flight the wheel is the one thing left to ask for: closer or
+         * further. Panning as well would fight the hand already turning it. */
+        e->dist_target *= delta > 0.0 ? EXPO_DIST_STEP : 1.0 / EXPO_DIST_STEP;
+        if (e->dist_target < EXPO_DIST_MIN) e->dist_target = EXPO_DIST_MIN;
+        if (e->dist_target > EXPO_DIST_MAX) e->dist_target = EXPO_DIST_MAX;
+        return true;
+    }
     /* A wheel notch is ~15 units, so a notch is a third of a desktop —
      * enough to feel like scrolling a strip, small enough to aim with. */
     if (!e->leaving) expo_pan_by(e, delta * expo_pitch(e) / 45.0);

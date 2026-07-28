@@ -66,45 +66,51 @@ bool warp_blit(struct wlr_renderer *renderer, struct wlr_buffer *dst,
 /* ── the desktop strip: many quads, one pass, with perspective ─────────
  *
  * The third thing wlroots cannot express, and the reason it needs its own
- * entry points rather than another warp: a strip of desktops turned away from
- * the viewer is a PROJECTIVE transform, not a bend. warp_blit interpolates its
- * lattice linearly, which is the classic affine texture swim — straight lines
- * inside a rotated card would bow. Here each column carries its view depth as
- * a real w, so the rasterizer does the divide and the sampling is
- * perspective-correct for free.
+ * entry points rather than another warp: a desktop turned away from the viewer
+ * is a PROJECTIVE transform, not a bend. warp_blit interpolates its lattice
+ * linearly, which is the classic affine texture swim — straight lines inside a
+ * turned card would bow. Here every vertex carries its view depth as a real w,
+ * so the rasterizer does the divide and the sampling is perspective-correct.
  *
- * Only the vertical axis turns, so a column of the surface is at ONE depth:
- * that is what lets a whole card be described by a row of columns instead of a
- * general mesh, and what makes the tessellation exact rather than an
- * approximation of the curve's shading. */
+ * The caller projects; this file rasterises. That is the same division of
+ * labour rotate_blit follows — the transform lives in the vertex array, never
+ * in a matrix — and it is what lets the strip change shape (a flat band, a
+ * drum, a drum seen from above) without a line changing here. */
 
-/* One column of a strip. Screen pixels in the destination buffer, except `w`,
- * which is the view depth the projection divided by, and `u`, the texture
- * coordinate this column samples. */
-struct scene3d_col {
-    float x;            /* projected screen x */
-    float y_top, y_bot; /* projected screen y of the column's two ends */
-    float w;            /* view depth (> 0) */
-    float u;            /* source texture coordinate, 0..1 */
+/* One projected vertex: screen pixels in the destination, its view depth, and
+ * the texture coordinate it samples. */
+struct scene3d_vert {
+    float x, y;   /* projected screen position */
+    float w;      /* view depth (> 0; a vertex behind the eye cannot be drawn) */
+    float u, v;   /* source texture coordinate, 0..1 */
 };
 
-/* Largest strip scene3d_strip will draw. */
-#define SCENE3D_MAX_COLS 48
+/* Largest fan scene3d_fan will draw — the drum's end caps, one vertex per
+ * segment plus the centre. */
+#define SCENE3D_MAX_FAN 64
 
 /* Open a pass into `dst`, which is cleared to transparent. Everything drawn
  * until scene3d_end blends over what came before it, in call order — there is
- * no depth buffer, because the strip's own painter order is exact: a convex
- * band of cards, drawn far to near. False when the renderer cannot do this at
- * all, in which case the caller is expected to fall back to a flat strip. */
+ * no depth buffer (the FBO belongs to wlroots and there is no public way to
+ * attach one), so the caller owns the ordering. False when the renderer cannot
+ * do this at all, in which case the caller is expected to fall back to a flat
+ * strip. */
 bool scene3d_begin(struct wlr_renderer *renderer, struct wlr_buffer *dst);
 
-/* A textured strip of `n` columns (>= 2), premultiplied, scaled by `alpha`. */
-bool scene3d_strip(struct wlr_texture *tex, const struct scene3d_col *cols,
-                   int n, float alpha);
+/* A textured quad, premultiplied, scaled by `alpha`. Vertices in the order
+ * top-left, bottom-left, top-right, bottom-right — a triangle strip, which is
+ * also the winding the caller's own back-face test should assume. */
+bool scene3d_quad(struct wlr_texture *tex, const struct scene3d_vert v[4],
+                  float alpha);
 
 /* The same shape filled with one premultiplied colour: card edges, the frame
  * around a hovered window, a desktop with no wallpaper behind it. */
-bool scene3d_solid(const float rgba[4], const struct scene3d_col *cols, int n);
+bool scene3d_quad_solid(const float rgba[4], const struct scene3d_vert v[4]);
+
+/* A filled fan, `n` vertices from the centre outward — the drum's end caps,
+ * which are what stop a ring looked at from above being a view into its own
+ * far side. */
+bool scene3d_fan_solid(const float rgba[4], const struct scene3d_vert *v, int n);
 
 /* Close the pass and give the EGL context back. */
 void scene3d_end(void);

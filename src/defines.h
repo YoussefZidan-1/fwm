@@ -94,8 +94,10 @@
  * three; beyond this the extra layers are dropped from the card rather than
  * multiplied by ten desktops. */
 #define EXPO_MAX_WP_LAYERS  4
-/* A desktop with no wallpaper still has to read as a slot on the strip. */
+/* A desktop with no wallpaper still has to read as a slot on the strip, and
+ * the drum's end caps want to read as a lid rather than as another desktop. */
 #define EXPO_CARD_GREY      0.13f
+#define EXPO_CAP_GREY       0.07f
 /* How fast a pan (arrows, wheel) chases where it was sent, 1/s. Quicker than
  * the zoom: a step sideways should feel like a nudge, not like a journey. */
 #define EXPO_PAN_SPEED      14.0
@@ -127,6 +129,19 @@
  * second at the very edge. */
 #define EXPO_DRAG_EDGE_PX   90
 #define EXPO_DRAG_PAN_SPEED 1.6
+/* Orbit: how far the camera may be lifted above the ring, and how far it may
+ * be pulled back, as a multiple of the base distance. Roll is deliberately not
+ * offered: it shows nothing and disorients immediately. */
+#define EXPO_TILT_MAX       1.05   /* radians, ~60 degrees */
+#define EXPO_TILT_STEP      0.12   /* one arrow press */
+#define EXPO_DIST_MIN       0.6
+#define EXPO_DIST_MAX       3.0
+#define EXPO_DIST_STEP      1.18   /* one wheel notch, multiplicative */
+/* How fast the camera eases to where it was sent, and back to the canonical
+ * view when anything else happens, 1/s. */
+#define EXPO_ORBIT_SPEED    9.0
+/* Radians of drum per segment of an end cap. */
+#define EXPO_CAP_SEG        0.16
 /* Viewer distance from the front of the strip. Smaller is a wider lens: more
  * dramatic, and quicker to look wrong at the edges of the screen. */
 #define EXPO_CAM_DIST       2.2

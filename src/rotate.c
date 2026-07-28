@@ -415,48 +415,43 @@ bool scene3d_begin(struct wlr_renderer *renderer, struct wlr_buffer *dst) {
     return true;
 }
 
-/* Fill the vertex arrays for one strip. Two vertices per column, drawn as a
- * triangle strip: the top and the bottom of that column. */
-static int strip_verts(const struct scene3d_col *cols, int n,
-                       GLfloat *pos, GLfloat *uv) {
-    int v = 0;
+/* Lay out vertices for one primitive. Pre-multiplying the position by w and
+ * handing w through as the clip coordinate makes the rasterizer's own divide
+ * reproduce the projection exactly — and, the point of the exercise,
+ * interpolate the texture coordinate perspective-correctly. */
+static int scene3d_fill(const struct scene3d_vert *v, int n,
+                        GLfloat *pos, GLfloat *uv) {
     for (int i = 0; i < n; i++) {
-        float x_ndc = 2.0f * cols[i].x / pass.dw - 1.0f;
-        for (int end = 0; end < 2; end++) {
-            float y = end ? cols[i].y_bot : cols[i].y_top;
-            pos[v * 3 + 0] = x_ndc;
-            pos[v * 3 + 1] = 2.0f * y / pass.dh - 1.0f;
-            pos[v * 3 + 2] = cols[i].w > 0.001f ? cols[i].w : 0.001f;
-            uv[v * 2 + 0] = cols[i].u;
-            uv[v * 2 + 1] = end ? 1.0f : 0.0f;
-            v++;
-        }
+        pos[i * 3 + 0] = 2.0f * v[i].x / pass.dw - 1.0f;
+        pos[i * 3 + 1] = 2.0f * v[i].y / pass.dh - 1.0f;
+        pos[i * 3 + 2] = v[i].w > 0.001f ? v[i].w : 0.001f;
+        uv[i * 2 + 0] = v[i].u;
+        uv[i * 2 + 1] = v[i].v;
     }
-    return v;
+    return n;
 }
 
-static GLfloat strip_pos[SCENE3D_MAX_COLS * 2 * 3];
-static GLfloat strip_uv[SCENE3D_MAX_COLS * 2 * 2];
+static GLfloat scene3d_pos[SCENE3D_MAX_FAN * 3];
+static GLfloat scene3d_uv[SCENE3D_MAX_FAN * 2];
 
-static void strip_draw(struct program *p, int count) {
+static void scene3d_draw(struct program *p, int count, GLenum mode) {
     glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glVertexAttribPointer(p->attr_pos, 3, GL_FLOAT, GL_FALSE, 0, strip_pos);
+    glVertexAttribPointer(p->attr_pos, 3, GL_FLOAT, GL_FALSE, 0, scene3d_pos);
     glEnableVertexAttribArray(p->attr_pos);
     if (p->attr_texcoord >= 0) {
-        glVertexAttribPointer(p->attr_texcoord, 2, GL_FLOAT, GL_FALSE, 0, strip_uv);
+        glVertexAttribPointer(p->attr_texcoord, 2, GL_FLOAT, GL_FALSE, 0, scene3d_uv);
         glEnableVertexAttribArray(p->attr_texcoord);
     }
 
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, count);
+    glDrawArrays(mode, 0, count);
 
     glDisableVertexAttribArray(p->attr_pos);
     if (p->attr_texcoord >= 0) glDisableVertexAttribArray(p->attr_texcoord);
 }
 
-bool scene3d_strip(struct wlr_texture *tex, const struct scene3d_col *cols,
-                   int n, float alpha) {
-    if (!pass.open || !tex || !cols) return false;
-    if (n < 2 || n > SCENE3D_MAX_COLS) return false;
+bool scene3d_quad(struct wlr_texture *tex, const struct scene3d_vert v[4],
+                  float alpha) {
+    if (!pass.open || !tex || !v) return false;
     if (!wlr_texture_is_gles2(tex)) return false;
 
     struct wlr_gles2_texture_attribs attribs = {0};
@@ -468,7 +463,7 @@ bool scene3d_strip(struct wlr_texture *tex, const struct scene3d_col *cols,
                             p == &prog3d_ext ? frag3d_ext_src : frag3d_2d_src))
         return false;
 
-    int count = strip_verts(cols, n, strip_pos, strip_uv);
+    int count = scene3d_fill(v, 4, scene3d_pos, scene3d_uv);
 
     glUseProgram(p->id);
     glActiveTexture(GL_TEXTURE0);
@@ -482,28 +477,37 @@ bool scene3d_strip(struct wlr_texture *tex, const struct scene3d_col *cols,
     glUniform1i(p->uni_tex, 0);
     if (p->uni_alpha >= 0) glUniform1f(p->uni_alpha, alpha);
 
-    strip_draw(p, count);
+    scene3d_draw(p, count, GL_TRIANGLE_STRIP);
 
     glBindTexture(attribs.target, 0);
     glUseProgram(0);
     return true;
 }
 
-bool scene3d_solid(const float rgba[4], const struct scene3d_col *cols, int n) {
-    if (!pass.open || !rgba || !cols) return false;
-    if (n < 2 || n > SCENE3D_MAX_COLS) return false;
+static bool scene3d_solid_prim(const float rgba[4], const struct scene3d_vert *v,
+                               int n, GLenum mode) {
+    if (!pass.open || !rgba || !v) return false;
+    if (n < 3 || n > SCENE3D_MAX_FAN) return false;
     if (!program_build_from(&prog3d_solid, vert3d_src, frag3d_solid_src)) return false;
 
-    int count = strip_verts(cols, n, strip_pos, strip_uv);
+    int count = scene3d_fill(v, n, scene3d_pos, scene3d_uv);
 
     glUseProgram(prog3d_solid.id);
     if (prog3d_solid.uni_color >= 0)
         glUniform4f(prog3d_solid.uni_color, rgba[0], rgba[1], rgba[2], rgba[3]);
 
-    strip_draw(&prog3d_solid, count);
+    scene3d_draw(&prog3d_solid, count, mode);
 
     glUseProgram(0);
     return true;
+}
+
+bool scene3d_quad_solid(const float rgba[4], const struct scene3d_vert v[4]) {
+    return scene3d_solid_prim(rgba, v, 4, GL_TRIANGLE_STRIP);
+}
+
+bool scene3d_fan_solid(const float rgba[4], const struct scene3d_vert *v, int n) {
+    return scene3d_solid_prim(rgba, v, n, GL_TRIANGLE_FAN);
 }
 
 void scene3d_end(void) {
