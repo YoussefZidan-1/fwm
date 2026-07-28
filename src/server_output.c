@@ -431,10 +431,51 @@ int server_desktop_at_x(FwmServer *server, double wx) {
     return d;
 }
 
+/* Is there room around this monitor for a window to hang off its edge without
+ * landing on another one? Nothing clips the scene at a monitor's border, so a
+ * window drawn half outside a screen would be drawn on whatever screen the
+ * layout has next to it. */
+static bool output_has_elbow_room(FwmServer *server, FwmOutput *o) {
+    int reach = server->screen_width;
+    FwmOutput *p;
+    wl_list_for_each(p, &server->outputs, link) {
+        if (p == o || !p->enabled || p->box.width <= 0) continue;
+        if (p->box.x + p->box.width > o->box.x - reach
+         && p->box.x < o->box.x + o->box.width + reach) return false;
+    }
+    return true;
+}
+
+/* Which monitor draws a window whose desktop no monitor owns.
+ *
+ * `desktop` names where a monitor is HEADED — it is set the moment the switch
+ * is asked for, while camera_x takes the whole slide to get there. So for those
+ * few hundred milliseconds the camera is still standing over the desktop being
+ * left, whose windows now belong to nobody: parking them there made them blink
+ * out at the start of every switch instead of sliding away, and the same for a
+ * held pan, which crosses into the next desktop at its halfway point.
+ *
+ * Only the columns the camera actually overlaps count — one screen to the left
+ * is the furthest a window can start and still have any part of it on screen.
+ * Anything beyond that is genuinely somewhere else and stays parked. */
+static FwmOutput *output_passing_over(FwmServer *server, double wx) {
+    FwmOutput *o;
+    wl_list_for_each(o, &server->outputs, link) {
+        if (!o->enabled || o->hide_world || o->box.width <= 0) continue;
+        if (wx <= o->camera_x - server->screen_width) continue;
+        if (wx >= o->camera_x + o->box.width) continue;
+        if (!output_has_elbow_room(server, o)) continue;
+        return o;
+    }
+    return NULL;
+}
+
 bool server_world_to_screen(FwmServer *server, double wx, double wy,
                             double *sx, double *sy) {
     FwmOutput *o = server_output_showing(server, server_desktop_at_x(server, wx));
-    if (!o || o->hide_world) return false;
+    if (o && o->hide_world) return false;
+    if (!o) o = output_passing_over(server, wx);
+    if (!o) return false;
     if (sx) *sx = wx - o->camera_x + o->box.x + o->render_dx;
     if (sy) *sy = wy + o->box.y + o->render_dy;
     return true;

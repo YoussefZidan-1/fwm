@@ -485,7 +485,9 @@ int server_active_desktop(FwmServer *server);
 int server_desktop_at_x(FwmServer *server, double wx);
 
 /* World coordinates to layout coordinates, through the monitor showing that
- * point's desktop. False when no monitor is showing it. */
+ * point's desktop — or, while no monitor owns it, through one whose camera is
+ * standing over it mid-slide, so the desktop being left goes on being drawn
+ * until it has travelled off the screen. False when neither applies. */
 bool server_world_to_screen(FwmServer *server, double wx, double wy,
                             double *sx, double *sy);
 /* Place a scene node at a world position. A window on a desktop that nobody is
