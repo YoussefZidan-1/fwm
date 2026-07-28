@@ -66,6 +66,12 @@ int expo_target_desktop(struct FwmServer *server);
  * is open, instead of moving a world nobody is looking at. */
 bool expo_goto_desktop(struct FwmServer *server, int d);
 
+/* True while the desktop at the front of the strip is being kept alive: its
+ * clients are handed frame callbacks and its cards retaken. The frame loop has
+ * to stay at full rate for that, which is the price of the front desktop not
+ * being a photograph — and the reason this is asked rather than assumed. */
+bool expo_live_active(struct FwmServer *server);
+
 /* True while the strip is still moving, so the tick keeps the frame loop at
  * full rate instead of dropping to the idle heartbeat. */
 bool expo_animating(struct FwmServer *server);

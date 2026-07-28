@@ -33,6 +33,7 @@
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/util/log.h>
 
@@ -40,6 +41,10 @@
  * taken from is hidden for as long as the strip is up. */
 typedef struct {
     FwmView *view;
+    /* The client buffer the picture was taken from, and when. A window that has
+     * not drawn since is not worth photographing again. */
+    struct wlr_buffer *seen;
+    double snapped;
     struct wlr_scene_buffer *node;   /* flat path only */
     struct wlr_texture *tex;         /* curved path only */
     struct wlr_buffer *buf;          /* our lock on the snapshot */
@@ -93,6 +98,7 @@ struct FwmExpo {
     int orbiting;                    /* middle button, or alt+left, held */
     double orbit_x, orbit_y;         /* cursor at the last orbit sample */
     double spin;                     /* strip px/s still to coast, after a throw */
+    double clock;                    /* seconds the strip has been open */
     double orbit_dt;                 /* seconds since the last orbit sample */
     struct timespec orbit_time;
     int home;            /* desktop the strip was entered from */
@@ -587,6 +593,81 @@ static void expo_snap_windows(FwmExpo *e) {
     wl_list_for_each(view, &e->server->views, link) expo_add_item(e, view);
 }
 
+/* Hand a frame callback to whatever the window is made of. Without this the
+ * client sleeps: the strip hides the real windows, and a surface that is not
+ * being composited is never told to draw. */
+static void expo_frame_done(struct wlr_scene_buffer *buffer, int sx, int sy,
+                            void *data) {
+    (void)sx; (void)sy;
+    struct wlr_scene_surface *ss = wlr_scene_surface_try_from_buffer(buffer);
+    if (ss) wlr_surface_send_frame_done(ss->surface, data);
+}
+
+/* Retake one window's picture into the buffer it already owns. The texture is
+ * a view of that same buffer, so it comes along for free — the trick the spin
+ * has always used. False when the window changed size and the whole item has to
+ * be rebuilt instead. */
+static bool expo_resnap_item(FwmExpo *e, ExpoItem *it) {
+    FwmView *view = it->view;
+    if (!view->scene_tree || view->width != it->w || view->height != it->h)
+        return false;
+
+    int lx = 0, ly = 0;
+    wlr_scene_node_coords(&view->scene_tree->node, &lx, &ly);
+    snapshot_subtree(e->server, it->buf, &view->scene_tree->node,
+                     lx, ly, EXPO_SNAP_SCALE);
+    it->wx = view->x;
+    it->wy = view->y;
+    it->seen = view->last_buffer;
+    return true;
+}
+
+/* Keep one desktop alive.
+ *
+ * Everything on the strip is a photograph, and that is what makes ten desktops
+ * cost nothing to look at. But the desktop in FRONT of you being a photograph
+ * is the difference between a window manager and a screenshot of one: the
+ * terminal stops blinking, the video stops, the clock stops.
+ *
+ * Two halves, and the first is the one that is easy to miss. A hidden client
+ * gets no frame callbacks, so it stops drawing of its own accord and there is
+ * nothing new to photograph however often you ask — the strip has to hand the
+ * callbacks out itself. The second half is then the cheap one: retake the
+ * picture when the client has actually committed something, no faster than
+ * EXPO_LIVE_S.
+ *
+ * Only the desktop being looked at, and only with effects.live on — the same
+ * switch that decides whether a spinning window chases its own content. */
+static void expo_live_pass(FwmExpo *e, double now) {
+    FwmServer *server = e->server;
+    if (server->config.effects.live <= 0.0) return;
+
+    int live_d = expo_view_desktop(server);
+    if (live_d < 0) return;
+
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+
+    for (int i = 0; i < e->n_items; i++) {
+        ExpoItem *it = &e->items[i];
+        if (it->desktop != live_d || !it->view->scene_tree) continue;
+
+        wlr_scene_node_for_each_buffer(&it->view->scene_tree->node,
+                                       expo_frame_done, &ts);
+
+        if (it->view->last_buffer == it->seen) continue;
+        if (now - it->snapped < EXPO_LIVE_S) continue;
+        it->snapped = now;
+        if (!expo_resnap_item(e, it)) {
+            expo_forget_view(server, it->view);
+            expo_add_item(e, it->view);
+            i = -1;                       /* the array moved under us */
+            continue;
+        }
+        e->drawn_zoom = -1.0;             /* the buffer changed under the canvas */
+    }
+}
+
 /* A window that opened while the strip was up.
  *
  * Polled rather than hooked into view_map, because at map time a client has
@@ -1037,6 +1118,15 @@ bool expo_active(FwmServer *server) {
     return server->expo != NULL;
 }
 
+bool expo_live_active(FwmServer *server) {
+    FwmExpo *e = server->expo;
+    if (!e || e->leaving || server->config.effects.live <= 0.0) return false;
+    int d = expo_view_desktop(server);
+    for (int i = 0; i < e->n_items; i++)
+        if (e->items[i].desktop == d) return true;
+    return false;
+}
+
 bool expo_animating(FwmServer *server) {
     FwmExpo *e = server->expo;
     return e && (fabs(e->zoom - e->zoom_target) > 0.001
@@ -1251,12 +1341,7 @@ void expo_refresh_desktop(FwmServer *server, int d) {
             continue;
         }
 
-        it->wx = view->x;
-        it->wy = view->y;
-        int lx = 0, ly = 0;
-        wlr_scene_node_coords(&view->scene_tree->node, &lx, &ly);
-        snapshot_subtree(server, it->buf, &view->scene_tree->node,
-                         lx, ly, EXPO_SNAP_SCALE);
+        expo_resnap_item(e, it);
     }
     /* The signature does not see a repainted buffer, only the list changing. */
     e->drawn_zoom = -1.0;
@@ -1351,8 +1436,13 @@ void expo_tick(FwmServer *server, double dt) {
         }
     }
 
-    /* Windows that opened since the last frame. */
-    if (!e->leaving) expo_sync_items(e);
+    /* Windows that opened since the last frame, and the one desktop that is
+     * allowed to still be moving. */
+    if (!e->leaving) {
+        expo_sync_items(e);
+        e->clock += dt;
+        expo_live_pass(e, e->clock);
+    }
 
     /* Read from the config every frame rather than tracked: `x`, a `fwmctl
      * set` and a config reload all mean the same thing here, and none of them

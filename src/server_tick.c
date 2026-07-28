@@ -195,6 +195,7 @@ void server_shake_tick(FwmServer *server, double dt) {
 static int server_is_busy(FwmServer *server) {
     if (server->interactive.action != FWM_ACTION_NONE) return 1;
     if (expo_animating(server)) return 1;             /* the strip zooming */
+    if (expo_live_active(server)) return 1;           /* front desktop kept live */
     if (server->camera_x != server->target_camera_x || server->cam_anim) return 1;
     if (server->shake_mag > 0.0) return 1;
     if (server->wallpaper_prev) return 1;              /* wallpaper cross-fade */

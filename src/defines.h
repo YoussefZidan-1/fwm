@@ -152,6 +152,11 @@
  * lands rather than at the same time as it. */
 #define EXPO_ORBIT_SPEED    9.0
 #define EXPO_ORBIT_HOME_SPEED 18.0
+/* Live cards: how often the desktop being looked at is re-photographed, and
+ * nothing else is. Everything on the strip is a still picture, which is what
+ * makes ten desktops affordable — but the one in front of you being a still
+ * picture is the difference between a window manager and a screenshot of one. */
+#define EXPO_LIVE_S         (1.0 / 30.0)
 /* Letting go of the ring mid-turn leaves it turning. `EXPO_SPIN_DECAY` is how
  * fast that dies away (1/s), and below `EXPO_SPIN_MIN` (strip px/s) it is over
  * — a flywheel in a compositor whose windows are rigid bodies is less a

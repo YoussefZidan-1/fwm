@@ -82,14 +82,25 @@ static void icon_cava(cairo_t *cr, double x, double y, double s) {
     cairo_fill(cr);
 }
 
-/* A circle with a bite out of it: the desktops laid round, and the seam that
- * closing them shuts. Drawn open because the icon has to mean the THING, and
- * the switch beside it says whether it is on. */
-static void icon_ring(cairo_t *cr, double x, double y, double size) {
-    double r = size / 2.0 - 1.5;
-    cairo_set_line_width(cr, 2.0);
-    cairo_arc(cr, x + size / 2.0, y + size / 2.0, r, -M_PI * 0.32, M_PI * 1.18);
+/* A ring with a break in it: the desktops laid round, and the seam that closing
+ * them shuts. Drawn open because the icon has to mean the THING, and the switch
+ * beside it says whether it is on.
+ *
+ * Weighted like the others — they are filled shapes or thick strokes, and a
+ * hairline circle among them reads as a smudge rather than as an icon. The
+ * break sits on the right, where the eye lands last, and the caps are round so
+ * the two ends look cut rather than frayed. */
+static void icon_ring(cairo_t *cr, double x, double y, double s) {
+    double lw = fmax(2.0, s * 0.15);
+    double r = s / 2.0 - lw / 2.0;
+    cairo_set_line_width(cr, lw);
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    /* All the way round bar sixty degrees: the break has to read as a gap in a
+     * ring, and anything much wider reads as the letter C. */
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, x + s / 2.0, y + s / 2.0, r, M_PI * 0.17, M_PI * 1.83);
     cairo_stroke(cr);
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_BUTT);
 }
 
 void modes_icon(cairo_t *cr, int icon, double x, double y, double size) {
