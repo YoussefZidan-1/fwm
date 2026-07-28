@@ -78,6 +78,12 @@ bool expo_handle_button(struct FwmServer *server, uint32_t button, bool pressed,
                         double lx, double ly);
 bool expo_handle_axis(struct FwmServer *server, double delta);
 
+/* Re-photograph one desktop's windows after something moved them while the
+ * strip was up — a mode change from the strip's own menu, or from the tray.
+ * Also settles the tiling glide, which is driven by a physics tick the strip
+ * has frozen. No-op when the strip is closed. */
+void expo_refresh_desktop(struct FwmServer *server, int d);
+
 /* A window that is going away must not be left with a card standing in for it.
  * Called from the unmap and destroy paths. */
 void expo_forget_view(struct FwmServer *server, struct FwmView *view);

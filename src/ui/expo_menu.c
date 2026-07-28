@@ -25,22 +25,26 @@
 #define MENU_CUT       10.0   /* corner chevron cut, matching the other panels */
 #define MENU_H  (MENU_PAD_Y * 2 + MENU_TITLE_H + EXPO_MENU_ROW_COUNT * MENU_ROW_H)
 
-static const char *row_label(int row) {
-    switch (row) {
-    case EXPO_MENU_ROW_GOTO:  return "Go to window";
-    case EXPO_MENU_ROW_CLOSE: return "Close window";
-    default:                  return "";
-    }
-}
-
 /* There is only ever one of these open — it belongs to the desktop strip, which
  * is itself a single mode — so its contents live here rather than being threaded
  * through the caller. A redraw for a hover change must not lose the title, and
  * this is the cheapest way to guarantee it. */
 static struct MenuCtx {
     char title[128];
+    char mode[32];
     int hover;
 } menu;
+
+static const char *row_label(int row, char *buf, size_t cap) {
+    switch (row) {
+    case EXPO_MENU_ROW_GOTO:  return "Go to window";
+    case EXPO_MENU_ROW_CLOSE: return "Close window";
+    case EXPO_MENU_ROW_MODE:
+        snprintf(buf, cap, "Desktop: %s", menu.mode[0] ? menu.mode : "physics");
+        return buf;
+    default:                  return "";
+    }
+}
 
 static void panel_path(cairo_t *cr, double x, double y, double w, double h, double cut) {
     cairo_move_to(cr, x + cut, y);
@@ -85,7 +89,8 @@ static void draw_menu(cairo_t *cr, int w, int h, void *user_data) {
             cairo_fill(cr);
         }
         cairo_set_source_rgb(cr, thm->text[0], thm->text[1], thm->text[2]);
-        pango_layout_set_text(layout, row_label(r), -1);
+        char rbuf[48];
+        pango_layout_set_text(layout, row_label(r, rbuf, sizeof(rbuf)), -1);
         cairo_move_to(cr, MENU_PAD_X, y + (MENU_ROW_H - 20) / 2.0);
         pango_cairo_show_layout(cr, layout);
     }
@@ -109,13 +114,15 @@ int expo_menu_hit(double x, double y) {
 
 struct wlr_scene_buffer *expo_menu_show(struct wlr_scene_tree *parent,
                                         int screen_w, int screen_h,
-                                        double x, double y, const char *title) {
+                                        double x, double y, const char *title,
+                                        const char *mode) {
     struct wlr_scene_buffer *buf = cairo_overlay_create(parent, MENU_W, MENU_H);
     if (!buf) return NULL;
 
     menu.hover = EXPO_MENU_ROW_NONE;
     snprintf(menu.title, sizeof(menu.title), "%s",
              title && title[0] ? title : "Window");
+    snprintf(menu.mode, sizeof(menu.mode), "%s", mode ? mode : "");
     cairo_overlay_update(buf, draw_menu, &menu);
 
     /* Opened at the cursor, so it is the one panel in fwm that can be asked to
@@ -126,6 +133,12 @@ struct wlr_scene_buffer *expo_menu_show(struct wlr_scene_tree *parent,
     if (y < 0) y = 0;
     wlr_scene_node_set_position(&buf->node, (int)x, (int)y);
     return buf;
+}
+
+void expo_menu_set_mode(struct wlr_scene_buffer *buf, const char *mode) {
+    if (!buf) return;
+    snprintf(menu.mode, sizeof(menu.mode), "%s", mode ? mode : "");
+    cairo_overlay_update(buf, draw_menu, &menu);
 }
 
 void expo_menu_hover(struct wlr_scene_buffer *buf, int row) {

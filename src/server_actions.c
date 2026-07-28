@@ -609,6 +609,7 @@ void server_modes_state(FwmServer *server, ModesState *out) {
     out->floating = server->desktop_mode[d] == DESKTOP_MODE_FLOATING;
     out->gravity  = server->physics.gravity_scale > 0.0;
     out->cava     = server->config.cava.mode;
+    out->ring     = server->config.camera.wrap;
     out->opacity  = server->config.decor.tray_opacity;
 }
 
@@ -689,6 +690,10 @@ int server_modes_menu_click(FwmServer *server, int row, int seg) {
         changed = 1;
         break;
     }
+    case MODES_ROW_RING:
+        server_dispatch_action(server, "toggle_wrap");
+        changed = 1;
+        break;
     case MODES_ROW_CAVA: {
         if (seg < 0) break;
         /* The menu's "physical" is the config's "both": bars you can see AND
@@ -707,6 +712,9 @@ int server_modes_menu_click(FwmServer *server, int row, int seg) {
         break;
     }
 
+    /* The strip is showing photographs of that desktop, and the layout just
+     * moved under them. */
+    if (changed) expo_refresh_desktop(server, d);
     if (changed) {
         ModesState st;
         server_modes_state(server, &st);

@@ -152,6 +152,12 @@
  * lands rather than at the same time as it. */
 #define EXPO_ORBIT_SPEED    9.0
 #define EXPO_ORBIT_HOME_SPEED 18.0
+/* Letting go of the ring mid-turn leaves it turning. `EXPO_SPIN_DECAY` is how
+ * fast that dies away (1/s), and below `EXPO_SPIN_MIN` (strip px/s) it is over
+ * — a flywheel in a compositor whose windows are rigid bodies is less a
+ * flourish than a consistency. */
+#define EXPO_SPIN_DECAY     2.4
+#define EXPO_SPIN_MIN       40.0
 /* Viewer distance from the front of the strip. Smaller is a wider lens: more
  * dramatic, and quicker to look wrong at the edges of the screen. */
 #define EXPO_CAM_DIST       2.2

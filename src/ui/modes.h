@@ -37,6 +37,7 @@ enum {
     MODE_ICON_FLOATING,
     MODE_ICON_GRAVITY,
     MODE_ICON_CAVA,
+    MODE_ICON_RING,
     MODE_ICON_COUNT,
 };
 
@@ -52,6 +53,7 @@ typedef struct ModesState {
     int floating;  /* active desktop is DESKTOP_MODE_FLOATING */
     int gravity;   /* physics.gravity_scale > 0 */
     int cava;      /* CAVA_MODE_* */
+    int ring;      /* camera.wrap: the desktops are a ring */
     double opacity;
 } ModesState;
 
@@ -73,6 +75,7 @@ enum {
     MODES_ROW_FLOATING,
     MODES_ROW_GRAVITY,
     MODES_ROW_CAVA,
+    MODES_ROW_RING,
     MODES_ROW_COUNT,
 };
 

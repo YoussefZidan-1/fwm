@@ -29,6 +29,11 @@ enum {
     EXPO_MENU_ROW_NONE = -1,
     EXPO_MENU_ROW_GOTO = 0,
     EXPO_MENU_ROW_CLOSE,
+    /* The desktop this window is on, and what it does with its windows.
+     * A cycle rather than a submenu: there are three modes, and a menu that
+     * opens another menu to choose between three things is worse than a row
+     * that says which one it is on now. */
+    EXPO_MENU_ROW_MODE,
     EXPO_MENU_ROW_COUNT,
 };
 
@@ -37,7 +42,12 @@ enum {
  * off the right or bottom edge. Returns NULL if it could not be created. */
 struct wlr_scene_buffer *expo_menu_show(struct wlr_scene_tree *parent,
                                         int screen_w, int screen_h,
-                                        double x, double y, const char *title);
+                                        double x, double y, const char *title,
+                                        const char *mode);
+
+/* Rewrite the mode row after cycling it, without closing the menu: the row is
+ * a cycle, so it has to be able to say where the cycle has got to. */
+void expo_menu_set_mode(struct wlr_scene_buffer *buf, const char *mode);
 
 /* Redraw with a different row highlighted. `row` is EXPO_MENU_ROW_NONE when the
  * cursor is off the menu. No-op when nothing changed, so it is safe to call on

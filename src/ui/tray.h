@@ -51,6 +51,7 @@ typedef struct {
     int modes_floating;
     int modes_gravity;
     int modes_cava;      /* CAVA_MODE_* */
+    int modes_ring;      /* camera.wrap */
     int modes_open;      /* menu is showing — the pill renders as pressed */
 } TrayData;
 

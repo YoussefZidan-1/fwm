@@ -82,6 +82,16 @@ static void icon_cava(cairo_t *cr, double x, double y, double s) {
     cairo_fill(cr);
 }
 
+/* A circle with a bite out of it: the desktops laid round, and the seam that
+ * closing them shuts. Drawn open because the icon has to mean the THING, and
+ * the switch beside it says whether it is on. */
+static void icon_ring(cairo_t *cr, double x, double y, double size) {
+    double r = size / 2.0 - 1.5;
+    cairo_set_line_width(cr, 2.0);
+    cairo_arc(cr, x + size / 2.0, y + size / 2.0, r, -M_PI * 0.32, M_PI * 1.18);
+    cairo_stroke(cr);
+}
+
 void modes_icon(cairo_t *cr, int icon, double x, double y, double size) {
     cairo_save(cr);
     switch (icon) {
@@ -89,6 +99,7 @@ void modes_icon(cairo_t *cr, int icon, double x, double y, double size) {
     case MODE_ICON_FLOATING: icon_floating(cr, x, y, size); break;
     case MODE_ICON_GRAVITY:  icon_gravity(cr, x, y, size);  break;
     case MODE_ICON_CAVA:     icon_cava(cr, x, y, size);     break;
+    case MODE_ICON_RING:     icon_ring(cr, x, y, size);     break;
     default: break;
     }
     cairo_restore(cr);
@@ -346,12 +357,15 @@ static void draw_menu(cairo_t *cr, int w, int h, void *user) {
     pango_layout_set_font_description(layout, desc);
     pango_font_description_free(desc);
 
-    static const char *name[MODES_ROW_COUNT] = { "Tiling", "Floating", "Gravity", "Cava" };
+    static const char *name[MODES_ROW_COUNT] = {
+        "Tiling", "Floating", "Gravity", "Cava", "Ring",
+    };
     static const int   icon[MODES_ROW_COUNT] = {
         MODE_ICON_TILING, MODE_ICON_FLOATING, MODE_ICON_GRAVITY, MODE_ICON_CAVA,
+        MODE_ICON_RING,
     };
     const int on[MODES_ROW_COUNT] = {
-        st->tiling, st->floating, st->gravity, st->cava != 0,
+        st->tiling, st->floating, st->gravity, st->cava != 0, st->ring,
     };
 
     for (int r = 0; r < MODES_ROW_COUNT; r++) {
@@ -446,6 +460,7 @@ bool modes_menu_tick(struct wlr_scene_buffer *buf, const ModesState *st, double 
         st->floating ? 1.0 : 0.0,
         st->gravity ? 1.0 : 0.0,
         0.0, /* the cava row has no switch; its highlight is animated below */
+        st->ring ? 1.0 : 0.0,
     };
     double seg_target = cava_seg(st->cava);
 

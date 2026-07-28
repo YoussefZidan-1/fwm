@@ -388,6 +388,7 @@ void server_request_tray_redraw(FwmServer *server) {
         data.modes_floating = server->desktop_mode[d] == DESKTOP_MODE_FLOATING;
         data.modes_gravity  = server->physics.gravity_scale > 0.0;
         data.modes_cava     = server->config.cava.mode;
+        data.modes_ring     = server->config.camera.wrap;
         data.modes_open     = server->modes_buffer != NULL;
     }
     if (data.active_desktop >= 10) data.active_desktop = 9;

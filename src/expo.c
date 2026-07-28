@@ -90,8 +90,11 @@ struct FwmExpo {
      */
     double tilt, tilt_target;
     double dist, dist_target;
-    int orbiting;                    /* middle button held */
+    int orbiting;                    /* middle button, or alt+left, held */
     double orbit_x, orbit_y;         /* cursor at the last orbit sample */
+    double spin;                     /* strip px/s still to coast, after a throw */
+    double orbit_dt;                 /* seconds since the last orbit sample */
+    struct timespec orbit_time;
     int home;            /* desktop the strip was entered from */
     int leaving;         /* animating out; torn down when the zoom lands */
 
@@ -529,53 +532,75 @@ static void expo_build_cards(FwmExpo *e) {
             FWM_DESKTOPS, e->card_layer_n[0]);
 }
 
-static void expo_snap_windows(FwmExpo *e) {
+/* Photograph one window onto the strip. False when it has nothing to
+ * photograph yet — a client that has not painted, or one already gone. */
+static bool expo_add_item(FwmExpo *e, FwmView *view) {
     FwmServer *server = e->server;
-    FwmView *view;
-    wl_list_for_each(view, &server->views, link) {
-        if (e->n_items >= MAX_WINDOWS) break;
-        if (!view->scene_tree || !view->scene_tree->node.enabled) continue;
-        if (view->width <= 0 || view->height <= 0) continue;
+    if (e->n_items >= MAX_WINDOWS) return false;
+    if (!view->scene_tree || !view->scene_tree->node.enabled) return false;
+    if (view->width <= 0 || view->height <= 0) return false;
 
-        int bw = (int)lround(view->width  * EXPO_SNAP_SCALE);
-        int bh = (int)lround(view->height * EXPO_SNAP_SCALE);
-        struct wlr_buffer *buf = snapshot_alloc(server, bw, bh);
-        if (!buf) continue;
+    int bw = (int)lround(view->width  * EXPO_SNAP_SCALE);
+    int bh = (int)lround(view->height * EXPO_SNAP_SCALE);
+    struct wlr_buffer *buf = snapshot_alloc(server, bw, bh);
+    if (!buf) return false;
 
-        int lx = 0, ly = 0;
-        wlr_scene_node_coords(&view->scene_tree->node, &lx, &ly);
-        if (!snapshot_subtree(server, buf, &view->scene_tree->node,
-                              lx, ly, EXPO_SNAP_SCALE)) {
-            wlr_buffer_drop(buf);
-            continue;
-        }
-
-        struct wlr_scene_buffer *node = NULL;
-        struct wlr_texture *tex = NULL;
-        if (e->gl) {
-            tex = wlr_texture_from_buffer(server->wlr_renderer, buf);
-            if (!tex) { wlr_buffer_drop(buf); continue; }
-        } else {
-            node = wlr_scene_buffer_create(e->tree, buf);
-            if (!node) { wlr_buffer_drop(buf); continue; }
-        }
-
-        PhysicsBody *b = physics_find_body(&server->physics, view->id);
-        int d = b ? b->desktop_id : view->x / server->screen_width;
-        if (d < 0) d = 0;
-        if (d >= FWM_DESKTOPS) d = FWM_DESKTOPS - 1;
-
-        ExpoItem *it = &e->items[e->n_items++];
-        it->view = view;
-        it->node = node;
-        it->tex = tex;
-        it->buf = wlr_buffer_lock(buf);
-        it->wx = view->x;
-        it->wy = view->y;
-        it->w = view->width;
-        it->h = view->height;
-        it->desktop = d;
+    int lx = 0, ly = 0;
+    wlr_scene_node_coords(&view->scene_tree->node, &lx, &ly);
+    if (!snapshot_subtree(server, buf, &view->scene_tree->node,
+                          lx, ly, EXPO_SNAP_SCALE)) {
         wlr_buffer_drop(buf);
+        return false;
+    }
+
+    struct wlr_scene_buffer *node = NULL;
+    struct wlr_texture *tex = NULL;
+    if (e->gl) {
+        tex = wlr_texture_from_buffer(server->wlr_renderer, buf);
+        if (!tex) { wlr_buffer_drop(buf); return false; }
+    } else {
+        node = wlr_scene_buffer_create(e->tree, buf);
+        if (!node) { wlr_buffer_drop(buf); return false; }
+    }
+
+    PhysicsBody *b = physics_find_body(&server->physics, view->id);
+    int d = b ? b->desktop_id : view->x / server->screen_width;
+    if (d < 0) d = 0;
+    if (d >= FWM_DESKTOPS) d = FWM_DESKTOPS - 1;
+
+    ExpoItem *it = &e->items[e->n_items++];
+    it->view = view;
+    it->node = node;
+    it->tex = tex;
+    it->buf = wlr_buffer_lock(buf);
+    it->wx = view->x;
+    it->wy = view->y;
+    it->w = view->width;
+    it->h = view->height;
+    it->desktop = d;
+    wlr_buffer_drop(buf);
+    return true;
+}
+
+static void expo_snap_windows(FwmExpo *e) {
+    FwmView *view;
+    wl_list_for_each(view, &e->server->views, link) expo_add_item(e, view);
+}
+
+/* A window that opened while the strip was up.
+ *
+ * Polled rather than hooked into view_map, because at map time a client has
+ * usually painted nothing yet — fwm holds a new window invisible for a few
+ * commits for exactly that reason — and a photograph taken then is a blank
+ * rectangle. Checking each frame costs a walk of a list that is at most a few
+ * dozen long, and the window appears on the strip the moment it has a face. */
+static void expo_sync_items(FwmExpo *e) {
+    FwmView *view;
+    wl_list_for_each(view, &e->server->views, link) {
+        bool known = false;
+        for (int i = 0; i < e->n_items && !known; i++)
+            if (e->items[i].view == view) known = true;
+        if (!known) expo_add_item(e, view);
     }
 }
 
@@ -1017,6 +1042,7 @@ bool expo_animating(FwmServer *server) {
     return e && (fabs(e->zoom - e->zoom_target) > 0.001
               || fabs(e->pan - e->pan_target) > 0.5
               || fabs(e->seam - e->seam_target) > 0.001
+              || fabs(e->spin) > EXPO_SPIN_MIN
               || fabs(e->tilt - e->tilt_target) > 0.0005
               || fabs(e->dist - e->dist_target) > 0.0005);
 }
@@ -1178,6 +1204,7 @@ static void expo_camera_home(FwmExpo *e) {
     e->tilt_target = 0.0;
     e->dist_target = 1.0;
     e->orbiting = 0;
+    e->spin = 0.0;
 }
 
 void expo_zoom_step(FwmServer *server) {
@@ -1189,6 +1216,50 @@ void expo_zoom_step(FwmServer *server) {
 
 void expo_destroy(FwmServer *server) {
     expo_teardown(server);
+}
+
+/* Re-photograph a desktop after something rearranged it under the strip.
+ *
+ * Two things have to happen and neither is optional. The layout's glide is
+ * driven by the physics tick, which the strip freezes, so a tiled window would
+ * otherwise sit at its old coordinates until the strip closed: it is settled
+ * here by hand. And the pictures themselves are stale, so they are retaken —
+ * rebuilt outright when the window changed size, since the buffer and the
+ * texture were cut to the old one. */
+void expo_refresh_desktop(FwmServer *server, int d) {
+    FwmExpo *e = server->expo;
+    if (!e || d < 0 || d >= FWM_DESKTOPS) return;
+
+    for (int i = 0; i < e->n_items; i++) {
+        ExpoItem *it = &e->items[i];
+        if (it->desktop != d) continue;
+        FwmView *view = it->view;
+
+        if (view->tile_anim) {
+            view->x = (int)lround(view->tile_tx);
+            view->y = (int)lround(view->tile_ty);
+            view->tile_anim = 0;
+            PhysicsBody *b = physics_find_body(&server->physics, view->id);
+            if (b) { b->x = view->x; b->y = view->y; b->vx = b->vy = 0; }
+            view_sync_position(view);
+        }
+
+        if (view->width != it->w || view->height != it->h) {
+            expo_forget_view(server, view);   /* takes the slot with it */
+            expo_add_item(e, view);
+            i = -1;                            /* the array moved under us */
+            continue;
+        }
+
+        it->wx = view->x;
+        it->wy = view->y;
+        int lx = 0, ly = 0;
+        wlr_scene_node_coords(&view->scene_tree->node, &lx, &ly);
+        snapshot_subtree(server, it->buf, &view->scene_tree->node,
+                         lx, ly, EXPO_SNAP_SCALE);
+    }
+    /* The signature does not see a repainted buffer, only the list changing. */
+    e->drawn_zoom = -1.0;
 }
 
 void expo_forget_view(FwmServer *server, FwmView *view) {
@@ -1241,6 +1312,21 @@ void expo_tick(FwmServer *server, double dt) {
     if (fabs(pgap) > 0.5) e->pan += pgap * (1.0 - exp(-EXPO_PAN_SPEED * dt));
     else                  e->pan = e->pan_target;
 
+    /* Let go of the ring mid-turn and it keeps turning, slowing down — the
+     * same throw the windows themselves get. Stopped by grabbing it again, by
+     * anything that asks for a desktop, and by running into the ends of a strip
+     * that is not a ring (expo_clamp_pan). */
+    if (!e->orbiting && fabs(e->spin) > EXPO_SPIN_MIN) {
+        double before = e->pan_target;
+        e->pan_target += e->spin * dt;
+        expo_clamp_pan(e);
+        if (fabs(e->pan_target - before) < fabs(e->spin * dt) * 0.5) e->spin = 0.0;
+        e->pan = e->pan_target;
+        e->spin *= exp(-EXPO_SPIN_DECAY * dt);
+    } else if (!e->orbiting) {
+        e->spin = 0.0;
+    }
+
     /* Carrying a window to a desktop that is not on screen. The hand is at the
      * edge and cannot go further, so the strip turns under it instead — and on
      * a closed ring that means a window really can be walked all the way round,
@@ -1264,6 +1350,9 @@ void expo_tick(FwmServer *server, double dt) {
             expo_drag_to(e, lx, server->cursor->y);
         }
     }
+
+    /* Windows that opened since the last frame. */
+    if (!e->leaving) expo_sync_items(e);
 
     /* Read from the config every frame rather than tracked: `x`, a `fwmctl
      * set` and a config reload all mean the same thing here, and none of them
@@ -1350,6 +1439,15 @@ static void expo_clamp_pan(FwmExpo *e) {
     double hi = (FWM_DESKTOPS - 1 - e->home) * pitch + half;
     if (e->pan_target < lo) e->pan_target = lo;
     if (e->pan_target > hi) e->pan_target = hi;
+}
+
+static const char *expo_mode_name(FwmServer *server, int d) {
+    if (d < 0 || d >= FWM_DESKTOPS) return "physics";
+    switch (server->desktop_mode[d]) {
+    case DESKTOP_MODE_TILING:   return "tiling";
+    case DESKTOP_MODE_FLOATING: return "floating";
+    default:                    return "physics";
+    }
 }
 
 /* Put the dragged window where the cursor is. Through expo_point, so it works
@@ -1472,14 +1570,26 @@ bool expo_handle_motion(FwmServer *server, double lx, double ly) {
         e->orbit_x = lx;
         e->orbit_y = ly;
 
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        e->orbit_dt = (double)(now.tv_sec - e->orbit_time.tv_sec)
+                    + (double)(now.tv_nsec - e->orbit_time.tv_nsec) / 1e9;
+        e->orbit_time = now;
+
         /* Sideways is the pan the strip always had — turning the ring under a
          * fixed camera is the same thing as flying round it, and reusing it
          * keeps one notion of where the strip is looking. */
         double s = expo_scale(e);
         if (s > 1e-6) {
-            e->pan_target -= dx / s;
+            double step = -dx / s;
+            e->pan_target += step;
             expo_clamp_pan(e);
             e->pan = e->pan_target;      /* a hand is steering; no easing */
+            /* Remember how fast it was going, for the throw. Smoothed, because
+             * the last motion event before a release is often a stray pixel and
+             * would otherwise decide the whole spin. */
+            double dt = e->orbit_dt > 0.001 ? e->orbit_dt : 0.016;
+            e->spin = e->spin * 0.6 + (step / dt) * 0.4;
         }
         e->tilt_target += dy * EXPO_TILT_STEP / 40.0;
         if (e->tilt_target >  EXPO_TILT_MAX) e->tilt_target =  EXPO_TILT_MAX;
@@ -1563,6 +1673,22 @@ bool expo_handle_button(FwmServer *server, uint32_t button, bool pressed,
         int row = (mx >= 0 && mx < mw && my >= 0 && my < mh)
                       ? expo_menu_hit(mx, my) : EXPO_MENU_ROW_NONE;
         ExpoItem *target = e->menu_item;
+
+        if (row == EXPO_MENU_ROW_MODE && target) {
+            /* A cycle stays open: clicking three times should walk the three
+             * modes, not open the menu three times. */
+            int d = target->desktop;
+            int next = server->desktop_mode[d] == DESKTOP_MODE_PHYSICS
+                           ? DESKTOP_MODE_TILING
+                     : server->desktop_mode[d] == DESKTOP_MODE_TILING
+                           ? DESKTOP_MODE_FLOATING : DESKTOP_MODE_PHYSICS;
+            server_set_desktop_mode(server, d, next);
+            expo_refresh_desktop(server, d);
+            expo_menu_set_mode(e->menu, expo_mode_name(server, d));
+            server_request_tray_redraw(server);
+            return true;
+        }
+
         expo_menu_close(e);
         if (row == EXPO_MENU_ROW_GOTO && target) {
             server_focus_view(server, target->view);
@@ -1590,6 +1716,9 @@ bool expo_handle_button(FwmServer *server, uint32_t button, bool pressed,
         e->orbiting = 1;
         e->orbit_x = lx;
         e->orbit_y = ly;
+        e->orbit_dt = 0.0;
+        clock_gettime(CLOCK_MONOTONIC, &e->orbit_time);
+        e->spin = 0.0;               /* catching it stops it dead */
         return true;
     }
 
@@ -1602,7 +1731,8 @@ bool expo_handle_button(FwmServer *server, uint32_t button, bool pressed,
             if (it) {
                 e->menu = expo_menu_show(server->layer_overlay,
                                          server->screen_width, server->screen_height,
-                                         lx, ly, view_title(it->view));
+                                         lx, ly, view_title(it->view),
+                                         expo_mode_name(server, it->desktop));
                 e->menu_item = e->menu ? it : NULL;
                 e->hover = it;
                 expo_layout(e);
