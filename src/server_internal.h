@@ -133,4 +133,25 @@ void idle_inhibit_refresh(FwmServer *server);
 /* ── server_shell.c ───────────────────────────────────────────────────── */
 void server_shell_register(FwmServer *server);
 
+/* ── server_seat.c ────────────────────────────────────────────────────────
+ * The seat's own business: selections, drag-and-drop, pointer constraints,
+ * cursor shape, activation. The cursor half calls into these three. */
+void server_seat_register(FwmServer *server);
+void drag_icon_update_position(FwmServer *server);
+FwmView *view_from_surface(FwmServer *server, struct wlr_surface *surface);
+void constraints_follow_focus(FwmServer *server, struct wlr_surface *surface);
+
+/* ── server_drag.c ────────────────────────────────────────────────────────
+ * What a held mouse button MEANS: moving, resizing, turning, swapping. All of
+ * it lives between a press and its release, and ends by handing momentum to
+ * the simulation. */
+bool server_drag_motion(FwmServer *server, double lx, double ly,
+                        const struct timespec *now);
+bool server_drag_press(FwmServer *server, uint32_t button, double lx, double ly,
+                       const struct timespec *now);
+void server_drag_release(FwmServer *server, double lx, double ly);
+
+/* A wlroots button code as [mouse] names it, or -1. */
+int button_to_fwm(uint32_t button);
+
 #endif /* FWM_SERVER_INTERNAL_H */

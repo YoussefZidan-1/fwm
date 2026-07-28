@@ -117,6 +117,8 @@ set(SOURCES
     src/server_output.c
     src/server_input.c
     src/server_pointer.c
+    src/server_seat.c
+    src/server_drag.c
     src/gestures.c
     src/server_gestures.c
     src/server_config.c
