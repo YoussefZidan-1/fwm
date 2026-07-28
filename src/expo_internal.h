@@ -137,6 +137,9 @@ struct FwmExpo {
     /* Right-click menu. It is parented to layer_overlay, not to the strip's own
      * tree, so it stays above the tray and does not scale with the cards. */
     struct wlr_scene_buffer *menu;
+    /* The key hints along the bottom. Parented to layer_overlay with the menu,
+     * so they neither scale with the cards nor hide under them. */
+    struct wlr_scene_buffer *hints;
     ExpoItem *menu_item;
 };
 

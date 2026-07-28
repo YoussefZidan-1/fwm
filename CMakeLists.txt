@@ -133,6 +133,7 @@ set(SOURCES
     src/ui/launcher.c
     src/ui/logo.c
     src/ui/expo_menu.c
+    src/ui/expo_hints.c
 )
 
 # wlroots ships the C headers for the wlr-* protocols but not the generated

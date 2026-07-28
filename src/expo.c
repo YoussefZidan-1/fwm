@@ -25,6 +25,7 @@
 #include "ui/launcher.h"
 #include "ui/expo_menu.h"
 #include "ui/cairo_overlay.h"
+#include "ui/expo_hints.h"
 #include "defines.h"
 #include <math.h>
 #include <stdlib.h>
@@ -89,6 +90,7 @@ static void expo_teardown(FwmServer *server) {
     server->expo = NULL;    /* before anything else: nothing may re-enter here */
 
     expo_menu_close(e);
+    if (e->hints) cairo_overlay_destroy(e->hints);
     for (int i = 0; i < e->n_items; i++) {
         if (e->items[i].tex) wlr_texture_destroy(e->items[i].tex);
         if (e->items[i].buf) wlr_buffer_unlock(e->items[i].buf);
@@ -215,6 +217,11 @@ static void expo_open(FwmServer *server) {
     /* The tray stays on screen, but its menu hangs off a pill that clicks can
      * no longer reach while the strip owns the pointer. */
     server_close_modes_menu(server);
+
+    /* The strip's keys are not binds — they belong to the mode and are in
+     * nobody's config — so nothing else could tell anyone what they are. */
+    e->hints = expo_hints_show(server->layer_overlay, server->screen_width,
+                               server->screen_height, expo_can_orbit(e));
 }
 
 void expo_close(FwmServer *server, int desktop) {
@@ -297,6 +304,10 @@ void expo_zoom_step(FwmServer *server) {
     if (!e || e->leaving) return;
     e->zoom_target = e->zoom_target > (EXPO_ZOOM_NEAR + EXPO_ZOOM_FAR) / 2.0
                    ? EXPO_ZOOM_NEAR : EXPO_ZOOM_FAR;
+    /* The far step is where the camera may leave its seat, so it is where the
+     * hints have something else to say. */
+    expo_hints_set_flight(e->hints, server->screen_width, server->screen_height,
+                          expo_can_orbit(e));
 }
 
 void expo_destroy(FwmServer *server) {
