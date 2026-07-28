@@ -1346,7 +1346,12 @@ bool expo_handle_button(FwmServer *server, uint32_t button, bool pressed,
         e->drag_off_x = wx - it->wx;
         e->drag_off_y = wy - it->wy;
         e->hover = it;
-        wlr_scene_node_raise_to_top(&it->node->node);
+        /* Only the flat path has a node to raise. On the curved one there is
+         * no scene node for a window at all — the strip is drawn by hand, and
+         * expo_draw_gl already paints the dragged card last. Raising the NULL
+         * was a segfault the moment a window was picked up in 3D, and one that
+         * left nothing in the log to find it by. */
+        if (it->node) wlr_scene_node_raise_to_top(&it->node->node);
         return true;
     }
 
