@@ -146,9 +146,12 @@
 #define EXPO_DIST_MIN       0.6
 #define EXPO_DIST_MAX       3.0
 #define EXPO_DIST_STEP      1.18   /* one wheel notch, multiplicative */
-/* How fast the camera eases to where it was sent, and back to the canonical
- * view when anything else happens, 1/s. */
+/* How fast the camera eases to where it was sent, 1/s — and how fast it comes
+ * BACK, which is quicker on purpose: the strip may only collapse into the live
+ * screen from the canonical view, so the camera has to be home before the zoom
+ * lands rather than at the same time as it. */
 #define EXPO_ORBIT_SPEED    9.0
+#define EXPO_ORBIT_HOME_SPEED 18.0
 /* Viewer distance from the front of the strip. Smaller is a wider lens: more
  * dramatic, and quicker to look wrong at the edges of the screen. */
 #define EXPO_CAM_DIST       2.2

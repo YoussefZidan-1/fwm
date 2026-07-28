@@ -1276,11 +1276,16 @@ void expo_tick(FwmServer *server, double dt) {
         e->dist_target = 1.0;
         e->orbiting = 0;
     }
+    /* Coming home is quicker than being sent: the collapse below may only
+     * happen from the canonical view, and a camera still easing down while the
+     * zoom lands is what made a thumbnail slide off its own desktop. */
+    bool homing = e->tilt_target == 0.0 && e->dist_target == 1.0;
+    double crate = homing ? EXPO_ORBIT_HOME_SPEED : EXPO_ORBIT_SPEED;
     double tgap = e->tilt_target - e->tilt;
-    if (fabs(tgap) > 0.0005) e->tilt += tgap * (1.0 - exp(-EXPO_ORBIT_SPEED * dt));
+    if (fabs(tgap) > 0.0005) e->tilt += tgap * (1.0 - exp(-crate * dt));
     else                     e->tilt = e->tilt_target;
     double dgap = e->dist_target - e->dist;
-    if (fabs(dgap) > 0.0005) e->dist += dgap * (1.0 - exp(-EXPO_ORBIT_SPEED * dt));
+    if (fabs(dgap) > 0.0005) e->dist += dgap * (1.0 - exp(-crate * dt));
     else                     e->dist = e->dist_target;
 
     e->seam_target = server->config.camera.wrap ? 0.0 : 1.0;
@@ -1288,7 +1293,11 @@ void expo_tick(FwmServer *server, double dt) {
     if (fabs(sgap) > 0.001) e->seam += sgap * (1.0 - exp(-EXPO_RING_SPEED * dt));
     else                    e->seam = e->seam_target;
 
-    if (e->leaving && e->zoom <= 1.0005) {
+    /* Only from level, and only from the right distance: at zoom 1.0 the strip
+     * is pixel-for-pixel the live screen ONLY through the canonical camera, and
+     * swapping to the real desktop from any other one is a visible jump. */
+    if (e->leaving && e->zoom <= 1.0005
+        && fabs(e->tilt) < 0.002 && fabs(e->dist - 1.0) < 0.002) {
         expo_teardown(server);
         return;
     }
