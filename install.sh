@@ -64,11 +64,20 @@ install_deps() {
             pipewire-devel pulseaudio-libs-devel xorg-x11-server-Xwayland
     elif command -v xbps-install >/dev/null 2>&1; then
         msg "Installing dependencies (xbps/Void)"
-        $SUDO xbps-install -Sy \
+        # "already installed" lines are noise; a real failure is usually a
+        # partial upgrade — installing deps pulls a newer shlib that some
+        # already-installed package was not rebuilt against yet.
+        if ! $SUDO xbps-install -Sy \
             gcc make cmake pkg-config git \
             wayland-devel wlroots0.20-devel libxkbcommon-devel \
             cairo-devel pango-devel gdk-pixbuf-devel ffmpeg6-devel seatd \
             pipewire-devel pulseaudio-devel xorg-server-xwayland
+        then
+            warn "xbps aborted (unresolved shlibs?) — bring the system up to date first:"
+            warn "  $SUDO xbps-install -Su"
+            warn "then re-run this script"
+            exit 1
+        fi
         # Void has no systemd-logind: wlroots needs seatd for DRM/input access.
         if [ ! -e /var/service/seatd ]; then
             warn "enable seatd before starting fwm from a TTY:"
