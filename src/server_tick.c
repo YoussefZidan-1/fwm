@@ -35,6 +35,7 @@
 #include "cava.h"
 #include "group.h"
 #include "expo.h"
+#include "snapshot.h"
 #include "server_internal.h"
 
 #include <stdlib.h>
@@ -156,15 +157,78 @@ static void server_consume_impacts(FwmServer *server) {
 
 /* Advanced at FRAME time, like the other purely visual ramps (see
  * server_animate) — on the physics timer it would beat against vsync. */
+/* Both the shake and the seam slide move the world without moving the camera,
+ * so they have to agree on where it ends up rather than each writing its own
+ * answer over the other's. */
+static void server_world_offset(FwmServer *server, int ox, int oy) {
+    if (server->wrap_slide > 0.0)
+        ox += (int)lround(server->wrap_dir * server->wrap_slide);
+    if (server->layer_windows)
+        wlr_scene_node_set_position(&server->layer_windows->node, ox, oy);
+    if (server->layer_background)
+        wlr_scene_node_set_position(&server->layer_background->node, ox, oy);
+    if (server->wrap_ghost) {
+        /* A screen behind the world, in the direction it came from. */
+        wlr_scene_node_set_position(&server->wrap_ghost->node,
+                                    ox - server->wrap_dir * server->screen_width, oy);
+    }
+}
+
+/* Start the slide. The caller has already put the camera on the far side of the
+ * join; this is what stops that being a cut. */
+void server_wrap_slide_start(FwmServer *server, int dir) {
+    if (server->screen_width <= 0 || dir == 0) return;
+    server_wrap_slide_stop(server);
+
+    /* Photograph what the screen showed a moment ago — before the camera
+     * jumped, this was called; see server_goto_desktop. */
+    struct wlr_buffer *buf = snapshot_alloc(server, server->screen_width,
+                                            server->screen_height);
+    if (!buf) return;
+    if (!snapshot_world(server, buf)) { wlr_buffer_drop(buf); return; }
+
+    /* NOT a child of layer_windows, which is the tree being offset: the ghost
+     * travels the opposite way, and inside that tree its own offset would be
+     * added to the world's instead of opposing it. It sits beside it in the
+     * scene root, one place above, since it is in front of the desktop
+     * arriving until it has left. */
+    server->wrap_ghost = wlr_scene_buffer_create(&server->scene->tree, buf);
+    if (!server->wrap_ghost) { wlr_buffer_drop(buf); return; }
+    server->wrap_ghost_buf = wlr_buffer_lock(buf);
+    wlr_buffer_drop(buf);
+    wlr_scene_node_place_above(&server->wrap_ghost->node,
+                               &server->layer_windows->node);
+
+    server->wrap_dir = dir;
+    server->wrap_slide = server->screen_width;
+}
+
+void server_wrap_slide_stop(FwmServer *server) {
+    if (server->wrap_ghost) {
+        wlr_scene_node_destroy(&server->wrap_ghost->node);
+        server->wrap_ghost = NULL;
+    }
+    if (server->wrap_ghost_buf) {
+        wlr_buffer_unlock(server->wrap_ghost_buf);
+        server->wrap_ghost_buf = NULL;
+    }
+    server->wrap_slide = 0.0;
+}
+
+static void server_wrap_tick(FwmServer *server, double dt) {
+    if (server->wrap_slide <= 0.0) return;
+
+    double per_ms = server->screen_width / WRAP_SLIDE_MS;
+    server->wrap_slide -= per_ms * dt * 1000.0;
+    if (server->wrap_slide <= 1.0) server_wrap_slide_stop(server);
+}
+
 void server_shake_tick(FwmServer *server, double dt) {
+    server_wrap_tick(server, dt);
+
     if (server->shake_mag <= 0.01) {
-        if (server->shake_mag != 0.0) {
-            server->shake_mag = 0.0;
-            if (server->layer_windows)
-                wlr_scene_node_set_position(&server->layer_windows->node, 0, 0);
-            if (server->layer_background)
-                wlr_scene_node_set_position(&server->layer_background->node, 0, 0);
-        }
+        if (server->shake_mag != 0.0) server->shake_mag = 0.0;
+        server_world_offset(server, 0, 0);
         return;
     }
     server->shake_t += dt;
@@ -177,10 +241,7 @@ void server_shake_tick(FwmServer *server, double dt) {
 
     /* Only the world shakes. The tray and panels stay put: UI jittering under
      * the cursor reads as a glitch, not as impact. */
-    if (server->layer_windows)
-        wlr_scene_node_set_position(&server->layer_windows->node, ox, oy);
-    if (server->layer_background)
-        wlr_scene_node_set_position(&server->layer_background->node, ox, oy);
+    server_world_offset(server, ox, oy);
 }
 
 /* How long the compositor may sit without driving a frame itself. Not a
@@ -198,6 +259,7 @@ static int server_is_busy(FwmServer *server) {
     if (expo_live_active(server)) return 1;           /* front desktop kept live */
     if (server->camera_x != server->target_camera_x || server->cam_anim) return 1;
     if (server->shake_mag > 0.0) return 1;
+    if (server->wrap_slide > 0.0) return 1;            /* sliding across the join */
     if (server->wallpaper_prev) return 1;              /* wallpaper cross-fade */
     if (!wl_list_empty(&server->ghosts)) return 1;     /* close animations */
     if (launcher_is_open(server->launcher)) return 1;  /* spring tiles */

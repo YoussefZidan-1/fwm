@@ -198,6 +198,10 @@ static void expo_open(FwmServer *server) {
     if (e->hilight) wlr_scene_node_raise_to_top(&e->hilight->node);
     expo_snap_windows(e);
 
+    /* Nothing may be sliding under the strip: the slide is a render-only offset
+     * on the very trees about to be hidden, and it would still be there when
+     * they came back. */
+    server_wrap_slide_stop(server);
     expo_set_world_visible(server, false);
     expo_layout(e);
 

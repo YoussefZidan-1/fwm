@@ -49,4 +49,15 @@ bool snapshot_subtree(struct FwmServer *server, struct wlr_buffer *dst,
                       struct wlr_scene_node *node,
                       int origin_x, int origin_y, double scale);
 
+/* The whole desktop as it looks right now — wallpaper, windows, layer-shell
+ * background and bottom — and nothing that is screen furniture: no tray, no
+ * panels, no lock. Used for the slide across the ring's join, where a
+ * photograph of the desktop being left has to travel off one side while the
+ * one arriving comes in the other.
+ *
+ * The wallpaper is drawn from the copy it keeps rather than from the layer on
+ * screen: the live one is a cairo overlay whose pixels are gone by then, which
+ * is why the first version of this came out black behind the windows. */
+bool snapshot_world(struct FwmServer *server, struct wlr_buffer *dst);
+
 #endif /* FWM_SNAPSHOT_H */

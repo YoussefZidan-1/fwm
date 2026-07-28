@@ -367,6 +367,7 @@ void server_destroy(FwmServer *server) {
     launcher_destroy(server->launcher);
     server->launcher = NULL;
     expo_destroy(server);
+    server_wrap_slide_stop(server);   /* holds a buffer and a scene node */
 
     /* The rotation shaders belong to the renderer's GL context; they have to go
      * while that context still exists. */

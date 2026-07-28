@@ -255,9 +255,13 @@ void server_move_view_to_desktop(FwmServer *server, FwmView *view, int target,
          * and keep it focused. Claiming focus_desktop here stops the camera's
          * arrival handler from handing the keyboard to whatever else lives on
          * the destination. */
-        server->target_camera_x = target * server->screen_width;
-        server->cam_free = 0;
         server->focus_desktop = target;
+        /* Between the two ends of a closed ring this is one step, not nine:
+         * jump the join and slide across it, the same as any other step. */
+        int seam = server->config.camera.wrap
+                && ((src == FWM_DESKTOPS - 1 && target == 0)
+                 || (src == 0 && target == FWM_DESKTOPS - 1));
+        server_goto_desktop(server, target, seam);
         server_focus_view(server, view);
     } else if (server->focused_view == view) {
         /* The camera stays put (i3/sway convention: moving is not following),

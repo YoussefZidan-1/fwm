@@ -363,6 +363,17 @@ typedef struct FwmServer {
     int tick_idle;      /* physics timer is on the slow heartbeat */
     double shake_mag;   /* px; decays to 0 */
     double shake_t;     /* seconds since the last impact, drives the oscillation */
+    /* The slide across the ring's join. The camera has already jumped when this
+     * starts — the join is never drawn, and there is nothing between desktop
+     * ten and desktop one to draw — so the animation is a lie told carefully:
+     * the world is put back a screen's width and eased into place while a
+     * photograph of the desktop being left travels the other way. RENDER-ONLY,
+     * like the shake, and for the same reason: camera_x must not move, or the
+     * active-desktop test and edge auto-scroll would see the offset. */
+    double wrap_slide;  /* px still to travel; 0 when nothing is sliding */
+    int wrap_dir;       /* +1 travelling right, -1 left */
+    struct wlr_scene_buffer *wrap_ghost;   /* the desktop being left */
+    struct wlr_buffer *wrap_ghost_buf;
     int screen_width;
     int screen_height;
     

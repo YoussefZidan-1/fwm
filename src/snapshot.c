@@ -14,6 +14,7 @@
 
 #include "snapshot.h"
 #include "server.h"
+#include "wallpaper.h"
 #include <math.h>
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_compositor.h>
@@ -108,6 +109,69 @@ bool snapshot_subtree(FwmServer *server, struct wlr_buffer *dst,
         .origin_x = origin_x, .origin_y = origin_y, .scale = scale,
     };
     wlr_scene_node_for_each_buffer(node, snapshot_add_buffer, &ctx);
+
+    return wlr_render_pass_submit(pass);
+}
+
+bool snapshot_world(FwmServer *server, struct wlr_buffer *dst) {
+    if (!server->wlr_renderer || !dst) return false;
+
+    struct wlr_render_pass *pass =
+        wlr_renderer_begin_buffer_pass(server->wlr_renderer, dst, NULL);
+    if (!pass) return false;
+
+    wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){
+        .box = { .x = 0, .y = 0, .width = dst->width, .height = dst->height },
+        .color = { .r = 0, .g = 0, .b = 0, .a = 1 },
+        .blend_mode = WLR_RENDER_BLEND_MODE_NONE,
+    });
+
+    /* The wallpaper comes from its own small copy, not from the layer on
+     * screen: those are cairo overlays whose pixels the scene has taken and
+     * whose CPU side the wallpaper then freed, so importing them again yields
+     * nothing at all. It is the same trap the desktop strip's cards fell into
+     * twice; see wallpaper.h. */
+    FwmWallpaper *wp = server->wallpaper;
+    for (int i = 0; i < wallpaper_layer_count(wp); i++) {
+        struct wlr_buffer *src = wallpaper_layer_buffer(wp, i);
+        if (!src) continue;
+        struct wlr_texture *tex = wlr_texture_from_buffer(server->wlr_renderer, src);
+        if (!tex) continue;
+        struct wlr_fbox crop;
+        wallpaper_layer_crop(wp, i, server->camera_x,
+                             server->screen_width, server->screen_height, &crop);
+        wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){
+            .texture = tex,
+            .src_box = crop,
+            .dst_box = { .x = 0, .y = 0,
+                         .width = dst->width, .height = dst->height },
+            .filter_mode = WLR_SCALE_FILTER_BILINEAR,
+            .blend_mode = WLR_RENDER_BLEND_MODE_PREMULTIPLIED,
+        });
+        wlr_texture_destroy(tex);
+    }
+
+    /* Then everything that is not screen furniture. The furniture is left out
+     * by disabling those trees for the length of the walk and putting them
+     * back, which costs nothing: no frame is drawn in between. */
+    struct wlr_scene_tree *furniture[] = {
+        server->ls_top, server->ls_overlay, server->layer_overlay,
+        server->layer_lock,
+    };
+    bool was[sizeof(furniture) / sizeof(furniture[0])];
+    for (size_t i = 0; i < sizeof(furniture) / sizeof(furniture[0]); i++) {
+        was[i] = furniture[i] && furniture[i]->node.enabled;
+        if (furniture[i]) wlr_scene_node_set_enabled(&furniture[i]->node, false);
+    }
+
+    struct snapshot_ctx ctx = {
+        .pass = pass, .renderer = server->wlr_renderer,
+        .origin_x = 0, .origin_y = 0, .scale = 1.0,
+    };
+    wlr_scene_node_for_each_buffer(&server->scene->tree.node, snapshot_add_buffer, &ctx);
+
+    for (size_t i = 0; i < sizeof(furniture) / sizeof(furniture[0]); i++)
+        if (furniture[i]) wlr_scene_node_set_enabled(&furniture[i]->node, was[i]);
 
     return wlr_render_pass_submit(pass);
 }

@@ -257,9 +257,17 @@ void server_goto_desktop(FwmServer *server, int d, int seam) {
     if (d < 0 || d >= FWM_DESKTOPS || server->screen_width <= 0) return;
     if (expo_goto_desktop(server, d)) return;
 
+    int was = server->camera_x;
     server->target_camera_x = d * server->screen_width;
     server->cam_free = 0;
     if (!seam) return;
+
+    /* Photographed before the camera moves, and started after: the slide shows
+     * the desktop being left travelling off one side while the one arriving
+     * comes in the other. Direction is the way the STEP went, not the way
+     * camera_x jumped — those are opposite at the join, which is the whole
+     * reason the jump needs covering. */
+    server_wrap_slide_start(server, server->target_camera_x < was ? 1 : -1);
 
     server->camera_x = server->target_camera_x;
     server->cam_anim = 0;
@@ -578,6 +586,7 @@ void server_dispatch_action(FwmServer *server, const char *action) {
         server->target_camera_x = new_target;
         server->cam_free = 1; // continuous pan, not a desktop jump
         if (seam) {
+            server_wrap_slide_start(server, amt > 0 ? 1 : -1);
             server->camera_x = new_target;
             server->cam_anim = 0;
             server_camera_settled(server);

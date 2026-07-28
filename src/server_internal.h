@@ -68,6 +68,13 @@ void server_reclaim_memory(void);
 void server_dispatch_action(FwmServer *server, const char *action);
 FwmView *server_find_view(FwmServer *server, uint32_t id);
 void server_camera_settled(FwmServer *server);
+
+/* The slide across the ring's join: the camera has jumped, and this makes that
+ * look like one screen of travel instead of a cut. `dir` is +1 when the view
+ * moved right off the last desktop onto the first. Stop is idempotent and safe
+ * at any time — closing the strip and losing an output both call it. */
+void server_wrap_slide_start(FwmServer *server, int dir);
+void server_wrap_slide_stop(FwmServer *server);
 /* Park the camera on desktop `d`. `seam` marks a step that crossed the ring's
  * join, which is jumped rather than slid. Also the one place that hands the
  * move to the desktop strip when it is open. */

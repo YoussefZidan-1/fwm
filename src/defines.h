@@ -62,6 +62,11 @@
 #define BAR_MAX_RISE_SPEED      250.0
 #define GRAVITY  981.0   // px/s² (earth ~9.8 m/s² at 100 px/m)
 
+/* How long the slide across the ring's join takes, and it is deliberately
+ * quicker than a desktop switch (camera.anim_ms): the picture travels a whole
+ * screen, but what it stands for is one step. */
+#define WRAP_SLIDE_MS       220.0
+
 /* ── expo, the desktop strip ──────────────────────────────────────────── */
 /* Resolution the strip's snapshots are taken at, as a fraction of the real
  * thing. Ten screen-sized cards at 1:1 is most of a hundred megabytes of
