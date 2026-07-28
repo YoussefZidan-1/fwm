@@ -90,6 +90,16 @@ typedef struct {
 typedef struct {
     double anim_ms;    /* desktop-switch slide duration; <= 0 = instant snap */
     double free_speed; /* held move_camera: chase rate, 1/s; higher = tighter */
+    /* The strip is a ring: stepping right off the last desktop arrives on the
+     * first, and a window sent that way goes with it.
+     *
+     * Only STEPS wrap — next/prev, the wheel, a gesture. A free pan still
+     * stops at the ends, and the seam is never drawn: a wrapping step jumps
+     * the camera outright instead of sliding it back across nine desktops,
+     * which is both what the eye expects and the only cheap answer (the
+     * desktops are one continuous strip in world coordinates, so there is no
+     * such thing as a picture of the join). */
+    int wrap;
 } CameraConfig;
 
 /* ── decorations ─────────────────────────────────────────────────────── */

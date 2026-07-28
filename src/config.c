@@ -73,7 +73,7 @@ static int action_is_known(const char *a) {
         "toggle_floating", "toggle_floating_all",
         "calm_all", "fake_fullscreen", "real_fullscreen",
         "launcher", "toggle_tray", "spin_window", "spin_all", "terminal",
-        "expo", NULL
+        "expo", "toggle_wrap", NULL
     };
     static const char *prefixes[] = {
         "spawn:", "view:", "move_camera:", "tile_focus:", "tile_move:",
@@ -278,12 +278,15 @@ static void load_tiling(toml_table_t *root, TilingConfig *t) {
 static void load_camera(toml_table_t *root, CameraConfig *c) {
     c->anim_ms = 350.0;
     c->free_speed = 14.0;
+    c->wrap = 0;
 
     toml_table_t *tbl = toml_table_in(root, "camera");
     if (!tbl) return;
 
     LOAD_DOUBLE(tbl, "anim_ms", c->anim_ms);
     LOAD_DOUBLE(tbl, "free_speed", c->free_speed);
+    toml_datum_t w = toml_bool_in(tbl, "wrap");
+    if (w.ok) c->wrap = w.u.b ? 1 : 0;
 }
 
 /* ── decor section ───────────────────────────────────────────────────── */
@@ -1413,6 +1416,7 @@ static const ConfigOption config_option_table[] = {
 
     { "camera.anim_ms",                 CFG_OPT_DOUBLE, offsetof(FwmConfig, camera.anim_ms),                  0.0, 10000.0,    "desktop-switch slide, ms" },
     { "camera.free_speed",              CFG_OPT_DOUBLE, offsetof(FwmConfig, camera.free_speed),               0.0,  1000.0,    "held move_camera chase rate, 1/s" },
+    { "camera.wrap",                    CFG_OPT_INT,    offsetof(FwmConfig, camera.wrap),                     0.0,     1.0,    "the strip is a ring: stepping past the last desktop arrives on the first" },
 
     { "decor.border_width",             CFG_OPT_INT,    offsetof(FwmConfig, decor.border_width),              0.0,    64.0,    "focus border, px; 0 disables" },
     { "decor.col_active",               CFG_OPT_COLOR,  offsetof(FwmConfig, decor.col_active),                0.0,     0.0,    "focused border colour" },

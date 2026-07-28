@@ -212,20 +212,55 @@ static const char *terminal_command(FwmServer *server) {
  * aiming at when a gesture or a held key fires this twice in a row. Returns -1
  * when it names nothing that exists, including the ends of the strip, so the
  * caller does nothing rather than wrapping around. */
-static int resolve_desktop(FwmServer *server, const char *arg) {
+/* Resolve a desktop argument. `seam` (may be NULL) reports that the answer was
+ * reached by stepping off one end of the strip onto the other, which the caller
+ * must jump rather than slide — see server_goto_desktop.
+ *
+ * Only next/prev wrap. A bare number is a destination, not a step: "view:0"
+ * from desktop 9 means that particular desktop, and travelling there past the
+ * eight in between is what the user asked for. */
+static int resolve_desktop_ex(FwmServer *server, const char *arg, int *seam) {
     int here = server->target_camera_x / server->screen_width;
-    int d;
+    int d, step = 0;
     if (strcmp(arg, "next") == 0) {
-        d = here + 1;
+        d = here + 1; step = 1;
     } else if (strcmp(arg, "prev") == 0) {
-        d = here - 1;
+        d = here - 1; step = 1;
     } else {
         char *end;
         long v = strtol(arg, &end, 10);
         if (end == arg) return -1;
         d = (int)v;
     }
-    return (d >= 0 && d < 10) ? d : -1;
+
+    if (step && server->config.camera.wrap && (d < 0 || d >= FWM_DESKTOPS)) {
+        d = (d + FWM_DESKTOPS) % FWM_DESKTOPS;
+        if (seam) *seam = 1;
+    }
+    return (d >= 0 && d < FWM_DESKTOPS) ? d : -1;
+}
+
+static int resolve_desktop(FwmServer *server, const char *arg) {
+    return resolve_desktop_ex(server, arg, NULL);
+}
+
+/* Park the camera on a desktop. A `seam` move — the ring's join — is jumped
+ * outright: sliding it would drag the view backwards across every desktop in
+ * between, and there is no picture of the join to slide through, because the
+ * ten desktops are one straight strip in world coordinates and always were. */
+void server_goto_desktop(FwmServer *server, int d, int seam) {
+    if (d < 0 || d >= FWM_DESKTOPS || server->screen_width <= 0) return;
+    if (expo_goto_desktop(server, d)) return;
+
+    server->target_camera_x = d * server->screen_width;
+    server->cam_free = 0;
+    if (!seam) return;
+
+    server->camera_x = server->target_camera_x;
+    server->cam_anim = 0;
+    server_camera_settled(server);
+    if (server->wallpaper) wallpaper_update(server->wallpaper, server->camera_x);
+    server_request_tray_redraw(server);
 }
 
 /* Shared setup for the tile_* actions: resolves the focused view's desktop,
@@ -255,7 +290,7 @@ void server_dispatch_action(FwmServer *server, const char *action) {
             if (d >= 0) expo_goto_desktop(server, d);
             return;
         }
-        if (strcmp(action, "expo") != 0) return;
+        if (strcmp(action, "expo") != 0 && strcmp(action, "toggle_wrap") != 0) return;
     }
 
     if (strcmp(action, "killclient") == 0) {
@@ -529,11 +564,14 @@ void server_dispatch_action(FwmServer *server, const char *action) {
         launcher_toggle(server->launcher);
         launcher_grab_sync(server, was_open);
     } else if (strncmp(action, "view:", 5) == 0) {
-        int desktop = resolve_desktop(server, action + 5);
-        if (desktop >= 0) {
-            server->target_camera_x = desktop * server->screen_width;
-            server->cam_free = 0; // discrete jump: use the eased slide
-        }
+        int seam = 0;
+        int desktop = resolve_desktop_ex(server, action + 5, &seam);
+        if (desktop >= 0) server_goto_desktop(server, desktop, seam);
+    } else if (strcmp(action, "toggle_wrap") == 0) {
+        server->config.camera.wrap = !server->config.camera.wrap;
+        wlr_log(WLR_INFO, "desktop strip is %s",
+                server->config.camera.wrap ? "a ring" : "a line");
+        server_request_tray_redraw(server);
     } else if (strncmp(action, "move_to:", 8) == 0) {
         int desktop = resolve_desktop(server, action + 8);
         if (desktop >= 0)

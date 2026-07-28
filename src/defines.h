@@ -99,6 +99,25 @@
 /* How fast a pan (arrows, wheel) chases where it was sent, 1/s. Quicker than
  * the zoom: a step sideways should feel like a nudge, not like a journey. */
 #define EXPO_PAN_SPEED      14.0
+/* ── perspective ──────────────────────────────────────────────────────
+ * The strip is not flat once it opens: it lies on a cylinder whose whole
+ * circumference is the ten desktops, so the card in front of you faces you and
+ * its neighbours turn away. Both numbers below are in strip pitches (one
+ * desktop plus its gap), which is the only length the strip has.
+ *
+ * The curvature is scaled by how far the strip has opened, so at the live view
+ * it is exactly zero and entering does not bend anything: the flat mapping is
+ * the k = 0 case of the same projection, not a separate code path. */
+/* Viewer distance from the front of the strip. Smaller is a wider lens: more
+ * dramatic, and quicker to look wrong at the edges of the screen. */
+#define EXPO_CAM_DIST       2.2
+/* Columns a card and a window are tessellated into. The projection is exact
+ * per column (only the vertical axis turns, so a column is at one depth), so
+ * this only has to resolve the CURVE — a card spans 36 degrees, and 16 columns
+ * put a joint every 2.25 of them. */
+#define EXPO_CARD_COLS      16
+#define EXPO_WIN_COLS       8
+
 /* How far the live wallpaper behind the strip is dimmed — the strip keeps it
  * on screen rather than blacking the background out — and the frame drawn
  * around the window under the cursor (px at 1:1, so it scales with the strip). */

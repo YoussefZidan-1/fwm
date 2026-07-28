@@ -59,6 +59,7 @@ static const char frag_ext_src[] =
 struct program {
     GLuint id;
     GLint attr_pos, attr_texcoord, uni_tex;
+    GLint uni_alpha, uni_color;   /* the strip's programs; -1 in the others */
     bool tried;       /* compiled once already, successfully or not */
 };
 
@@ -68,6 +69,20 @@ struct program {
  * these belonging to a destroyed context. */
 static struct wlr_renderer *owner;
 static struct program prog_2d, prog_ext;
+static struct program prog3d_2d, prog3d_ext, prog3d_solid;
+
+/* A different renderer than the one the programs were built on: forget them
+ * without touching GL. The old context is the only thing that could free them
+ * and it is already gone — calling into it would be a use-after-free, and the
+ * objects died with it anyway. */
+static void programs_forget(struct wlr_renderer *renderer) {
+    memset(&prog_2d, 0, sizeof(prog_2d));
+    memset(&prog_ext, 0, sizeof(prog_ext));
+    memset(&prog3d_2d, 0, sizeof(prog3d_2d));
+    memset(&prog3d_ext, 0, sizeof(prog3d_ext));
+    memset(&prog3d_solid, 0, sizeof(prog3d_solid));
+    owner = renderer;
+}
 
 static GLuint compile_shader(GLenum type, const char *src) {
     GLuint shader = glCreateShader(type);
@@ -87,11 +102,50 @@ static GLuint compile_shader(GLenum type, const char *src) {
     return shader;
 }
 
+/* The strip's vertex shader. `pos` is (x_ndc, y_ndc, w): pre-multiplying the
+ * position by w and handing w through as the clip coordinate makes the
+ * rasterizer's own divide reproduce the projection exactly — and, the point of
+ * the exercise, interpolate the texture coordinate perspective-correctly. */
+static const char vert3d_src[] =
+    "attribute vec3 pos;\n"
+    "attribute vec2 texcoord;\n"
+    "varying vec2 v_texcoord;\n"
+    "void main() {\n"
+    "  v_texcoord = texcoord;\n"
+    "  gl_Position = vec4(pos.xy * pos.z, 0.0, pos.z);\n"
+    "}\n";
+
+static const char frag3d_2d_src[] =
+    "precision mediump float;\n"
+    "varying vec2 v_texcoord;\n"
+    "uniform sampler2D tex;\n"
+    "uniform float alpha;\n"
+    "void main() { gl_FragColor = texture2D(tex, v_texcoord) * alpha; }\n";
+
+static const char frag3d_ext_src[] =
+    "#extension GL_OES_EGL_image_external : require\n"
+    "precision mediump float;\n"
+    "varying vec2 v_texcoord;\n"
+    "uniform samplerExternalOES tex;\n"
+    "uniform float alpha;\n"
+    "void main() { gl_FragColor = texture2D(tex, v_texcoord) * alpha; }\n";
+
+static const char frag3d_solid_src[] =
+    "precision mediump float;\n"
+    "uniform vec4 color;\n"
+    "void main() { gl_FragColor = color; }\n";
+
+static bool program_build_from(struct program *p, const char *vsrc, const char *frag_src);
+
 static bool program_build(struct program *p, const char *frag_src) {
+    return program_build_from(p, vert_src, frag_src);
+}
+
+static bool program_build_from(struct program *p, const char *vsrc, const char *frag_src) {
     if (p->tried) return p->id != 0;
     p->tried = true;
 
-    GLuint vs = compile_shader(GL_VERTEX_SHADER, vert_src);
+    GLuint vs = compile_shader(GL_VERTEX_SHADER, vsrc);
     GLuint fs = compile_shader(GL_FRAGMENT_SHADER, frag_src);
     if (!vs || !fs) {
         if (vs) glDeleteShader(vs);
@@ -124,6 +178,8 @@ static bool program_build(struct program *p, const char *frag_src) {
     p->attr_pos = glGetAttribLocation(id, "pos");
     p->attr_texcoord = glGetAttribLocation(id, "texcoord");
     p->uni_tex = glGetUniformLocation(id, "tex");
+    p->uni_alpha = glGetUniformLocation(id, "alpha");
+    p->uni_color = glGetUniformLocation(id, "color");
     return true;
 }
 
@@ -176,15 +232,7 @@ static bool blit_verts(struct wlr_renderer *renderer, struct wlr_buffer *dst,
                        struct wlr_texture *src, const GLfloat *verts,
                        const GLfloat *texcoords, int count, GLenum mode) {
     if (!rotate_supported(renderer) || !dst || !src) return false;
-    if (owner != renderer) {
-        /* A different renderer than the one the programs were built on: forget
-         * them without touching GL. The old context is the only thing that
-         * could free them and it is already gone — calling into it would be a
-         * use-after-free, and the objects died with it anyway. */
-        memset(&prog_2d, 0, sizeof(prog_2d));
-        memset(&prog_ext, 0, sizeof(prog_ext));
-        owner = renderer;
-    }
+    if (owner != renderer) programs_forget(renderer);
 
     struct wlr_gles2_texture_attribs attribs = {0};
     if (!wlr_texture_is_gles2(src)) return false;
@@ -325,20 +373,165 @@ bool warp_blit(struct wlr_renderer *renderer, struct wlr_buffer *dst,
     return blit_verts(renderer, dst, src, warp_verts, warp_tex, n, GL_TRIANGLES);
 }
 
+/* ── the strip's pass ─────────────────────────────────────────────────── */
+
+/* One pass at a time, held between begin and end: the EGL context is global
+ * state and nesting two of these would restore the wrong one. */
+static struct {
+    struct wlr_renderer *renderer;
+    struct egl_save save;
+    int dw, dh;
+    bool open;
+} pass;
+
+bool scene3d_begin(struct wlr_renderer *renderer, struct wlr_buffer *dst) {
+    if (pass.open || !rotate_supported(renderer) || !dst) return false;
+    if (owner != renderer) programs_forget(renderer);
+
+    GLuint fbo = wlr_gles2_renderer_get_buffer_fbo(renderer, dst);
+    if (!fbo) {
+        /* Not an error worth logging every frame — the caller falls back. */
+        return false;
+    }
+
+    if (!egl_enter(renderer, &pass.save)) return false;
+
+    pass.renderer = renderer;
+    pass.dw = dst->width;
+    pass.dh = dst->height;
+    pass.open = true;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, pass.dw, pass.dh);
+    glDisable(GL_SCISSOR_TEST);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    /* Everything in the pass is premultiplied, and cards do overlap at the
+     * edges once the strip is turned, so this one composes rather than copies
+     * — unlike rotate_blit, which owns its whole destination. */
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    return true;
+}
+
+/* Fill the vertex arrays for one strip. Two vertices per column, drawn as a
+ * triangle strip: the top and the bottom of that column. */
+static int strip_verts(const struct scene3d_col *cols, int n,
+                       GLfloat *pos, GLfloat *uv) {
+    int v = 0;
+    for (int i = 0; i < n; i++) {
+        float x_ndc = 2.0f * cols[i].x / pass.dw - 1.0f;
+        for (int end = 0; end < 2; end++) {
+            float y = end ? cols[i].y_bot : cols[i].y_top;
+            pos[v * 3 + 0] = x_ndc;
+            pos[v * 3 + 1] = 2.0f * y / pass.dh - 1.0f;
+            pos[v * 3 + 2] = cols[i].w > 0.001f ? cols[i].w : 0.001f;
+            uv[v * 2 + 0] = cols[i].u;
+            uv[v * 2 + 1] = end ? 1.0f : 0.0f;
+            v++;
+        }
+    }
+    return v;
+}
+
+static GLfloat strip_pos[SCENE3D_MAX_COLS * 2 * 3];
+static GLfloat strip_uv[SCENE3D_MAX_COLS * 2 * 2];
+
+static void strip_draw(struct program *p, int count) {
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glVertexAttribPointer(p->attr_pos, 3, GL_FLOAT, GL_FALSE, 0, strip_pos);
+    glEnableVertexAttribArray(p->attr_pos);
+    if (p->attr_texcoord >= 0) {
+        glVertexAttribPointer(p->attr_texcoord, 2, GL_FLOAT, GL_FALSE, 0, strip_uv);
+        glEnableVertexAttribArray(p->attr_texcoord);
+    }
+
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, count);
+
+    glDisableVertexAttribArray(p->attr_pos);
+    if (p->attr_texcoord >= 0) glDisableVertexAttribArray(p->attr_texcoord);
+}
+
+bool scene3d_strip(struct wlr_texture *tex, const struct scene3d_col *cols,
+                   int n, float alpha) {
+    if (!pass.open || !tex || !cols) return false;
+    if (n < 2 || n > SCENE3D_MAX_COLS) return false;
+    if (!wlr_texture_is_gles2(tex)) return false;
+
+    struct wlr_gles2_texture_attribs attribs = {0};
+    wlr_gles2_texture_get_attribs(tex, &attribs);
+
+    struct program *p = attribs.target == GL_TEXTURE_EXTERNAL_OES
+                            ? &prog3d_ext : &prog3d_2d;
+    if (!program_build_from(p, vert3d_src,
+                            p == &prog3d_ext ? frag3d_ext_src : frag3d_2d_src))
+        return false;
+
+    int count = strip_verts(cols, n, strip_pos, strip_uv);
+
+    glUseProgram(p->id);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(attribs.target, attribs.tex);
+    glTexParameteri(attribs.target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(attribs.target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    /* Clamped, or a card turned far enough would sample the opposite edge of
+     * its own wallpaper along the seam. */
+    glTexParameteri(attribs.target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(attribs.target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glUniform1i(p->uni_tex, 0);
+    if (p->uni_alpha >= 0) glUniform1f(p->uni_alpha, alpha);
+
+    strip_draw(p, count);
+
+    glBindTexture(attribs.target, 0);
+    glUseProgram(0);
+    return true;
+}
+
+bool scene3d_solid(const float rgba[4], const struct scene3d_col *cols, int n) {
+    if (!pass.open || !rgba || !cols) return false;
+    if (n < 2 || n > SCENE3D_MAX_COLS) return false;
+    if (!program_build_from(&prog3d_solid, vert3d_src, frag3d_solid_src)) return false;
+
+    int count = strip_verts(cols, n, strip_pos, strip_uv);
+
+    glUseProgram(prog3d_solid.id);
+    if (prog3d_solid.uni_color >= 0)
+        glUniform4f(prog3d_solid.uni_color, rgba[0], rgba[1], rgba[2], rgba[3]);
+
+    strip_draw(&prog3d_solid, count);
+
+    glUseProgram(0);
+    return true;
+}
+
+void scene3d_end(void) {
+    if (!pass.open) return;
+    glDisable(GL_BLEND);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    egl_leave(pass.renderer, &pass.save);
+    pass.open = false;
+}
+
 void rotate_shutdown(struct wlr_renderer *renderer) {
     if (!renderer || !rotate_supported(renderer)) return;
-    if (!prog_2d.id && !prog_ext.id) {
+
+    struct program *all[] = { &prog_2d, &prog_ext,
+                              &prog3d_2d, &prog3d_ext, &prog3d_solid };
+    bool any = false;
+    for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++)
+        if (all[i]->id) any = true;
+    if (!any) {
         owner = NULL;
         return;
     }
 
     struct egl_save save;
     if (egl_enter(renderer, &save)) {
-        if (prog_2d.id) glDeleteProgram(prog_2d.id);
-        if (prog_ext.id) glDeleteProgram(prog_ext.id);
+        for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++)
+            if (all[i]->id) glDeleteProgram(all[i]->id);
         egl_leave(renderer, &save);
     }
-    memset(&prog_2d, 0, sizeof(prog_2d));
-    memset(&prog_ext, 0, sizeof(prog_ext));
-    owner = NULL;
+    programs_forget(NULL);
 }

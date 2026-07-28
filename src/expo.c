@@ -16,6 +16,7 @@
 #include "server.h"
 #include "view.h"
 #include "snapshot.h"
+#include "rotate.h"
 #include "wallpaper.h"
 #include "physics.h"
 #include "theme.h"
@@ -39,7 +40,8 @@
  * taken from is hidden for as long as the strip is up. */
 typedef struct {
     FwmView *view;
-    struct wlr_scene_buffer *node;
+    struct wlr_scene_buffer *node;   /* flat path only */
+    struct wlr_texture *tex;         /* curved path only */
     struct wlr_buffer *buf;          /* our lock on the snapshot */
     double wx, wy;                   /* world position, in real (1:1) px */
     int w, h;                        /* world size */
@@ -77,6 +79,32 @@ struct FwmExpo {
     double pan, pan_target;
     int home;            /* desktop the strip was entered from */
     int leaving;         /* animating out; torn down when the zoom lands */
+
+    /* The curved path. A scene node is an axis-aligned rectangle and a turned
+     * card is not, so when the renderer can do it (GLES2 — see rotate.h) the
+     * whole strip is drawn by hand into one buffer instead, and `canvas` is the
+     * single node that shows it. Two buffers, alternately: the scene may still
+     * be reading last frame's while this one is drawn.
+     *
+     * When it cannot (Vulkan, pixman), `gl` stays false, the scene nodes above
+     * are used, and expo_openness is forced to leave the strip flat. Everything
+     * else — the geometry, the input, the animation — is shared. */
+    bool gl;
+    struct wlr_scene_buffer *canvas;
+    struct wlr_buffer *canvas_buf[2];
+    int canvas_i;
+    /* What the canvas currently shows. Handing the scene a buffer damages the
+     * whole screen, which schedules another frame, which would redraw and
+     * damage again: a strip standing perfectly still would pin the machine at
+     * 60fps forever. The flat path has no such problem — setting a node to the
+     * position it already has is a no-op in wlr_scene — so this is the price of
+     * drawing by hand, and it is one comparison. */
+    double drawn_zoom, drawn_pan, drawn_drag_x, drawn_drag_y;
+    int drawn_cam, drawn_items, drawn_wrap;
+    void *drawn_hover, *drawn_drag;
+    struct wlr_texture *wp_tex[EXPO_MAX_WP_LAYERS];
+    struct wlr_fbox wp_crop[FWM_DESKTOPS][EXPO_MAX_WP_LAYERS];
+    int wp_n;
 
     ExpoItem *hover;
     ExpoItem *drag;
@@ -141,34 +169,156 @@ static double expo_center(FwmExpo *e) {
          + e->home * expo_gap(e) + e->pan;
 }
 
-static double expo_strip_x(FwmExpo *e, double wx, int desktop) {
-    return wx + desktop * expo_gap(e);
+/* ── the projection ───────────────────────────────────────────────────────
+ *
+ * The strip lies on a cylinder whose whole circumference is the ten desktops,
+ * so the card in front of you faces you and its neighbours turn away by
+ * exactly their share of the circle. The curvature is scaled by how far the
+ * strip has opened, which is what makes the flat view the k = 0 case of this
+ * same projection rather than a second mode: at zoom 1.0 every formula below
+ * reduces to the `u * scale + half a screen` the strip used before it had a
+ * third dimension, and entering therefore bends nothing at first.
+ *
+ * Only the vertical axis turns. That is not a simplification of a nicer model:
+ * it is what puts a whole COLUMN of the surface at one depth, which is what
+ * lets the thing be drawn as strips of columns (see rotate.h) and inverted in
+ * closed form below. */
+
+/* Radius the strip is bent to, in strip px. 0 means flat — the live view, and
+ * the first frames of opening. */
+static double expo_radius(FwmExpo *e) {
+    /* A scene node cannot be a trapezoid, so the fallback path is flat and
+     * says so here rather than in six places downstream. */
+    if (!e->gl) return 0.0;
+    double k = expo_openness(e);
+    if (k < 0.02) return 0.0;
+    return FWM_DESKTOPS * expo_pitch(e) / (2.0 * M_PI) / k;
+}
+
+/* Viewer distance from the front of the strip. The focal length derived from
+ * it keeps the middle of the strip exactly the size the flat mapping drew it,
+ * so the zoom means the same thing in both. */
+static double expo_dist(FwmExpo *e) {
+    return EXPO_CAM_DIST * expo_pitch(e);
+}
+
+/* Strip offset from the middle of the screen → projected x and view depth. The
+ * depth comes back because everything else on that column — its top, its
+ * bottom, its texture — is divided by the same number. */
+static void expo_project(FwmExpo *e, double u, double *sx, double *depth) {
+    double d = expo_dist(e), f = expo_scale(e) * d;
+    double r = expo_radius(e);
+
+    double px, dep;
+    if (r <= 0.0) {
+        px = u;
+        dep = d;
+    } else {
+        double phi = u / r;
+        px = r * sin(phi);
+        dep = d + r * (1.0 - cos(phi));
+    }
+    if (dep < 1.0) dep = 1.0;
+    if (sx) *sx = e->server->screen_width / 2.0 + f * px / dep;
+    if (depth) *depth = dep;
+}
+
+/* A world y at a known depth. Vertical is not bent, so this is the plain
+ * perspective divide. */
+static double expo_project_y(FwmExpo *e, double wy, double depth) {
+    double f = expo_scale(e) * expo_dist(e);
+    return e->server->screen_height / 2.0
+         + f * (wy - e->server->screen_height / 2.0) / depth;
+}
+
+/* The inverse: screen point → strip offset and world y. Closed form, because
+ * the surface is a circle and the line of sight is a line —
+ *   X = R sin(phi) / (A - R cos(phi)),   A = D + R
+ * rearranges to sin(phi + atan X) = X A / (R sqrt(1 + X^2)).
+ *
+ * Input has to travel back down the path the pictures went out on, and it must
+ * be the SAME path: one place knows about the curve, or the cursor and the
+ * cards disagree the moment either is touched. */
+static void expo_unproject(FwmExpo *e, double sx, double sy,
+                           double *u, double *wy) {
+    double d = expo_dist(e), f = expo_scale(e) * d;
+    double r = expo_radius(e);
+    double X = (sx - e->server->screen_width / 2.0) / f;
+
+    double uu, dep;
+    if (r <= 0.0) {
+        uu = X * d;
+        dep = d;
+    } else {
+        double A = d + r;
+        double arg = X * A / (r * sqrt(1.0 + X * X));
+        if (arg >  1.0) arg =  1.0;
+        if (arg < -1.0) arg = -1.0;
+        double phi = asin(arg) - atan(X);
+        uu = phi * r;
+        dep = A - r * cos(phi);
+        if (dep < 1.0) dep = 1.0;
+    }
+    if (u) *u = uu;
+    if (wy) *wy = e->server->screen_height / 2.0
+                + (sy - e->server->screen_height / 2.0) * dep / f;
+}
+
+/* Where a desktop's card stands along the strip. With the ring closed it is
+ * whichever way round is nearer, so desktop 9 stands to the LEFT of desktop 0
+ * instead of nine cards away. This is the one place the strip knows it is a
+ * circle, and only for drawing: the world underneath stays a straight line,
+ * for all the reasons closing it properly would cost (mem:ideas/desktop-ring). */
+static double expo_desktop_strip_x(FwmExpo *e, int desktop) {
+    double x = (double)desktop * expo_pitch(e);
+    if (!e->server->config.camera.wrap) return x;
+
+    double circ = FWM_DESKTOPS * expo_pitch(e);
+    double centre = expo_center(e) - e->server->screen_width / 2.0;
+    while (x - centre >  circ / 2.0) x -= circ;
+    while (x - centre < -circ / 2.0) x += circ;
+    return x;
+}
+
+/* World point on a desktop → strip offset from the middle of the screen. */
+static double expo_offset(FwmExpo *e, double wx, int desktop) {
+    return expo_desktop_strip_x(e, desktop)
+         + (wx - (double)desktop * e->server->screen_width)
+         - expo_center(e);
 }
 
 static void expo_to_screen(FwmExpo *e, double wx, double wy, int desktop,
                            double *sx, double *sy) {
-    double s = expo_scale(e);
-    *sx = (expo_strip_x(e, wx, desktop) - expo_center(e)) * s
-        + e->server->screen_width / 2.0;
-    *sy = (wy - e->server->screen_height / 2.0) * s
-        + e->server->screen_height / 2.0;
+    double depth;
+    expo_project(e, expo_offset(e, wx, desktop), sx, &depth);
+    if (sy) *sy = expo_project_y(e, wy, depth);
 }
 
 /* Screen point → desktop and the world point on it. The desktop is clamped
- * into range, so a point in a gap belongs to the card nearest it. */
+ * into range — or wrapped, on a ring — so a point in a gap belongs to the card
+ * nearest it. */
 static void expo_point(FwmExpo *e, double sx, double sy,
                        int *desktop, double *wx, double *wy) {
-    double s = expo_scale(e);
-    double u = (sx - e->server->screen_width / 2.0) / s + expo_center(e);
-    double v = (sy - e->server->screen_height / 2.0) / s
-             + e->server->screen_height / 2.0;
+    double u, v;
+    expo_unproject(e, sx, sy, &u, &v);
 
-    int d = (int)floor(u / expo_pitch(e));
+    double pitch = expo_pitch(e);
+    double strip_x = expo_center(e) + u;
+    if (e->server->config.camera.wrap) {
+        double circ = FWM_DESKTOPS * pitch;
+        strip_x = fmod(strip_x, circ);
+        if (strip_x < 0) strip_x += circ;
+    }
+
+    int d = (int)floor(strip_x / pitch);
     if (d < 0) d = 0;
     if (d >= FWM_DESKTOPS) d = FWM_DESKTOPS - 1;
 
     *desktop = d;
-    *wx = u - d * expo_gap(e);
+    /* Back into world coordinates — the gaps are drawing, not geometry — by
+     * undoing expo_offset: how far into its own card the point fell, added to
+     * where that card starts in the world. */
+    *wx = (double)d * e->server->screen_width + (strip_x - d * pitch);
     *wy = v;
 }
 
@@ -180,6 +330,10 @@ bool expo_view_position(FwmServer *server, double *pos) {
     FwmExpo *e = server->expo;
     if (!e) return false;
     double p = (expo_center(e) - server->screen_width / 2.0) / expo_pitch(e);
+    if (server->config.camera.wrap) {
+        p = fmod(p, (double)FWM_DESKTOPS);
+        if (p < 0.0) p += FWM_DESKTOPS;
+    }
     if (p < 0.0) p = 0.0;
     if (p > FWM_DESKTOPS - 1) p = FWM_DESKTOPS - 1;
     *pos = p;
@@ -202,6 +356,28 @@ static void expo_build_cards(FwmExpo *e) {
     FwmWallpaper *wp = server->wallpaper;
     int layers = wallpaper_layer_count(wp);
     if (layers > EXPO_MAX_WP_LAYERS) layers = EXPO_MAX_WP_LAYERS;
+
+    if (e->gl) {
+        /* The curved path needs textures and crops, not nodes: the cards are
+         * drawn from them every frame. Imported once — re-importing a buffer
+         * sixty times a second is pure waste, and the wallpaper's copy never
+         * changes anyway. */
+        for (int i = 0; i < layers; i++) {
+            struct wlr_buffer *buf = wallpaper_layer_buffer(wp, i);
+            if (!buf) continue;
+            struct wlr_texture *tex =
+                wlr_texture_from_buffer(server->wlr_renderer, buf);
+            if (!tex) continue;
+            int idx = e->wp_n++;
+            e->wp_tex[idx] = tex;
+            for (int d = 0; d < FWM_DESKTOPS; d++)
+                wallpaper_layer_crop(wp, i, d * server->screen_width,
+                                     server->screen_width, server->screen_height,
+                                     &e->wp_crop[d][idx]);
+        }
+        wlr_log(WLR_DEBUG, "expo: curved strip, %d wallpaper layer(s)", e->wp_n);
+        return;
+    }
 
     for (int d = 0; d < FWM_DESKTOPS; d++) {
         e->cards[d] = wlr_scene_tree_create(e->tree);
@@ -257,10 +433,14 @@ static void expo_snap_windows(FwmExpo *e) {
             continue;
         }
 
-        struct wlr_scene_buffer *node = wlr_scene_buffer_create(e->tree, buf);
-        if (!node) {
-            wlr_buffer_drop(buf);
-            continue;
+        struct wlr_scene_buffer *node = NULL;
+        struct wlr_texture *tex = NULL;
+        if (e->gl) {
+            tex = wlr_texture_from_buffer(server->wlr_renderer, buf);
+            if (!tex) { wlr_buffer_drop(buf); continue; }
+        } else {
+            node = wlr_scene_buffer_create(e->tree, buf);
+            if (!node) { wlr_buffer_drop(buf); continue; }
         }
 
         PhysicsBody *b = physics_find_body(&server->physics, view->id);
@@ -271,6 +451,7 @@ static void expo_snap_windows(FwmExpo *e) {
         ExpoItem *it = &e->items[e->n_items++];
         it->view = view;
         it->node = node;
+        it->tex = tex;
         it->buf = wlr_buffer_lock(buf);
         it->wx = view->x;
         it->wy = view->y;
@@ -279,6 +460,190 @@ static void expo_snap_windows(FwmExpo *e) {
         it->desktop = d;
         wlr_buffer_drop(buf);
     }
+}
+
+/* ── drawing the curved strip ─────────────────────────────────────────── */
+
+/* Tessellate a span of the strip into columns. `u0`/`u1` are strip offsets
+ * from the middle of the screen, `wy0`/`wy1` the world top and bottom. Each
+ * column carries its own depth, which is what makes the sampling
+ * perspective-correct rather than a bent affine smear. */
+static int expo_columns(FwmExpo *e, double u0, double u1, double wy0, double wy1,
+                        int n, struct scene3d_col *cols) {
+    if (n < 2) n = 2;
+    if (n > SCENE3D_MAX_COLS) n = SCENE3D_MAX_COLS;
+    for (int i = 0; i < n; i++) {
+        double t = (double)i / (n - 1);
+        double u = u0 + (u1 - u0) * t;
+        double sx, depth;
+        expo_project(e, u, &sx, &depth);
+        cols[i].x = (float)sx;
+        cols[i].y_top = (float)expo_project_y(e, wy0, depth);
+        cols[i].y_bot = (float)expo_project_y(e, wy1, depth);
+        cols[i].w = (float)depth;
+        cols[i].u = (float)t;
+    }
+    return n;
+}
+
+/* The same shape grown by `m` screen px on every side, for the frame drawn
+ * behind a card or a hovered window. */
+static void expo_inflate(struct scene3d_col *cols, int n, double m) {
+    for (int i = 0; i < n; i++) {
+        cols[i].y_top -= (float)m;
+        cols[i].y_bot += (float)m;
+    }
+    cols[0].x -= (float)m;
+    cols[n - 1].x += (float)m;
+}
+
+/* Off the back of the cylinder, or off the sides of the screen.
+ *
+ * The first half is not optional and applies to WINDOWS as much as to cards:
+ * the strip's ten desktops are a full circle, so anything more than two and a
+ * half desktops away has gone round the back — and the projection of a point
+ * behind the viewer lands cheerfully in the middle of the screen. Windows left
+ * out of this test were drawn on top of the cards in front of them, which is
+ * exactly what it looked like. */
+static bool expo_span_visible(FwmExpo *e, const struct scene3d_col *cols, int n,
+                              double u0, double u1) {
+    double r = expo_radius(e);
+    if (r > 0.0) {
+        double lim = M_PI / 2.0 * r;   /* 90 degrees round the circle */
+        if (fabs(u0) > lim && fabs(u1) > lim) return false;
+    }
+    float lo = cols[0].x, hi = cols[0].x;
+    for (int i = 1; i < n; i++) {
+        if (cols[i].x < lo) lo = cols[i].x;
+        if (cols[i].x > hi) hi = cols[i].x;
+    }
+    return hi >= -8.0f && lo <= e->server->screen_width + 8.0f;
+}
+
+static void expo_draw_card(FwmExpo *e, int d, int looking_at, double open) {
+    FwmServer *server = e->server;
+    struct scene3d_col cols[SCENE3D_MAX_COLS], frame[SCENE3D_MAX_COLS];
+
+    double u0 = expo_offset(e, (double)d * server->screen_width, d);
+    double u1 = expo_offset(e, (double)(d + 1) * server->screen_width, d);
+    int n = expo_columns(e, u0, u1, 0, server->screen_height,
+                         EXPO_CARD_COLS + 1, cols);
+    if (!expo_span_visible(e, cols, n, u0, u1)) return;
+
+    /* The edge is a filled shape UNDER the card, so only its margin is ever
+     * seen — the same trick the flat path uses, and the only way to draw a
+     * frame around a turned quad without four more meshes. */
+    const FwmTheme *th = theme_get();
+    memcpy(frame, cols, n * sizeof(cols[0]));
+    expo_inflate(frame, n, EXPO_EDGE_PX * open);
+    if (d == looking_at) {
+        scene3d_solid((float[4]){(float)th->accent[0], (float)th->accent[1],
+                                 (float)th->accent[2], 1.0f}, frame, n);
+    } else {
+        scene3d_solid((float[4]){EXPO_EDGE_GREY, EXPO_EDGE_GREY,
+                                 EXPO_EDGE_GREY, 1.0f}, frame, n);
+    }
+
+    scene3d_solid((float[4]){EXPO_CARD_GREY, EXPO_CARD_GREY,
+                             EXPO_CARD_GREY, 1.0f}, cols, n);
+
+    for (int i = 0; i < e->wp_n; i++) {
+        struct wlr_texture *tex = e->wp_tex[i];
+        if (!tex || tex->width <= 0) continue;
+        const struct wlr_fbox *crop = &e->wp_crop[d][i];
+        for (int c = 0; c < n; c++) {
+            double t = (double)c / (n - 1);
+            cols[c].u = (float)((crop->x + crop->width * t) / tex->width);
+        }
+        scene3d_strip(tex, cols, n, 1.0f);
+    }
+}
+
+static void expo_draw_item(FwmExpo *e, ExpoItem *it, double scale) {
+    struct scene3d_col cols[SCENE3D_MAX_COLS], frame[SCENE3D_MAX_COLS];
+    if (!it->tex) return;
+
+    double u0 = expo_offset(e, it->wx, it->desktop);
+    double u1 = expo_offset(e, it->wx + it->w, it->desktop);
+    int n = expo_columns(e, u0, u1, it->wy, it->wy + it->h,
+                         EXPO_WIN_COLS + 1, cols);
+    if (!expo_span_visible(e, cols, n, u0, u1)) return;
+
+    if (e->hover == it) {
+        const FwmTheme *th = theme_get();
+        double m = EXPO_HILIGHT_PX * scale;
+        if (m < 2.0) m = 2.0;
+        memcpy(frame, cols, n * sizeof(cols[0]));
+        expo_inflate(frame, n, m);
+        scene3d_solid((float[4]){(float)th->accent[0], (float)th->accent[1],
+                                 (float)th->accent[2], 0.9f}, frame, n);
+    }
+    scene3d_strip(it->tex, cols, n, 1.0f);
+}
+
+/* True when the picture would come out identical to the one already on screen. */
+static bool expo_canvas_current(FwmExpo *e) {
+    FwmServer *server = e->server;
+    bool same = e->drawn_zoom == e->zoom
+             && e->drawn_pan == e->pan
+             && e->drawn_cam == server->camera_x
+             && e->drawn_items == e->n_items
+             && e->drawn_wrap == server->config.camera.wrap
+             && e->drawn_hover == (void *)e->hover
+             && e->drawn_drag == (void *)e->drag
+             && (!e->drag || (e->drawn_drag_x == e->drag->wx
+                           && e->drawn_drag_y == e->drag->wy));
+    if (same) return true;
+
+    e->drawn_zoom = e->zoom;
+    e->drawn_pan = e->pan;
+    e->drawn_cam = server->camera_x;
+    e->drawn_items = e->n_items;
+    e->drawn_wrap = server->config.camera.wrap;
+    e->drawn_hover = e->hover;
+    e->drawn_drag = e->drag;
+    if (e->drag) { e->drawn_drag_x = e->drag->wx; e->drawn_drag_y = e->drag->wy; }
+    return false;
+}
+
+static void expo_draw_gl(FwmExpo *e) {
+    FwmServer *server = e->server;
+    if (expo_canvas_current(e)) return;
+    int idx = e->canvas_i ^ 1;
+    struct wlr_buffer *dst = e->canvas_buf[idx];
+    if (!dst || !e->canvas) return;
+    if (!scene3d_begin(server->wlr_renderer, dst)) return;  /* keep last frame */
+
+    double open = expo_openness(e);
+    double scale = expo_scale(e);
+    int looking_at = expo_view_desktop(server);
+
+    /* Far to near. A convex band cannot occlude itself, but the ring can bring
+     * the far side round into view, and then the order is the whole story. */
+    int order[FWM_DESKTOPS];
+    double key[FWM_DESKTOPS];
+    for (int d = 0; d < FWM_DESKTOPS; d++) {
+        order[d] = d;
+        key[d] = fabs(expo_offset(e, ((double)d + 0.5) * server->screen_width, d));
+    }
+    for (int i = 1; i < FWM_DESKTOPS; i++) {
+        for (int j = i; j > 0 && key[order[j]] > key[order[j - 1]]; j--) {
+            int t = order[j]; order[j] = order[j - 1]; order[j - 1] = t;
+        }
+    }
+    for (int i = 0; i < FWM_DESKTOPS; i++)
+        expo_draw_card(e, order[i], looking_at, open);
+
+    /* Windows over every card, not just their own: one can straddle a desktop
+     * boundary, and the card next door must not be painted over it. */
+    for (int i = 0; i < e->n_items; i++)
+        if (&e->items[i] != e->drag) expo_draw_item(e, &e->items[i], scale);
+    if (e->drag) expo_draw_item(e, e->drag, scale);
+
+    scene3d_end();
+
+    wlr_scene_buffer_set_buffer_with_damage(e->canvas, dst, NULL);
+    e->canvas_i = idx;
 }
 
 /* ── layout ───────────────────────────────────────────────────────────── */
@@ -296,6 +661,11 @@ static void expo_layout(FwmExpo *e) {
          * darker than the desktop it grew out of. */
         float a = (float)(EXPO_BACKDROP_ALPHA * open);
         wlr_scene_rect_set_color(e->backdrop, (float[4]){0.0f, 0.0f, 0.0f, a});
+    }
+
+    if (e->gl) {
+        expo_draw_gl(e);
+        return;
     }
 
     for (int d = 0; d < FWM_DESKTOPS; d++) {
@@ -392,8 +762,14 @@ static void expo_teardown(FwmServer *server) {
     server->expo = NULL;    /* before anything else: nothing may re-enter here */
 
     expo_menu_close(e);
-    for (int i = 0; i < e->n_items; i++)
+    for (int i = 0; i < e->n_items; i++) {
+        if (e->items[i].tex) wlr_texture_destroy(e->items[i].tex);
         if (e->items[i].buf) wlr_buffer_unlock(e->items[i].buf);
+    }
+    for (int i = 0; i < e->wp_n; i++)
+        if (e->wp_tex[i]) wlr_texture_destroy(e->wp_tex[i]);
+    for (int i = 0; i < 2; i++)
+        if (e->canvas_buf[i]) wlr_buffer_unlock(e->canvas_buf[i]);
     if (e->tree) wlr_scene_node_destroy(&e->tree->node);
 
     /* Never hand the desktop back while the session is locked: lock.c hid
@@ -428,6 +804,7 @@ static void expo_open(FwmServer *server) {
     e->server = server;
     e->zoom = 1.0;
     e->zoom_target = EXPO_ZOOM_NEAR;
+    e->drawn_zoom = -1.0;   /* nothing drawn yet; the first layout must run */
     e->home = (server->camera_x + server->screen_width / 2) / server->screen_width;
     if (e->home < 0) e->home = 0;
     if (e->home >= FWM_DESKTOPS) e->home = FWM_DESKTOPS - 1;
@@ -440,9 +817,32 @@ static void expo_open(FwmServer *server) {
     e->backdrop = wlr_scene_rect_create(e->tree, server->screen_width,
                                         server->screen_height,
                                         (float[4]){0.0f, 0.0f, 0.0f, 0.0f});
-    e->hilight = wlr_scene_rect_create(e->tree, 1, 1,
-                                       (float[4]){0.35f, 0.62f, 0.95f, 0.9f});
-    if (e->hilight) wlr_scene_node_set_enabled(&e->hilight->node, false);
+
+    /* Turned cards need a renderer that can draw a trapezoid. Where there is
+     * one, the strip is one hand-drawn buffer over the backdrop; where there is
+     * not, it stays the flat set of scene nodes and nothing else changes. */
+    e->gl = rotate_supported(server->wlr_renderer);
+    if (e->gl) {
+        for (int i = 0; i < 2; i++) {
+            struct wlr_buffer *b = snapshot_alloc(server, server->screen_width,
+                                                  server->screen_height);
+            if (!b) { e->gl = false; break; }
+            e->canvas_buf[i] = wlr_buffer_lock(b);
+            wlr_buffer_drop(b);
+        }
+        if (e->gl) {
+            e->canvas = wlr_scene_buffer_create(e->tree, NULL);
+            if (!e->canvas) e->gl = false;
+            else wlr_scene_node_set_position(&e->canvas->node, 0, 0);
+        }
+        if (!e->gl) wlr_log(WLR_INFO, "expo: no offscreen buffer, strip stays flat");
+    }
+
+    if (!e->gl) {
+        e->hilight = wlr_scene_rect_create(e->tree, 1, 1,
+                                           (float[4]){0.35f, 0.62f, 0.95f, 0.9f});
+        if (e->hilight) wlr_scene_node_set_enabled(&e->hilight->node, false);
+    }
 
     server->expo = e;
     expo_build_cards(e);
@@ -535,6 +935,7 @@ void expo_forget_view(FwmServer *server, FwmView *view) {
         if (e->drag == it) e->drag = NULL;
         if (e->menu_item == it) expo_menu_close(e);
         if (it->node) wlr_scene_node_destroy(&it->node->node);
+        if (it->tex) wlr_texture_destroy(it->tex);
         if (it->buf) wlr_buffer_unlock(it->buf);
         /* Compact the slots: the hover/drag pointers are into this array, so
          * the last item moving into the hole has to be followed. */
@@ -582,15 +983,23 @@ void expo_tick(FwmServer *server, double dt) {
 /* ── input ────────────────────────────────────────────────────────────── */
 
 static ExpoItem *expo_item_at(FwmExpo *e, double lx, double ly) {
-    /* Back to front: the last node created is the topmost drawn, so the last
-     * match is the one the cursor is actually pointing at. */
+    /* Through the inverse projection, not by testing projected boxes: a turned
+     * card's window is a trapezoid on screen, and there is exactly one place
+     * that knows how the strip is bent. Back in world coordinates the test is
+     * the same rectangle it always was.
+     *
+     * Later items are drawn on top, so the last match is the one the cursor is
+     * actually pointing at. */
+    int d;
+    double wx, wy;
+    expo_point(e, lx, ly, &d, &wx, &wy);
+
     ExpoItem *hit = NULL;
     for (int i = 0; i < e->n_items; i++) {
         ExpoItem *it = &e->items[i];
-        double x0, y0, x1, y1;
-        expo_to_screen(e, it->wx, it->wy, it->desktop, &x0, &y0);
-        expo_to_screen(e, it->wx + it->w, it->wy + it->h, it->desktop, &x1, &y1);
-        if (lx >= x0 && lx < x1 && ly >= y0 && ly < y1) hit = it;
+        if (it->desktop != d) continue;
+        if (wx >= it->wx && wx < it->wx + it->w &&
+            wy >= it->wy && wy < it->wy + it->h) hit = it;
     }
     return hit;
 }
@@ -645,6 +1054,13 @@ bool expo_handle_key(FwmServer *server, xkb_keysym_t sym) {
     case XKB_KEY_z:
     case XKB_KEY_Z:
         expo_zoom_step(server);
+        return true;
+    case XKB_KEY_x:
+    case XKB_KEY_X:
+        /* Close the strip into a ring, or open it back into a line. The same
+         * action the `toggle_wrap` bind runs outside the strip — this is a
+         * shortcut to it, not a second meaning for it. */
+        server_dispatch_action(server, "toggle_wrap");
         return true;
     case XKB_KEY_Left:
         expo_pan_by(e, -expo_pitch(e));

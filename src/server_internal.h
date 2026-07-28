@@ -68,6 +68,10 @@ void server_reclaim_memory(void);
 void server_dispatch_action(FwmServer *server, const char *action);
 FwmView *server_find_view(FwmServer *server, uint32_t id);
 void server_camera_settled(FwmServer *server);
+/* Park the camera on desktop `d`. `seam` marks a step that crossed the ring's
+ * join, which is jumped rather than slid. Also the one place that hands the
+ * move to the desktop strip when it is open. */
+void server_goto_desktop(FwmServer *server, int d, int seam);
 /* Place a spinning window that is being dragged under its grab point. Called
  * once per frame as well as from the physics tick — see the definition. */
 void server_drag_swing_place(FwmServer *server);

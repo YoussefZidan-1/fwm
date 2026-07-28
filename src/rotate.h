@@ -63,6 +63,52 @@ bool rotate_blit(struct wlr_renderer *renderer, struct wlr_buffer *dst,
 bool warp_blit(struct wlr_renderer *renderer, struct wlr_buffer *dst,
                struct wlr_texture *src, int grid, const float *pts);
 
+/* ── the desktop strip: many quads, one pass, with perspective ─────────
+ *
+ * The third thing wlroots cannot express, and the reason it needs its own
+ * entry points rather than another warp: a strip of desktops turned away from
+ * the viewer is a PROJECTIVE transform, not a bend. warp_blit interpolates its
+ * lattice linearly, which is the classic affine texture swim — straight lines
+ * inside a rotated card would bow. Here each column carries its view depth as
+ * a real w, so the rasterizer does the divide and the sampling is
+ * perspective-correct for free.
+ *
+ * Only the vertical axis turns, so a column of the surface is at ONE depth:
+ * that is what lets a whole card be described by a row of columns instead of a
+ * general mesh, and what makes the tessellation exact rather than an
+ * approximation of the curve's shading. */
+
+/* One column of a strip. Screen pixels in the destination buffer, except `w`,
+ * which is the view depth the projection divided by, and `u`, the texture
+ * coordinate this column samples. */
+struct scene3d_col {
+    float x;            /* projected screen x */
+    float y_top, y_bot; /* projected screen y of the column's two ends */
+    float w;            /* view depth (> 0) */
+    float u;            /* source texture coordinate, 0..1 */
+};
+
+/* Largest strip scene3d_strip will draw. */
+#define SCENE3D_MAX_COLS 48
+
+/* Open a pass into `dst`, which is cleared to transparent. Everything drawn
+ * until scene3d_end blends over what came before it, in call order — there is
+ * no depth buffer, because the strip's own painter order is exact: a convex
+ * band of cards, drawn far to near. False when the renderer cannot do this at
+ * all, in which case the caller is expected to fall back to a flat strip. */
+bool scene3d_begin(struct wlr_renderer *renderer, struct wlr_buffer *dst);
+
+/* A textured strip of `n` columns (>= 2), premultiplied, scaled by `alpha`. */
+bool scene3d_strip(struct wlr_texture *tex, const struct scene3d_col *cols,
+                   int n, float alpha);
+
+/* The same shape filled with one premultiplied colour: card edges, the frame
+ * around a hovered window, a desktop with no wallpaper behind it. */
+bool scene3d_solid(const float rgba[4], const struct scene3d_col *cols, int n);
+
+/* Close the pass and give the EGL context back. */
+void scene3d_end(void);
+
 /* Release the shader programs. Call once at teardown, before the renderer is
  * destroyed. */
 void rotate_shutdown(struct wlr_renderer *renderer);

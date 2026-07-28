@@ -376,12 +376,18 @@ static void handle_cursor_motion(struct wl_listener *listener, void *data) {
         // Auto camera scroll at edges
         if (server->camera_x == server->target_camera_x) {
             int current_d = server->target_camera_x / server->screen_width;
-            if (lx >= server->screen_width - 10 && current_d < 9) {
-                server->target_camera_x = (current_d + 1) * server->screen_width;
-                server->cam_free = 0; // discrete jump: use the eased slide
-            } else if (lx <= 10 && current_d > 0) {
-                server->target_camera_x = (current_d - 1) * server->screen_width;
-                server->cam_free = 0;
+            int step = lx >= server->screen_width - 10 ? 1 : (lx <= 10 ? -1 : 0);
+            if (step) {
+                /* Dragging a window off the end of a ring puts it on the other
+                 * end, which is the whole point of the ring — the window is
+                 * already following the cursor and moves with the camera. */
+                int d = current_d + step;
+                int seam = 0;
+                if (d < 0 || d >= FWM_DESKTOPS) {
+                    if (!server->config.camera.wrap) d = current_d;
+                    else { d = (d + FWM_DESKTOPS) % FWM_DESKTOPS; seam = 1; }
+                }
+                if (d != current_d) server_goto_desktop(server, d, seam);
             }
         }
     } else if (server->interactive.action == FWM_ACTION_RESIZE) {
@@ -595,10 +601,7 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
         double ty = server->cursor->y - server->tray_buffer->node.y;
         int d = tray_desktop_hit(tx, ty);
         if (d >= 0) {
-            if (!expo_goto_desktop(server, d)) {
-                server->target_camera_x = d * server->screen_width;
-                server->cam_free = 0;    /* discrete jump: the eased slide */
-            }
+            server_goto_desktop(server, d, 0);
             server->group_click = 1; /* swallow the matching release */
             return;
         }
@@ -899,15 +902,15 @@ static void handle_cursor_axis(struct wl_listener *listener, void *data) {
             /* Step from where the camera is HEADED, not where it is: spinning
              * the wheel several notches must advance several desktops rather
              * than fight the slide still in flight. */
-            int d = expo_view_desktop(server);
-            if (d < 0) d = server->target_camera_x / server->screen_width;
-            d += event->delta > 0.0 ? 1 : -1;
-            if (d < 0) d = 0;
-            if (d > 9) d = 9;
-            if (!expo_goto_desktop(server, d)) {
-                server->target_camera_x = d * server->screen_width;
-                server->cam_free = 0;
+            int here = expo_view_desktop(server);
+            if (here < 0) here = server->target_camera_x / server->screen_width;
+            int d = here + (event->delta > 0.0 ? 1 : -1);
+            int seam = 0;
+            if (d < 0 || d >= FWM_DESKTOPS) {
+                if (!server->config.camera.wrap) d = here;
+                else { d = (d + FWM_DESKTOPS) % FWM_DESKTOPS; seam = 1; }
             }
+            server_goto_desktop(server, d, seam);
             return;
         }
     }
