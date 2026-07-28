@@ -140,6 +140,9 @@ struct FwmExpo {
     /* The key hints along the bottom. Parented to layer_overlay with the menu,
      * so they neither scale with the cards nor hide under them. */
     struct wlr_scene_buffer *hints;
+    /* Where the bar is (0 hidden, 1 in place), where it is heading, and how
+     * long it has left before it takes itself away. */
+    double hints_reveal, hints_reveal_target, hints_timer;
     ExpoItem *menu_item;
 };
 

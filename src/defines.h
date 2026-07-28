@@ -67,6 +67,14 @@
  * screen, but what it stands for is one step. */
 #define WRAP_SLIDE_MS       220.0
 
+/* The strip's key hints: how long they stay after it opens, how long they
+ * linger once the cursor has left the band that calls them back, and how fast
+ * they slide. Five seconds is long enough to read a row and short enough that
+ * nobody has to look at it twice. */
+#define EXPO_HINT_SHOW_S    5.0
+#define EXPO_HINT_LINGER_S  0.8
+#define EXPO_HINT_SLIDE     14.0   /* 1/s, exponential like everything else */
+
 /* ── expo, the desktop strip ──────────────────────────────────────────── */
 /* Resolution the strip's snapshots are taken at, as a fraction of the real
  * thing. Ten screen-sized cards at 1:1 is most of a hundred megabytes of

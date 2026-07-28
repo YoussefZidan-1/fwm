@@ -38,4 +38,16 @@ struct wlr_scene_buffer *expo_hints_show(struct wlr_scene_tree *parent,
 void expo_hints_set_flight(struct wlr_scene_buffer *buf, int screen_w,
                            int screen_h, bool flight);
 
+/* Where the bar sits, from 0 (fully below the bottom edge, out of the way) to
+ * 1 (in place). The caller eases it: the bar shows itself when the strip opens,
+ * takes itself away once it has been read, and comes back when the cursor asks
+ * for it. */
+void expo_hints_place(struct wlr_scene_buffer *buf, int screen_w, int screen_h,
+                      double reveal);
+
+/* Is the cursor in the band along the bottom that brings the bar back? Wider
+ * than the bar itself is tall, because it is asked for by aiming roughly at
+ * where it was, not by hitting it. */
+bool expo_hints_hit(int screen_h, double ly);
+
 #endif /* FWM_EXPO_HINTS_H */

@@ -126,6 +126,7 @@ bool expo_animating(FwmServer *server) {
     return e && (fabs(e->zoom - e->zoom_target) > 0.001
               || fabs(e->pan - e->pan_target) > 0.5
               || fabs(e->seam - e->seam_target) > 0.001
+              || fabs(e->hints_reveal - e->hints_reveal_target) > 0.002
               || fabs(e->spin) > EXPO_SPIN_MIN
               || fabs(e->tilt - e->tilt_target) > 0.0005
               || fabs(e->dist - e->dist_target) > 0.0005);
@@ -222,6 +223,8 @@ static void expo_open(FwmServer *server) {
      * nobody's config — so nothing else could tell anyone what they are. */
     e->hints = expo_hints_show(server->layer_overlay, server->screen_width,
                                server->screen_height, expo_can_orbit(e));
+    e->hints_reveal = e->hints_reveal_target = 1.0;
+    e->hints_timer = EXPO_HINT_SHOW_S;
 }
 
 void expo_close(FwmServer *server, int desktop) {
@@ -232,6 +235,11 @@ void expo_close(FwmServer *server, int desktop) {
 
     e->leaving = 1;
     e->zoom_target = 1.0;
+    /* Down with the strip, not after it: the collapse waits for the camera as
+     * well as the zoom, and a bar still sitting over the live desktop while
+     * that finishes is the part that looked stuck. */
+    e->hints_reveal_target = 0.0;
+    e->hints_timer = 0.0;
     expo_camera_home(e);
     e->hover = NULL;
     e->drag = NULL;
@@ -305,9 +313,12 @@ void expo_zoom_step(FwmServer *server) {
     e->zoom_target = e->zoom_target > (EXPO_ZOOM_NEAR + EXPO_ZOOM_FAR) / 2.0
                    ? EXPO_ZOOM_NEAR : EXPO_ZOOM_FAR;
     /* The far step is where the camera may leave its seat, so it is where the
-     * hints have something else to say. */
+     * hints have something else to say — and a set that has just changed is
+     * worth showing again, whether or not the bar had taken itself away. */
     expo_hints_set_flight(e->hints, server->screen_width, server->screen_height,
                           expo_can_orbit(e));
+    e->hints_reveal_target = 1.0;
+    e->hints_timer = EXPO_HINT_SHOW_S;
 }
 
 void expo_destroy(FwmServer *server) {
@@ -468,6 +479,28 @@ void expo_tick(FwmServer *server, double dt) {
     double dgap = e->dist_target - e->dist;
     if (fabs(dgap) > 0.0005) e->dist += dgap * (1.0 - exp(-crate * dt));
     else                     e->dist = e->dist_target;
+
+    /* The hints show themselves when the strip opens, take themselves away
+     * once there has been time to read them, and come back when the cursor
+     * goes looking for them along the bottom. */
+    if (e->hints) {
+        if (!e->leaving) {
+            if (expo_hints_hit(server->screen_height, server->cursor->y)) {
+                e->hints_reveal_target = 1.0;
+                e->hints_timer = EXPO_HINT_LINGER_S;
+            } else if (e->hints_timer > 0.0) {
+                e->hints_timer -= dt;
+                if (e->hints_timer <= 0.0) e->hints_reveal_target = 0.0;
+            }
+        }
+        double hgap = e->hints_reveal_target - e->hints_reveal;
+        if (fabs(hgap) > 0.002)
+            e->hints_reveal += hgap * (1.0 - exp(-EXPO_HINT_SLIDE * dt));
+        else
+            e->hints_reveal = e->hints_reveal_target;
+        expo_hints_place(e->hints, server->screen_width, server->screen_height,
+                         e->hints_reveal);
+    }
 
     /* Read from the config every frame rather than tracked: `x`, a `fwmctl set`
      * and a config reload all mean the same thing here, and none of them has to

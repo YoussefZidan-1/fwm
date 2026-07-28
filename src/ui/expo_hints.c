@@ -22,6 +22,7 @@
 #define HINT_KEY_GAP 6.0    /* between a key and what it does */
 #define HINT_CUT     8.0    /* corner chevron, matching the tray */
 #define HINT_BOTTOM  22     /* px above the bottom edge of the screen */
+#define HINT_REVEAL  56     /* how deep the band that calls it back reaches */
 
 /* A key and what it does. Kept short on purpose: a bar along the bottom is
  * read sideways at a glance, and anything that wraps has already failed. */
@@ -154,10 +155,29 @@ static void draw_hints(cairo_t *cr, int w, int h, void *data) {
     g_object_unref(lab);
 }
 
+/* Measured once at creation, so the slide does not re-measure fonts 60 times a
+ * second and the caller does not have to carry the size around. */
+static double g_w, g_h;
+
 static void place(struct wlr_scene_buffer *buf, int screen_w, int screen_h,
-                  double w, double h) {
+                  double w, double h, double reveal) {
+    if (reveal < 0.0) reveal = 0.0;
+    if (reveal > 1.0) reveal = 1.0;
+    /* Hidden means entirely off the bottom, not merely faded: a half-visible
+     * bar reads as a bug, and the point of taking it away is the space. */
+    double home = screen_h - h - HINT_BOTTOM;
+    double gone = screen_h + 2.0;
     wlr_scene_node_set_position(&buf->node, (int)((screen_w - w) / 2.0),
-                                (int)(screen_h - h - HINT_BOTTOM));
+                                (int)(gone + (home - gone) * reveal));
+}
+
+void expo_hints_place(struct wlr_scene_buffer *buf, int screen_w, int screen_h,
+                      double reveal) {
+    if (buf) place(buf, screen_w, screen_h, g_w, g_h, reveal);
+}
+
+bool expo_hints_hit(int screen_h, double ly) {
+    return ly >= screen_h - HINT_REVEAL;
 }
 
 struct wlr_scene_buffer *expo_hints_show(struct wlr_scene_tree *parent,
@@ -174,7 +194,9 @@ struct wlr_scene_buffer *expo_hints_show(struct wlr_scene_tree *parent,
     struct wlr_scene_buffer *buf = cairo_overlay_create(parent, (int)w, (int)h);
     if (!buf) return NULL;
     cairo_overlay_update(buf, draw_hints, (void *)hints);
-    place(buf, screen_w, screen_h, w, h);
+    g_w = w;
+    g_h = h;
+    place(buf, screen_w, screen_h, w, h, 1.0);
 
     g_state.flight = flight;
     g_state.valid = true;
