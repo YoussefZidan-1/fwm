@@ -85,15 +85,22 @@ set(SOURCES
     src/bsp.c
     src/toml.c
     src/config.c
+    src/config_binds.c
+    src/config_set.c
     src/theme.c
     src/wallpaper.c
     src/video.c
     src/audio.c
     src/cava.c
     src/view.c
+    src/view_effects.c
     src/rotate.c
     src/snapshot.c
     src/expo.c
+    src/expo_geom.c
+    src/expo_cards.c
+    src/expo_draw.c
+    src/expo_input.c
     src/wobble.c
     src/layer.c
     src/lock.c
@@ -220,14 +227,16 @@ if(FWM_TESTS)
     target_include_directories(test_bsp PRIVATE src tests)
     target_link_libraries(test_bsp PRIVATE m)
 
-    add_executable(test_config tests/test_config.c src/config.c src/toml.c)
+    add_executable(test_config tests/test_config.c
+        src/config.c src/config_binds.c src/config_set.c src/toml.c)
     target_include_directories(test_config PRIVATE src tests ${XKBCOMMON_INCLUDE_DIRS})
     target_link_libraries(test_config PRIVATE ${XKBCOMMON_LIBRARIES} m)
 
     # Input needs physics too: the pointer half of it is what a drag becomes
     # on release, which lives in physics.c. That file reaches Box2D but not
     # wlroots, so it links here without a display.
-    add_executable(test_input tests/test_input.c src/config.c src/toml.c src/physics.c)
+    add_executable(test_input tests/test_input.c
+        src/config.c src/config_binds.c src/config_set.c src/toml.c src/physics.c)
     target_include_directories(test_input PRIVATE src tests ${XKBCOMMON_INCLUDE_DIRS})
     target_link_libraries(test_input PRIVATE ${XKBCOMMON_LIBRARIES} box2d::box2d m)
 

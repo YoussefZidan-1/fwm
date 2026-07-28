@@ -388,13 +388,18 @@ bool scene3d_begin(struct wlr_renderer *renderer, struct wlr_buffer *dst) {
     if (pass.open || !rotate_supported(renderer) || !dst) return false;
     if (owner != renderer) programs_forget(renderer);
 
+    /* Context first, THEN the FBO: asking the renderer for a framebuffer is a GL
+     * call, and blit_verts above has always had that order. Getting it the
+     * other way round happened to work here and would have stopped working the
+     * first time nothing else had left a context current. */
+    if (!egl_enter(renderer, &pass.save)) return false;
+
     GLuint fbo = wlr_gles2_renderer_get_buffer_fbo(renderer, dst);
     if (!fbo) {
         /* Not an error worth logging every frame — the caller falls back. */
+        egl_leave(renderer, &pass.save);
         return false;
     }
-
-    if (!egl_enter(renderer, &pass.save)) return false;
 
     pass.renderer = renderer;
     pass.dw = dst->width;
