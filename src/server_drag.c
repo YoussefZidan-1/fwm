@@ -286,8 +286,18 @@ bool server_drag_motion(FwmServer *server, double lx, double ly,
             }
         }
         
-        // Auto camera scroll at edges
-        if (server->camera_x == server->target_camera_x) {
+        /* Auto camera scroll at edges.
+         *
+         * Throttled by the camera still travelling — one step per slide, or the
+         * desktops would flick past as fast as motion events arrive. A step
+         * across the ring's join has no camera travel to throttle it: the
+         * camera is on the far side the same frame. Its slide is what stands in
+         * for that, and without this line dragging a window into the edge on
+         * the last desktop spun the world round the ring until the hand moved
+         * away, which is not "the window would not cross" but looks a great
+         * deal like it. */
+        if (server->camera_x == server->target_camera_x
+            && server->wrap_slide <= 0.0) {
             int current_d = server->target_camera_x / server->screen_width;
             int step = lx >= server->screen_width - 10 ? 1 : (lx <= 10 ? -1 : 0);
             if (step) {
