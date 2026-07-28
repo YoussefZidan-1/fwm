@@ -13,6 +13,7 @@
  */
 
 #include "session.h"
+#include <limits.h>
 #include "server.h"
 #include "view.h"
 #include "physics.h"
@@ -127,6 +128,38 @@ static struct FwmSessionState *state_of(struct FwmServer *server) {
 
 /* ── saving ──────────────────────────────────────────────────────────── */
 
+/* Never record fwm itself.
+ *
+ * A nested fwm — the way every change to this compositor is tested — is an
+ * ordinary client of the outer one, so it lands in the snapshot like any other
+ * window. The next start then launches a compositor inside the compositor,
+ * which saves ITS session, which launches another... Each generation is only
+ * found by looking at the process tree, and by then there are thirty of them.
+ * The state file this wrote is also read by the user's real session, so the
+ * fork chain outlives the test run that created it.
+ *
+ * By BASENAME, not by path. The two fwms involved are deliberately different
+ * binaries — the installed one running the session, and the one under test in
+ * build/ — so a path comparison catches neither writing the other down, which
+ * is exactly the case that produced the chain. */
+static int is_ourselves(const char *argv_key) {
+    char self[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
+    if (n <= 0) return 0;
+    self[n] = '\0';
+
+    const char *me = strrchr(self, '/');
+    me = me ? me + 1 : self;
+
+    size_t len = strcspn(argv_key, "\t");     /* argv[0] only */
+    const char *them = argv_key;
+    for (size_t i = 0; i < len; i++)
+        if (argv_key[i] == '/') them = argv_key + i + 1;
+    len -= (size_t)(them - argv_key);
+
+    return len == strlen(me) && strncmp(them, me, len) == 0;
+}
+
 /* Build the whole file contents. One line per distinct application: several
  * windows of one process (a browser, a terminal with two windows) must not
  * relaunch it several times, so entries are deduplicated by pid. */
@@ -150,6 +183,7 @@ static void build_snapshot(struct FwmServer *server, char *out, size_t cap) {
 
         char key[SESSION_LINE_MAX];
         if (!pid_argv_key(pid, key, sizeof(key))) continue;
+        if (is_ourselves(key)) continue;
 
         PhysicsBody *b = physics_find_body(&server->physics, view->id);
         int desktop = b ? b->desktop_id
