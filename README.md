@@ -496,7 +496,9 @@ anim_speed = 12.0    # tile glide speed (1/s); 0 = instant
 [camera]
 anim_ms    = 350.0   # desktop-switch slide (ease-in-out); 0 = instant snap
 free_speed = 14.0    # how tightly the camera follows a held move_camera: bind
-wrap       = false   # make the desktops a ring: past the last one is the first
+wrap       = false   # a ring: past the last desktop is the first (next/prev,
+                     # a held move_camera:, the tray wheel, a window dragged
+                     # into the screen edge; view:N is still a destination)
 
 [effects]
 camera_shake = 0.0   # jolt the view on hard impacts; off by default, 1.0 to enable

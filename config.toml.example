@@ -76,12 +76,14 @@ anim_speed = 12.0
 # Desktop-switch camera slide (ease-in-out). 0 = instant snap.
 # free_speed is a different motion: how tightly the camera follows a HELD
 # move_camera: bind (1/s, higher = tighter, lower = more coasting).
-# wrap makes the ten desktops a ring: stepping right off the last one arrives
-# on the first, and a window sent that way goes with it. Only STEPS wrap —
-# view:next/prev, the wheel over the tray's desktop island, dragging a window
-# into the screen edge. A free pan (a held move_camera:) still stops at the
-# ends, and the join is jumped rather than slid through: there is no picture of
-# it to slide through, since the desktops are one straight strip underneath.
+# wrap makes the ten desktops a ring: going right off the last one arrives on
+# the first, and a window sent that way goes with it. It applies to view:next
+# and view:prev, to a held move_camera:, to the wheel over the tray's desktop
+# island, and to dragging a window into the edge of the screen. Plain view:N is
+# a destination, not a step, so it never wraps.
+#
+# The join is jumped rather than slid through: there is no picture of it to
+# slide through, since the desktops are one straight strip underneath.
 # Toggle at runtime with the `toggle_wrap` action, or `x` inside expo.
 [camera]
 anim_ms    = 350.0

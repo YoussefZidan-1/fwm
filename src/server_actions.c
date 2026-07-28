@@ -557,11 +557,33 @@ void server_dispatch_action(FwmServer *server, const char *action) {
         server_spawn(cmd);
     } else if (strncmp(action, "move_camera:", 12) == 0) {
         int amt = atoi(action + 12);
+        int last = (FWM_DESKTOPS - 1) * server->screen_width;
         int new_target = server->target_camera_x + amt;
-        if (new_target < 0) new_target = 0;
-        if (new_target > 9 * server->screen_width) new_target = 9 * server->screen_width;
+        int seam = 0;
+
+        /* On a ring the free pan runs off one end onto the other, keeping
+         * whatever it had left to travel. This was left clamped at first, on
+         * the theory that a continuous pan crossing the join would feel like a
+         * glitch — but held panning is how a lot of people move around, and a
+         * ring that stops dead at desktop ten is not a ring to them. The jump
+         * is the same one every wrapping step makes: the join is never drawn,
+         * the camera is simply on the other side of it. */
+        if (server->config.camera.wrap) {
+            if (new_target > last)    { new_target -= last; seam = 1; }
+            else if (new_target < 0)  { new_target += last; seam = 1; }
+        } else {
+            if (new_target < 0) new_target = 0;
+            if (new_target > last) new_target = last;
+        }
         server->target_camera_x = new_target;
         server->cam_free = 1; // continuous pan, not a desktop jump
+        if (seam) {
+            server->camera_x = new_target;
+            server->cam_anim = 0;
+            server_camera_settled(server);
+            if (server->wallpaper) wallpaper_update(server->wallpaper, server->camera_x);
+            server_request_tray_redraw(server);
+        }
     } else if (strcmp(action, "expo") == 0) {
         expo_toggle(server);
     } else if (strcmp(action, "launcher") == 0) {
