@@ -401,6 +401,17 @@ void server_video_sync(FwmServer *server) {
     }
 }
 
+/* How long to wait between looks for a sound server that is not there yet.
+ * Two stats, so the cost is nothing; the delay is only so the log line and the
+ * work stay out of the way of a machine that will never have one. */
+#define CAVA_RETRY_S 3.0
+
+static double server_now_s(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
 void server_cava_sync(FwmServer *server) {
     int want = server->config.cava.mode;
 
@@ -422,37 +433,58 @@ void server_cava_sync(FwmServer *server) {
 
     /* The capture thread reports failure asynchronously — it cannot be waited
      * on (see audio.h) — so a row built optimistically at startup is retired
-     * here, the moment the answer comes back. `cava_applied` already equals
-     * `want`, so this runs once and never retries. */
+     * here, the moment the answer comes back. Retired, not abandoned: the sound
+     * server it could not find may well turn up later, and the retry below is
+     * what brings the bars back when it does. */
     if (server->cava && cava_dead(server->cava)) {
-        wlr_log(WLR_INFO, "cava: no audio capture available — bars stay off");
+        if (!server->cava_reported) {
+            wlr_log(WLR_INFO, "cava: no audio capture available — waiting for a sound server");
+            server->cava_reported = 1;
+        }
         physics_set_bars(&server->physics, NULL, 0, 0.0, 0.0, 0.0, 0, 0.0, 0.0);
         cava_destroy(server->cava);
         server->cava = NULL;
+        server->cava_retry_at = server_now_s() + CAVA_RETRY_S;
         return;
     }
 
     /* Compared against the attempt, not against the live instance: cava is NULL
      * both when the mode is off and when the build failed, and only this tells
      * those apart. */
-    if (server->cava_applied == want) return;
-
-    /* A mode change is a rebuild, not a toggle: the visual half owns a scene
-     * subtree that only exists when it is on, and the physical half owns bodies
-     * in the world. Tear the row out of the world first — cava_destroy takes
-     * the levels with it, and physics_set_bars would otherwise keep stepping
-     * bodies against numbers that no longer exist. */
-    if (server->cava) {
-        physics_set_bars(&server->physics, NULL, 0, 0.0, 0.0, 0.0, 0, 0.0, 0.0);
-        cava_destroy(server->cava);
-        server->cava = NULL;
+    if (server->cava_applied != want) {
+        /* A mode change is a rebuild, not a toggle: the visual half owns a scene
+         * subtree that only exists when it is on, and the physical half owns
+         * bodies in the world. Tear the row out of the world first —
+         * cava_destroy takes the levels with it, and physics_set_bars would
+         * otherwise keep stepping bodies against numbers that no longer
+         * exist. */
+        if (server->cava) {
+            physics_set_bars(&server->physics, NULL, 0, 0.0, 0.0, 0.0, 0, 0.0, 0.0);
+            cava_destroy(server->cava);
+            server->cava = NULL;
+        }
+        /* Only once the screen exists: cava_create needs its size, and the
+         * output handler calls straight back here as soon as it does. */
+        if (server->screen_width == 0) return;
+        server->cava_applied = want;
+        server->cava_retry_at = 0.0;   /* a fresh mode tries at once */
+        server->cava_reported = 0;
     }
 
-    /* Only once the screen exists: cava_create needs its size, and the output
-     * handler calls straight back here as soon as it does. */
+    if (want == CAVA_MODE_OFF || server->cava) return;
     if (server->screen_width == 0) return;
-    server->cava_applied = want;
-    if (want == CAVA_MODE_OFF) return;
+
+    /* The mode is on and nothing is capturing. That is the ordinary state of a
+     * machine whose sound daemon is autospawned by the first client that wants
+     * sound: fwm starts before any of them, so at login there is no server and
+     * ten minutes later there is one. Looking exactly once — which is what this
+     * used to do — left the bars off for the whole session, and no reload
+     * brought them back, because the configured mode had not changed. So keep
+     * asking, slowly. cava_create answers with a pair of stats when there is
+     * still nothing there, which is cheap enough to do every few seconds. */
+    double now = server_now_s();
+    if (now < server->cava_retry_at) return;
+    server->cava_retry_at = now + CAVA_RETRY_S;
 
     /* The test hook forces the mode without touching the file, so hand
      * cava_create the mode we actually resolved rather than the configured one
@@ -462,6 +494,12 @@ void server_cava_sync(FwmServer *server) {
 
     server->cava = cava_create(server->layer_background, &cfg,
                                server->screen_width, server->screen_height);
+    if (server->cava) {
+        server->cava_reported = 0;
+    } else if (!server->cava_reported) {
+        wlr_log(WLR_INFO, "cava: no sound server yet — bars will start when one appears");
+        server->cava_reported = 1;
+    }
 }
 
 /* How fast the swing bleeds off, 1/s. Some is wanted: a real window dragged by

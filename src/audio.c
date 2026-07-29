@@ -28,6 +28,7 @@
  * machine with the libraries but no sound server takes. */
 
 bool audio_supported(void) { return false; }
+bool audio_server_running(void) { return false; }
 FwmAudio *audio_create(void) { return NULL; }
 int audio_state(FwmAudio *a) { (void)a; return AUDIO_FAILED; }
 bool audio_samples(FwmAudio *a, float *out, int n) { (void)a; (void)out; (void)n; return false; }
@@ -298,6 +299,20 @@ static bool socket_exists(const char *name) {
     if (n < 0 || (size_t)n >= sizeof(path)) return false;
     struct stat st;
     return stat(path, &st) == 0 && S_ISSOCK(st.st_mode);
+}
+
+/* The same two probes the capture thread runs, asked from outside so a caller
+ * can wait for a sound server to turn up instead of concluding at startup that
+ * there will never be one. */
+bool audio_server_running(void) {
+    bool have = false;
+#ifdef HAVE_PIPEWIRE
+    have = have || socket_exists("pipewire-0");
+#endif
+#ifdef HAVE_PULSE
+    have = have || socket_exists("pulse/native");
+#endif
+    return have;
 }
 
 static void *audio_thread(void *arg) {

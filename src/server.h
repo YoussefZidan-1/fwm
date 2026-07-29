@@ -245,6 +245,11 @@ typedef struct FwmServer {
      * times a second forever. Zero-initialised to CAVA_MODE_OFF, which is also
      * the correct starting state: off has nothing to build. */
     int cava_applied;
+    /* When the row may next be attempted, on the monotonic clock. A mode that
+     * is on with no sound server to capture is retried on this timer instead of
+     * being abandoned — see server_cava_sync. */
+    double cava_retry_at;
+    int cava_reported;   /* the "no sound server" line has been logged once */
     struct wlr_output_layout *output_layout;
     struct wlr_scene_output_layout *scene_layout;
     struct wlr_xdg_shell *xdg_shell;

@@ -52,6 +52,17 @@ enum {
  * ("not built in") from a capture that merely failed to connect. */
 bool audio_supported(void);
 
+/* Is a sound server listening right now?
+ *
+ * A stat of the PipeWire and PulseAudio sockets and nothing more, so it is safe
+ * on the compositor thread and cheap enough to ask on a timer. The answer
+ * CHANGES DURING A SESSION and the common direction is false → true: PulseAudio
+ * is autospawned by the first client that wants sound, so a compositor that
+ * starts before any of them sees no server at login and a server ten minutes
+ * later. Anything that gives up on the first "no" is off for good on such a
+ * machine — which is the bug this exists to let the caller avoid. */
+bool audio_server_running(void);
+
 /* Start the capture thread. Returns immediately — it does NOT wait to find out
  * whether a sound server exists, and the returned handle is valid regardless.
  * NULL only if the thread could not be created at all. Poll audio_state(). */

@@ -35,6 +35,11 @@
  * quite reaches the floor. */
 #define DB_FLOOR -62.0
 
+/* How long the ring may stay empty before the row is allowed to fall. Longer
+ * than the gap between two capture buffers (~23 ms at 1024 frames / 44.1 kHz)
+ * and far shorter than a pause anyone would call silence. */
+#define CAVA_SILENCE_S 0.25
+
 struct FwmCava {
     FwmAudio *audio;
 
@@ -62,6 +67,9 @@ struct FwmCava {
      * off a screenshot. */
     bool   synthetic;
     double phase;
+
+    /* Seconds since the capture last had anything new. See the tick. */
+    double starved;
 
     /* Drawing. NULL for a physical-only row. */
     struct wlr_scene_tree *tree;
@@ -213,6 +221,12 @@ FwmCava *cava_create(struct wlr_scene_tree *parent, const CavaConfig *cfg,
     const char *tc = getenv("FWM_TEST_CAVA");
     bool synthetic = tc && atoi(tc) != 0;
 
+    /* Nothing to capture yet: say so cheaply rather than starting a thread that
+     * will only report the same thing back asynchronously. The caller asks
+     * again later — a sound server appearing mid-session is the normal case,
+     * not an oddity (see audio_server_running). */
+    if (!synthetic && !audio_server_running()) return NULL;
+
     /* audio_create returns before it knows whether a sound server exists — it
      * must, because finding out can block forever (see audio.h). So the row is
      * built optimistically and torn down later if the capture gives up; that is
@@ -288,6 +302,7 @@ void cava_tick(FwmCava *c, const CavaConfig *cfg, double dt) {
             if (c->target[i] > 1.0f) c->target[i] = 1.0f;
         }
     } else if (audio_samples(c->audio, c->samples, FFT_SIZE)) {
+        c->starved = 0.0;
         rebuild_bins(c, audio_rate(c->audio), cfg->min_hz, cfg->max_hz);
 
         for (int i = 0; i < FFT_SIZE; i++) {
@@ -326,8 +341,14 @@ void cava_tick(FwmCava *c, const CavaConfig *cfg, double dt) {
             prev = cur;
         }
     } else {
-        /* Nothing playing: fall to zero rather than freezing the last frame. */
-        memset(c->target, 0, sizeof(c->target));
+        /* No NEW samples is not the same as silence, and treating it as silence
+         * was visible as a stutter: the sound server hands over ~43 buffers a
+         * second while this ticks at 60, so about 18 ticks a second found the
+         * ring empty and yanked every bar down by a decay step, only for the
+         * next tick to put it back. Hold the last spectrum across those gaps
+         * and only fall to zero once the sink has really stopped feeding us. */
+        c->starved += dt;
+        if (c->starved > CAVA_SILENCE_S) memset(c->target, 0, sizeof(c->target));
     }
 
     /* Attack instantly, decay slowly — a bar that eased upward would round off
