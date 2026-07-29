@@ -605,6 +605,121 @@ static void test_option_table(void) {
     CHECK_NULL(config_option_find(""));
 }
 
+/* Mode and transform strings. The file and `fwmctl output` share these two
+ * parsers precisely so both take the same spelling, which makes them the one
+ * place a typo in either has to be caught. */
+static void test_output_spellings(void) {
+    CASE("mode strings");
+    int w = 0, h = 0, r = 0;
+
+    CHECK(config_parse_mode("1920x1080", &w, &h, &r));
+    CHECK_INT(w, 1920); CHECK_INT(h, 1080);
+    CHECK_INT(r, 0);                       /* no refresh asked for */
+
+    CHECK(config_parse_mode("2560x1440@144", &w, &h, &r));
+    CHECK_INT(w, 2560); CHECK_INT(h, 1440); CHECK_INT(r, 144000);
+
+    /* The fractional rates real monitors advertise must round to the mHz the
+     * mode list holds, or an exact match would never be found. */
+    CHECK(config_parse_mode("1920x1080@59.94", &w, &h, &r));
+    CHECK_INT(r, 59940);
+
+    CHECK(!config_parse_mode("1920", &w, &h, &r));
+    CHECK(!config_parse_mode("1920x", &w, &h, &r));
+    CHECK(!config_parse_mode("1920x1080@", &w, &h, &r));
+    CHECK(!config_parse_mode("1920x1080@60junk", &w, &h, &r));
+    CHECK(!config_parse_mode("1920x1080@0", &w, &h, &r));
+    CHECK(!config_parse_mode("32x32", &w, &h, &r));        /* absurdly small */
+    CHECK(!config_parse_mode("99999x1080", &w, &h, &r));   /* absurdly wide */
+    CHECK(!config_parse_mode("", &w, &h, &r));
+    CHECK(!config_parse_mode(NULL, &w, &h, &r));
+    /* A rejected string leaves the caller's values alone: apply-nothing is
+     * what makes a bad key in [[output]] cost only that key. */
+    CHECK_INT(w, 1920); CHECK_INT(h, 1080); CHECK_INT(r, 59940);
+
+    CASE("transform names");
+    CHECK_INT(config_parse_transform("normal"), 0);
+    CHECK_INT(config_parse_transform("0"), 0);
+    CHECK_INT(config_parse_transform("90"), 1);
+    CHECK_INT(config_parse_transform("270"), 3);
+    CHECK_INT(config_parse_transform("flipped-180"), 6);
+    CHECK_INT(config_parse_transform("sideways"), -1);
+    CHECK_INT(config_parse_transform(""), -1);
+    CHECK_INT(config_parse_transform(NULL), -1);
+    CHECK_STR(config_transform_name(1), "90");
+    CHECK_STR(config_transform_name(99), "?");
+    CHECK_STR(config_transform_name(-1), "?");
+}
+
+static void test_outputs(void) {
+    CASE("[[output]] entries");
+    const char *p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[[output]]\n"
+        "name = \"eDP-1\"\n"
+        "x = 0\ny = 0\n"
+        "desktop = 2\n"
+        "mode = \"1366x768@60\"\n"
+        "scale = 1.5\n"
+        "transform = \"90\"\n"
+        "[[output]]\n"
+        "name = \"HDMI-A-1\"\n"
+        "scale = 2\n"                      /* an integer, which TOML types apart */
+        "enabled = false\n");
+    FwmConfig cfg;
+    config_load(&cfg, p);
+
+    CHECK_INT(cfg.output_count, 2);
+    const ConfigOutput *o = config_find_output(&cfg, "eDP-1");
+    CHECK_NOT_NULL(o);
+    CHECK_INT(o->have_pos, 1);
+    CHECK_INT(o->desktop, 2);
+    CHECK_INT(o->enabled, 1);
+    CHECK_INT(o->have_mode, 1);
+    CHECK_INT(o->mode_w, 1366);
+    CHECK_INT(o->mode_h, 768);
+    CHECK_INT(o->mode_refresh, 60000);
+    CHECK_DBL(o->scale, 1.5, 1e-9);
+    CHECK_INT(o->transform, 1);
+
+    o = config_find_output(&cfg, "HDMI-A-1");
+    CHECK_NOT_NULL(o);
+    CHECK_DBL(o->scale, 2.0, 1e-9);
+    CHECK_INT(o->enabled, 0);
+    /* Everything it did not say stays unset, so this entry only turns a screen
+     * off — it does not also decide its resolution. */
+    CHECK_INT(o->have_mode, 0);
+    CHECK_INT(o->have_pos, 0);
+    CHECK_INT(o->transform, -1);
+    CHECK_INT(o->desktop, -1);
+
+    CHECK_NULL(config_find_output(&cfg, "DP-9"));
+    CHECK_INT(cfg.error_count, 0);
+    config_free(&cfg);
+    drop_config();
+
+    CASE("a monitor setting fwm cannot honour is dropped, not obeyed");
+    p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[[output]]\n"
+        "name = \"eDP-1\"\n"
+        "mode = \"huge\"\n"
+        "scale = 0\n"
+        "transform = \"upside-down\"\n");
+    config_load(&cfg, p);
+    o = config_find_output(&cfg, "eDP-1");
+    CHECK_NOT_NULL(o);
+    CHECK_INT(o->have_mode, 0);
+    CHECK_DBL(o->scale, 0.0, 1e-9);
+    CHECK_INT(o->transform, -1);
+    CHECK_INT(cfg.error_count, 3);
+    /* The entry survives its bad keys: the monitor is still named, so a screen
+     * with one typo'd line is not a screen fwm has never heard of. */
+    CHECK_INT(cfg.output_count, 1);
+    config_free(&cfg);
+    drop_config();
+}
+
 int main(void) {
     test_missing_file();
     test_values_parse();
@@ -619,5 +734,7 @@ int main(void) {
     test_mouse();
     test_modes();
     test_option_table();
+    test_output_spellings();
+    test_outputs();
     return t_report("config");
 }

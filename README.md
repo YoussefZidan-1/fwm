@@ -174,11 +174,23 @@ Runs the software you already use: **XWayland** (X11 apps as ordinary physics wi
 
 **Multiple monitors** are independent screens sharing one set of ten desktops (the i3 arrangement). Each monitor shows one desktop and switches on its own: a desktop bind moves the screen the pointer is on, and asking for a desktop that is already up on the other monitor trades the two rather than showing it twice. Every monitor gets its own wallpaper, fitted to its own size, its own status strip reporting its own desktop, and its own desktop strip (`expo`) — opening one leaves the other screen working. Sending a window to a desktop puts it on whichever monitor is showing it. Monitors can be plugged and unplugged while fwm runs; a new one comes up on the lowest desktop nobody else has.
 
-Where each monitor sits is `[[output]]` in `config.toml` — `name` as fwm logs it, `x`/`y` for the top-left corner, `desktop` for what it comes up on, `enabled = false` to leave one dark. The monitor at `0,0` is the primary: its size is the size of every desktop, and it is where the welcome and error panels open. Without an entry a monitor goes to the right of the ones already there and takes the lowest free desktop. A config reload re-applies the lot, monitors changing places included.
+Where each monitor sits and how it is driven is `[[output]]` in `config.toml` — `name` as fwm logs it, `mode` for the resolution (`"2560x1440@144"`, refresh optional), `scale`, `transform` for rotation, `x`/`y` for the top-left corner, `desktop` for what it comes up on, `enabled = false` to leave one dark. The monitor at `0,0` is the primary: its size is the size of every desktop, and it is where the welcome and error panels open. Without an entry a monitor comes up in its preferred mode, goes to the right of the ones already there and takes the lowest free desktop. A config reload re-applies the lot, monitors changing places included.
+
+The same settings are live over the socket, which is fwm's `wlr-randr`:
+
+```sh
+fwmctl outputs                                    # names, modes, what each offers
+fwmctl output HDMI-A-1 mode=2560x1440@144         # resolution and refresh
+fwmctl output HDMI-A-1 scale=1.5 transform=90     # HiDPI and rotation
+fwmctl output HDMI-A-1 position=1920,0 desktop=3  # where it sits, what it shows
+fwmctl output eDP-1 enabled=off                   # put one out
+```
+
+Everything in one command is applied together or not at all: the whole change is tested against the hardware first, so a mode a monitor cannot do leaves it running the one it had rather than going black. `mode=` picks from what `fwmctl outputs` lists, and a size that is not on that list is tried as a custom mode. Like `set`, none of it is written to `config.toml` — a reload puts the file's arrangement back.
 
 The desktop's size is the primary monitor's, so a second monitor of a different size shows that same desktop letterboxed or clipped rather than a differently-shaped one.
 
-Known gaps: no HiDPI / fractional output scale, no IME (xkb layouts do work).
+Known gaps: output scale is applied to the monitor and to client surfaces, but fwm's own chrome (status strip, launcher, expo) is still drawn at logical size and scaled up, so it is soft rather than crisp on a HiDPI screen. No IME (xkb layouts do work).
 
 ---
 
@@ -301,6 +313,8 @@ change how it behaves. Anything a keybind can do, a script can do:
 ```sh
 fwmctl state                    # compositor state as JSON
 fwmctl windows                  # open windows as JSON
+fwmctl outputs                  # monitors and every mode they offer
+fwmctl output DP-1 mode=1920x1080@60   # resolution, scale, rotation, position
 fwmctl dispatch view:3          # run any action from config.toml
 fwmctl reload                   # reload the config
 fwmctl config                   # every settable option, with values and ranges

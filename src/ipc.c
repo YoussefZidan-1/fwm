@@ -30,6 +30,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <wayland-server-core.h>
+#include <wlr/types/wlr_output.h>
 #include <wlr/util/log.h>
 
 /* One request line in, one JSON reply out, then the server closes — unless the
@@ -348,6 +349,223 @@ static void cmd_set(FwmServer *server, const char *arg, struct Buf *b) {
     buf_puts(b, "}\n");
 }
 
+/* ── monitors ─────────────────────────────────────────────────────────────
+ *
+ * `outputs` says what the screens are and what they could be; `output` changes
+ * one. Together they are the whole of display configuration, because there is
+ * no fwm GUI for it and there is not going to be one: this is what wlr-randr
+ * would give you, spoken in the compositor's own vocabulary (desktops
+ * included) and applied through the same code the config file uses. */
+
+/* One monitor, in full. Shared by `outputs` and by the reply to a change, so
+ * a script can see the result of what it just asked for without a round trip. */
+static void buf_output(struct Buf *b, FwmOutput *o) {
+    struct wlr_output *wlr = o->wlr_output;
+
+    buf_puts(b, "{\"name\":");
+    buf_json_string(b, wlr->name);
+    buf_puts(b, ",\"description\":");
+    buf_json_string(b, wlr->description ? wlr->description : "");
+    buf_puts(b, ",\"make\":");
+    buf_json_string(b, wlr->make ? wlr->make : "");
+    buf_puts(b, ",\"model\":");
+    buf_json_string(b, wlr->model ? wlr->model : "");
+    buf_printf(b, ",\"enabled\":%s", o->enabled ? "true" : "false");
+    buf_printf(b, ",\"desktop\":%d", o->desktop);
+    /* The layout box: the size a DESKTOP is on this screen, which is the mode
+     * divided by the scale and turned by the transform — not the mode itself,
+     * and the difference is the whole point of setting either. */
+    buf_printf(b, ",\"x\":%d,\"y\":%d,\"width\":%d,\"height\":%d",
+               o->box.x, o->box.y, o->box.width, o->box.height);
+    buf_printf(b, ",\"scale\":%.3f", (double)wlr->scale);
+    buf_puts(b, ",\"transform\":");
+    buf_json_string(b, config_transform_name(wlr->transform));
+
+    if (wlr->width > 0 && wlr->height > 0) {
+        /* Spelled so it can be handed straight back to `mode=`. The nested and
+         * headless backends report no refresh at all, and "@0.00" there would
+         * be a number that means nothing. */
+        char mode[64];
+        if (wlr->refresh > 0)
+            snprintf(mode, sizeof mode, "%dx%d@%.2f", wlr->width, wlr->height,
+                     wlr->refresh / 1000.0);
+        else
+            snprintf(mode, sizeof mode, "%dx%d", wlr->width, wlr->height);
+        buf_puts(b, ",\"mode\":");
+        buf_json_string(b, mode);
+    } else {
+        buf_puts(b, ",\"mode\":\"\"");
+    }
+
+    /* Everything this monitor advertises — the list `mode=` picks from, and
+     * empty for the nested and headless backends, which take any size. */
+    buf_puts(b, ",\"modes\":[");
+    struct wlr_output_mode *m;
+    bool first = true;
+    wl_list_for_each(m, &wlr->modes, link) {
+        if (!first) buf_puts(b, ",");
+        first = false;
+        buf_printf(b, "{\"width\":%d,\"height\":%d,\"refresh\":%.3f,"
+                      "\"preferred\":%s,\"current\":%s}",
+                   m->width, m->height, m->refresh / 1000.0,
+                   m->preferred ? "true" : "false",
+                   m == wlr->current_mode ? "true" : "false");
+    }
+    buf_puts(b, "]}");
+}
+
+static void cmd_outputs(FwmServer *server, struct Buf *b) {
+    buf_puts(b, "{\"ok\":true,\"outputs\":[");
+    FwmOutput *o;
+    bool first = true;
+    wl_list_for_each(o, &server->outputs, link) {
+        if (!first) buf_puts(b, ",");
+        first = false;
+        buf_output(b, o);
+    }
+    buf_puts(b, "]}\n");
+}
+
+/* `output <name> key=value ...` — resolution, scale, rotation, position, the
+ * desktop it shows, and whether it is lit at all.
+ *
+ * Every token is parsed before any of them is applied. A command with a typo
+ * in its third setting must not leave the screen halfway through the other
+ * two: the failure a user is most likely to hit here is also the one they can
+ * least afford, since a monitor mid-change may be showing nothing readable. */
+static void cmd_output(FwmServer *server, const char *arg, struct Buf *b) {
+    if (!arg) {
+        reply_error(b, "output needs <name> <key>=<value>... "
+                       "(mode, scale, transform, position, desktop, enabled)");
+        return;
+    }
+
+    char args[512];
+    if (snprintf(args, sizeof args, "%s", arg) >= (int)sizeof args) {
+        reply_error(b, "output command too long");
+        return;
+    }
+
+    char *save = NULL;
+    char *name = strtok_r(args, " ", &save);
+    if (!name) { reply_error(b, "output needs a monitor name"); return; }
+
+    FwmOutput *out = server_output_find(server, name);
+    if (!out) {
+        char err[128];
+        snprintf(err, sizeof err, "no monitor named %s (try: outputs)", name);
+        reply_error(b, err);
+        return;
+    }
+
+    FwmOutputSetup setup = {0};
+    int want_enabled = -1, want_desktop = -1, changes = 0;
+    char err[256];
+
+    for (char *tok = strtok_r(NULL, " ", &save); tok; tok = strtok_r(NULL, " ", &save)) {
+        char *eq = strchr(tok, '=');
+        if (!eq || eq == tok) {
+            snprintf(err, sizeof err, "\"%s\" is not key=value", tok);
+            reply_error(b, err);
+            return;
+        }
+        *eq = '\0';
+        const char *key = tok, *val = eq + 1;
+        changes++;
+
+        if (strcmp(key, "mode") == 0) {
+            if (!config_parse_mode(val, &setup.mode_w, &setup.mode_h, &setup.mode_refresh)) {
+                snprintf(err, sizeof err, "mode \"%s\" is not WIDTHxHEIGHT[@HZ]", val);
+                reply_error(b, err);
+                return;
+            }
+            setup.have_mode = 1;
+        } else if (strcmp(key, "scale") == 0) {
+            char *end;
+            double v = strtod(val, &end);
+            if (end == val || *end || v < 0.25 || v > 10.0) {
+                reply_error(b, "scale must be a number in 0.25..10");
+                return;
+            }
+            setup.have_scale = 1;
+            setup.scale = v;
+        } else if (strcmp(key, "transform") == 0) {
+            int t = config_parse_transform(val);
+            if (t < 0) {
+                reply_error(b, "transform must be normal, 90, 180, 270, flipped, "
+                               "flipped-90, flipped-180 or flipped-270");
+                return;
+            }
+            setup.have_transform = 1;
+            setup.transform = t;
+        } else if (strcmp(key, "position") == 0 || strcmp(key, "pos") == 0) {
+            char *end;
+            long x = strtol(val, &end, 10);
+            if (end == val || *end != ',') { reply_error(b, "position must be X,Y"); return; }
+            const char *p = end + 1;
+            long y = strtol(p, &end, 10);
+            if (end == p || *end || x < -32768 || x > 32768 || y < -32768 || y > 32768) {
+                reply_error(b, "position must be X,Y, each within ±32768");
+                return;
+            }
+            setup.have_pos = 1;
+            setup.x = (int)x;
+            setup.y = (int)y;
+        } else if (strcmp(key, "desktop") == 0) {
+            char *end;
+            long d = strtol(val, &end, 10);
+            if (end == val || *end || d < 0 || d >= FWM_DESKTOPS) {
+                snprintf(err, sizeof err, "desktop must be 0..%d", FWM_DESKTOPS - 1);
+                reply_error(b, err);
+                return;
+            }
+            want_desktop = (int)d;
+        } else if (strcmp(key, "enabled") == 0) {
+            if (strcmp(val, "true") == 0 || strcmp(val, "on") == 0 || strcmp(val, "1") == 0)
+                want_enabled = 1;
+            else if (strcmp(val, "false") == 0 || strcmp(val, "off") == 0 || strcmp(val, "0") == 0)
+                want_enabled = 0;
+            else { reply_error(b, "enabled must be on or off"); return; }
+        } else {
+            snprintf(err, sizeof err, "unknown key \"%s\" (mode, scale, transform, "
+                                      "position, desktop, enabled)", key);
+            reply_error(b, err);
+            return;
+        }
+    }
+
+    if (!changes) { reply_error(b, "output needs at least one key=value"); return; }
+
+    /* Lighting a screen comes first — a mode cannot be set on a dark one — and
+     * putting one out comes last, so `enabled=off desktop=2` still means
+     * something sane and nothing is applied to a screen that is already gone. */
+    if (want_enabled == 1) server_output_set_enabled(server, out, 1);
+
+    if ((setup.have_mode || setup.have_scale || setup.have_transform || setup.have_pos) &&
+        !server_output_apply_setup(server, out, &setup, err, sizeof err)) {
+        reply_error(b, err);
+        return;
+    }
+
+    if (want_desktop >= 0 && out->enabled)
+        server_output_show_desktop(server, out, want_desktop, 0);
+
+    if (want_enabled == 0) {
+        server_output_set_enabled(server, out, 0);
+        /* The one request it can refuse outright, and silence would look like
+         * success to a script. Asking a screen that is ALREADY off to go off
+         * is not that: it is simply already how it was asked to be. */
+        if (out->enabled) {
+            reply_error(b, "refusing to turn off the last lit screen");
+            return;
+        }
+    }
+
+    buf_puts(b, "{\"ok\":true,\"output\":");
+    buf_output(b, out);
+    buf_puts(b, "}\n");
+}
+
 /* Recomputed from the live clients rather than accumulated, so unsubscribing
  * by disconnecting actually stops the work of building those events. */
 static void ipc_refresh_subscriptions(FwmIpc *ipc) {
@@ -405,6 +623,7 @@ static void ipc_handle_command(struct IpcClient *client, const char *line, struc
     if (IS("state"))   { cmd_state(server, out);   return; }
     if (IS("windows")) { cmd_windows(server, out); return; }
     if (IS("config"))  { cmd_config(server, out);  return; }
+    if (IS("outputs")) { cmd_outputs(server, out); return; }
     if (IS("get")) {
         if (!arg) { reply_error(out, "get needs an option name"); return; }
         cmd_get(server, arg, out);
@@ -432,14 +651,18 @@ static void ipc_handle_command(struct IpcClient *client, const char *line, struc
         cmd_set(server, arg, out);
         return;
     }
+    if (IS("output")) {
+        cmd_output(server, arg, out);
+        return;
+    }
     if (IS("reload")) {
         server_reload_config(server);
         reply_ok(out);
         return;
     }
 
-    reply_error(out, "unknown command (try: version, state, windows, config, get, set, "
-                     "dispatch, reload, subscribe)");
+    reply_error(out, "unknown command (try: version, state, windows, outputs, output, "
+                     "config, get, set, dispatch, reload, subscribe)");
     #undef IS
 }
 

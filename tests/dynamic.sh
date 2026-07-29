@@ -23,7 +23,12 @@ BUILD="$REPO/build-asan"
 KEEP=0
 LIST=0
 
-SCENARIOS="bare clients churn tiling groups desktops overlays physics reload ipc xwayland kill"
+SCENARIOS="bare clients churn tiling groups desktops overlays physics reload ipc outputs xwayland kill"
+
+# A scenario whose compositor has to be started differently says so here, in a
+# variable named after it. `outputs` needs a second monitor, and the headless
+# backend is the only place we can be sure of getting one.
+outputs_env="WLR_HEADLESS_OUTPUTS=2"
 
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
@@ -114,6 +119,11 @@ start() {
 # a sanitizer report or a crash may. The command is `dispatch`: an unknown one
 # would be swallowed by that same `|| true` and quietly test nothing.
 act() { timeout 5 "$FWMCTL" dispatch "$1" >/dev/null 2>&1 || true; sleep "${2:-0.3}"; }
+
+# Any other fwmctl command. Same rule as act(): only a crash or a sanitizer
+# report may fail a scenario, so a request the compositor refuses is fine —
+# being refused is one of the paths under test.
+ctl() { timeout 5 "$FWMCTL" "$@" >/dev/null 2>&1 || true; sleep 0.3; }
 
 client() {
     [ -n "$TERM_CMD" ] || return 0
@@ -283,6 +293,53 @@ while sent < 60000 and time.time() < deadline:
     sleep 0.5
 }
 
+# Resolution, scale, rotation and position, on two monitors with windows open.
+# Every one of these resizes a screen, and a resize is the heaviest thing that
+# happens to fwm without a monitor being unplugged: the world reflows, expo is
+# thrown away, wallpapers and status strips are rebuilt and every tiled desktop
+# is re-split. Doing it to the PRIMARY screen is the interesting half, because
+# that is what changes the size of every desktop.
+sc_outputs() {
+    names="$("$FWMCTL" outputs 2>/dev/null | grep -o '"name":"[^"]*"' | cut -d'"' -f4)"
+    first="$(echo "$names" | head -1)"
+    second="$(echo "$names" | tail -1)"
+    [ -n "$first" ] || return 0
+
+    client 30
+    client 30
+    act toggle_tiling_all 0.4
+
+    ctl output "$first" mode=1600x900
+    ctl output "$first" scale=1.5
+    ctl output "$first" transform=90
+    ctl output "$first" transform=normal scale=1 mode=1920x1080
+
+    if [ "$second" != "$first" ]; then
+        ctl output "$second" position=1920,0 mode=1280x1024 desktop=4
+        ctl output "$second" enabled=off
+        # A mode for a screen that is off, and a desktop only it was showing:
+        # both are refusals, and a refusal must leave the rest working.
+        ctl output "$second" mode=800x600
+        act "view:4" 0.3
+        ctl output "$second" enabled=on desktop=4
+    fi
+
+    # Putting out the screen everything else is anchored to — the primary, the
+    # one holding the world's size. Refused outright when it is the only one
+    # lit, which with a single monitor is the whole of this step.
+    ctl output "$first" enabled=off
+    act outputs_on 0.5
+
+    # Malformed and unknown: a rejected request must change nothing at all.
+    ctl output "$first" nonsense=1
+    ctl output NO-SUCH-OUTPUT mode=640x480
+
+    # The file has the last word, and getting there re-applies every monitor.
+    act reload_config 0.6
+    act expo 0.5
+    act expo 0.5
+}
+
 # Clients killed outright rather than exiting: the compositor sees the socket
 # drop with surfaces still mapped.
 sc_kill() {
@@ -304,7 +361,10 @@ for name in $SCENARIOS; do
         echo "$name"; echo "  FAIL no such scenario"; FAILED="$FAILED $name"; continue
     fi
     echo "$name"
-    if ! start "$name"; then
+    eval "env_extra=\${${name}_env:-}"
+    # Unquoted on purpose: the variable holds zero or more VAR=value words.
+    # shellcheck disable=SC2086
+    if ! start "$name" $env_extra; then
         echo "  FAIL compositor never came up"
         [ -f "$LOGDIR/$name.log" ] && tail -5 "$LOGDIR/$name.log" | sed 's/^/    /'
         FAILED="$FAILED $name"; KEEP=1

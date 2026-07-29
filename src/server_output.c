@@ -751,6 +751,10 @@ static void handle_output_layout_change(struct wl_listener *listener, void *data
     server_output_layout_update(server);
 }
 
+/* Defined with the rest of the mode handling below; a screen coming back on
+ * needs it, and that path is above it. */
+static void output_apply_mode_config(FwmServer *server, FwmOutput *out);
+
 /* ── turning a monitor off and on ─────────────────────────────────────────
  *
  * Three things have to move together, and every path below goes through these
@@ -796,6 +800,9 @@ static void output_join_layout(FwmServer *server, FwmOutput *out) {
     const ConfigOutput *cfg = config_find_output(&server->config, out->wlr_output->name);
     if (cfg && cfg->have_pos)
         wlr_output_layout_add(server->output_layout, out->wlr_output, cfg->x, cfg->y);
+    else if (out->manual_pos)
+        wlr_output_layout_add(server->output_layout, out->wlr_output,
+                              out->manual_x, out->manual_y);
     else
         wlr_output_layout_add_auto(server->output_layout, out->wlr_output);
 
@@ -839,6 +846,10 @@ static int output_set_enabled(FwmServer *server, FwmOutput *out, int on) {
     out->enabled = on;
 
     if (on) {
+        /* Lit with the preferred mode above, which is only a starting point:
+         * a screen coming back has to come back the shape the file asked for,
+         * or the lid closing and opening would silently undo it. */
+        output_apply_mode_config(server, out);
         output_join_layout(server, out);
     } else {
         /* Anchored to the strip on a screen that is going dark. */
@@ -879,6 +890,174 @@ int server_output_set_enabled(FwmServer *server, FwmOutput *out, int on) {
     return 1;
 }
 
+/* ── resolution, scale and rotation ───────────────────────────────────────
+ *
+ * One entry point, used by both `[[output]]` and `fwmctl output`, so a
+ * resolution set from the socket goes through exactly the code a reload does.
+ * Everything it changes lands in ONE commit that is tested first: a monitor
+ * that cannot do what was asked is left running what it was running, which
+ * matters more here than anywhere else in fwm — the failure mode of getting
+ * this wrong is a black screen with no way left to type the undo. */
+
+FwmOutput *server_output_find(FwmServer *server, const char *name) {
+    if (!name) return NULL;
+    FwmOutput *o;
+    wl_list_for_each(o, &server->outputs, link) {
+        if (o->wlr_output->name && strcmp(o->wlr_output->name, name) == 0) return o;
+    }
+    return NULL;
+}
+
+/* The advertised mode that best answers width×height[@refresh], or NULL if the
+ * monitor advertises none that fits.
+ *
+ * With no refresh asked for, the highest one at that size wins: a screen that
+ * can do 144Hz should not be driven at 60 because 60 happened to be listed
+ * first. With one asked for, it has to be within a hertz — near enough to
+ * cover 59.94 written as 60, far enough from handing someone 144 when they
+ * asked for 60. */
+static struct wlr_output_mode *output_pick_mode(struct wlr_output *wlr_output,
+                                                int w, int h, int refresh) {
+    struct wlr_output_mode *mode, *best = NULL;
+    wl_list_for_each(mode, &wlr_output->modes, link) {
+        if (mode->width != w || mode->height != h) continue;
+        if (refresh > 0) {
+            if (abs(mode->refresh - refresh) > 1000) continue;
+            if (!best || abs(mode->refresh - refresh) < abs(best->refresh - refresh))
+                best = mode;
+        } else if (!best || mode->refresh > best->refresh) {
+            best = mode;
+        }
+    }
+    return best;
+}
+
+/* Tacked onto a failure message: what the monitor would have accepted. A
+ * rejected mode is nearly always a typo or a guess, and the list is the answer
+ * to the question the error otherwise leaves the user holding. */
+static void output_append_modes(struct wlr_output *wlr_output, char *err, size_t err_len) {
+    size_t len = strlen(err);
+    if (wl_list_empty(&wlr_output->modes) || len + 16 >= err_len) return;
+
+    len += (size_t)snprintf(err + len, err_len - len, " — available:");
+    struct wlr_output_mode *mode;
+    wl_list_for_each(mode, &wlr_output->modes, link) {
+        int n = snprintf(err + len, err_len - len, " %dx%d@%.2f",
+                         mode->width, mode->height, mode->refresh / 1000.0);
+        if (n < 0 || len + (size_t)n >= err_len) {
+            /* Out of room: say so rather than end on a half-written mode. */
+            snprintf(err + len, err_len - len, " ...");
+            return;
+        }
+        len += (size_t)n;
+    }
+}
+
+FwmOutputSetup server_output_setup_from_config(const ConfigOutput *cfg) {
+    FwmOutputSetup s = {0};
+    if (!cfg) return s;
+    if (cfg->have_mode) {
+        s.have_mode = 1;
+        s.mode_w = cfg->mode_w;
+        s.mode_h = cfg->mode_h;
+        s.mode_refresh = cfg->mode_refresh;
+    }
+    if (cfg->scale > 0.0)    { s.have_scale = 1;     s.scale = cfg->scale; }
+    if (cfg->transform >= 0) { s.have_transform = 1; s.transform = cfg->transform; }
+    if (cfg->have_pos)       { s.have_pos = 1;       s.x = cfg->x; s.y = cfg->y; }
+    return s;
+}
+
+bool server_output_apply_setup(FwmServer *server, FwmOutput *out,
+                               const FwmOutputSetup *s, char *err, size_t err_len) {
+    #define FAIL(...) do { if (err && err_len) snprintf(err, err_len, __VA_ARGS__); \
+                           return false; } while (0)
+
+    if (err && err_len) err[0] = '\0';
+    if (!out || !s) FAIL("no such monitor");
+
+    struct wlr_output *wlr_output = out->wlr_output;
+    bool commit = s->have_mode || s->have_scale || s->have_transform;
+
+    /* A dark monitor is out of the layout and running no mode at all; the
+     * commit below would either fail or quietly light it back up, and neither
+     * is what the caller asked for. */
+    if (commit && !out->enabled)
+        FAIL("%s is off — turn it on before setting a mode", wlr_output->name);
+
+    if (commit) {
+        struct wlr_output_state state;
+        wlr_output_state_init(&state);
+
+        bool custom = false;
+        if (s->have_mode) {
+            struct wlr_output_mode *mode =
+                output_pick_mode(wlr_output, s->mode_w, s->mode_h, s->mode_refresh);
+            if (mode) {
+                wlr_output_state_set_mode(&state, mode);
+            } else {
+                /* Either the monitor lists no modes at all (the nested and
+                 * headless backends are simply resizable) or it lists none
+                 * that fit and the user means it. The test below is what
+                 * decides whether the hardware agrees. */
+                wlr_output_state_set_custom_mode(&state, s->mode_w, s->mode_h,
+                                                 s->mode_refresh);
+                custom = true;
+            }
+        }
+        if (s->have_scale)     wlr_output_state_set_scale(&state, (float)s->scale);
+        if (s->have_transform) wlr_output_state_set_transform(&state,
+                                   (enum wl_output_transform)s->transform);
+
+        bool ok = wlr_output_test_state(wlr_output, &state) &&
+                  wlr_output_commit_state(wlr_output, &state);
+        wlr_output_state_finish(&state);
+
+        if (!ok) {
+            if (err && err_len) {
+                snprintf(err, err_len, "%s rejected the change", wlr_output->name);
+                if (s->have_mode) output_append_modes(wlr_output, err, err_len);
+            }
+            return false;
+        }
+
+        wlr_log(WLR_INFO, "output %s: now %dx%d@%.2f%s, scale %.2f, transform %s",
+                wlr_output->name, wlr_output->width, wlr_output->height,
+                wlr_output->refresh / 1000.0, custom ? " (custom mode)" : "",
+                wlr_output->scale, config_transform_name(wlr_output->transform));
+    }
+
+    /* Moving a screen is layout work, not a commit: the monitor draws exactly
+     * what it drew, it is the world around it that shifts. */
+    if (s->have_pos) {
+        out->manual_pos = 1;
+        out->manual_x = s->x;
+        out->manual_y = s->y;
+        if (out->enabled)
+            wlr_output_layout_add(server->output_layout, wlr_output, s->x, s->y);
+    }
+
+    return true;
+    #undef FAIL
+}
+
+/* What `[[output]]` asks for, applied to a monitor that is on. Called from the
+ * config paths only; a mode the hardware refuses is logged and the screen goes
+ * on running what it was running. */
+static void output_apply_mode_config(FwmServer *server, FwmOutput *out) {
+    const ConfigOutput *cfg = config_find_output(&server->config, out->wlr_output->name);
+    if (!cfg) return;
+    FwmOutputSetup setup = server_output_setup_from_config(cfg);
+    if (!setup.have_mode && !setup.have_scale && !setup.have_transform) return;
+    /* Position is output_join_layout's job on this path — it runs for monitors
+     * with no mode to set too, so letting it own x/y keeps one answer. */
+    setup.have_pos = 0;
+
+    char err[512];
+    if (!server_output_apply_setup(server, out, &setup, err, sizeof err))
+        wlr_log(WLR_ERROR, "[[output]] %s: %s", cfg->name, err);
+}
+
 /* ── the laptop lid ───────────────────────────────────────────────────────
  *
  * Which monitor is the built-in panel is not something the kernel tells us in
@@ -909,9 +1088,11 @@ void server_lid_changed(FwmServer *server, int closed) {
     else        server_output_set_enabled(server, panel, 1);
 }
 
-/* Put one monitor where [[output]] says, or leave it where the layout put it.
- * Called when a monitor arrives and again on every config reload, so moving a
- * screen in config.toml takes effect without a restart.
+/* Put one monitor where [[output]] says, in the mode it says, or leave it as
+ * the backend brought it up. Called when a monitor arrives and again on every
+ * config reload, so moving or resizing a screen in config.toml takes effect
+ * without a restart — and so a `fwmctl output` experiment is undone by the
+ * same reload that undoes a `fwmctl set`.
  *
  * `enabled = false` in the file is honoured; a monitor turned off at RUNTIME
  * (the lid, the keybind) is left alone — the file did not ask for it, and a
@@ -928,10 +1109,11 @@ static void output_apply_config(FwmServer *server, FwmOutput *out) {
      * reload doing its job — but one a person turned off stays off. */
     if (!out->enabled) {
         if (out->forced_off) return;
-        output_set_enabled(server, out, 1);
+        output_set_enabled(server, out, 1);   /* which applies the mode too */
         return;
     }
 
+    output_apply_mode_config(server, out);
     output_join_layout(server, out);
 }
 

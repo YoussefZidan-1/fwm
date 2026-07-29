@@ -106,11 +106,26 @@ wrap       = false
 # that it never re-lights a monitor turned off at runtime, so a reload with the
 # laptop shut does not wake the panel inside the lid.
 #
-# At runtime: `output_off` puts out the screen the pointer is on,
-# `toggle_internal_output` the built-in panel, and `outputs_on` brings them all
-# back. Closing the lid turns the panel off by itself whenever another monitor
-# is connected; with nothing else plugged in it is left alone, since a session
-# with no screen at all is a suspend for logind to decide on, not this.
+# `mode`, `scale` and `transform` say how the monitor is driven. A monitor with
+# no `mode` comes up in its preferred one, which is nearly always right; set it
+# when it is not. The whole entry is applied in one tested commit, so a mode the
+# hardware refuses leaves the screen running what it was running (and says so in
+# the log) rather than going black.
+#
+#   mode      = "2560x1440"     # highest refresh the monitor offers at that size
+#   mode      = "2560x1440@144" # ...or exactly this one; `fwmctl outputs` lists them
+#   scale     = 1.5             # HiDPI factor
+#   transform = "90"            # normal, 90, 180, 270, flipped, flipped-90, ...
+#
+# At runtime: `fwmctl outputs` shows every screen and every mode it offers, and
+# `fwmctl output <name> mode=... scale=... transform=... position=X,Y
+# desktop=N enabled=on|off` changes one — the same settings as here, applied
+# through the same code, and undone by the next reload. `output_off` puts out
+# the screen the pointer is on, `toggle_internal_output` the built-in panel, and
+# `outputs_on` brings them all back. Closing the lid turns the panel off by
+# itself whenever another monitor is connected; with nothing else plugged in it
+# is left alone, since a session with no screen at all is a suspend for logind
+# to decide on, not this.
 #
 #   [[output]]
 #   name    = "eDP-1"        # the laptop panel, on the left, primary
@@ -120,6 +135,7 @@ wrap       = false
 #
 #   [[output]]
 #   name    = "HDMI-A-1"     # the external screen to the right of it
+#   mode    = "1920x1080@60"
 #   x       = 1366
 #   y       = 0
 #   desktop = 1

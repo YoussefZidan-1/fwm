@@ -758,6 +758,60 @@ static double rule_number(FwmConfig *cfg, toml_table_t *tbl, const char *key,
     return d.u.d;
 }
 
+/* ── mode and transform spellings ─────────────────────────────────────────
+ *
+ * Shared with `fwmctl output`, which is why they are public: the file and the
+ * socket must accept exactly the same strings, or a mode that works in
+ * config.toml would be rejected at runtime for no reason a user could see. */
+
+bool config_parse_mode(const char *s, int *w, int *h, int *refresh_mhz) {
+    if (!s) return false;
+
+    char *end;
+    long width = strtol(s, &end, 10);
+    if (end == s || (*end != 'x' && *end != 'X')) return false;
+    const char *p = end + 1;
+    long height = strtol(p, &end, 10);
+    if (end == p) return false;
+
+    double hz = 0.0;
+    if (*end == '@') {
+        p = end + 1;
+        hz = strtod(p, &end);
+        if (end == p || hz <= 0.0 || hz > 1000.0) return false;
+    }
+    while (*end == ' ') end++;
+    if (*end) return false;      /* trailing junk: a typo, not a mode */
+
+    /* A monitor narrower than 64px or wider than 16K is a typo every time, and
+     * the cap keeps a bad number away from the backend's own arithmetic. */
+    if (width < 64 || width > 16384 || height < 64 || height > 16384) return false;
+
+    if (w) *w = (int)width;
+    if (h) *h = (int)height;
+    /* +0.5 so 59.94 lands on 59940 rather than 59939. */
+    if (refresh_mhz) *refresh_mhz = (int)(hz * 1000.0 + 0.5);
+    return true;
+}
+
+/* Index is the wl_output_transform value; the names are wlr-randr's. */
+static const char *const transform_names[8] = {
+    "normal", "90", "180", "270",
+    "flipped", "flipped-90", "flipped-180", "flipped-270",
+};
+
+int config_parse_transform(const char *s) {
+    if (!s) return -1;
+    if (strcmp(s, "0") == 0) return 0;    /* "0" is how people write "normal" */
+    for (int i = 0; i < 8; i++)
+        if (strcmp(s, transform_names[i]) == 0) return i;
+    return -1;
+}
+
+const char *config_transform_name(int transform) {
+    return (transform >= 0 && transform < 8) ? transform_names[transform] : "?";
+}
+
 /* [[output]]: where each monitor sits and what it starts on. Everything is
  * optional except the name — an entry that names nothing cannot be matched to
  * a monitor, so it is reported rather than silently ignored. */
@@ -783,6 +837,7 @@ static void load_outputs(toml_table_t *root, FwmConfig *cfg) {
         memset(o, 0, sizeof(*o));
         o->desktop = -1;
         o->enabled = 1;
+        o->transform = -1;
 
         toml_datum_t name = toml_string_in(tbl, "name");
         if (!name.ok) {
@@ -822,6 +877,48 @@ static void load_outputs(toml_table_t *root, FwmConfig *cfg) {
 
         toml_datum_t en = toml_bool_in(tbl, "enabled");
         if (en.ok) o->enabled = en.u.b ? 1 : 0;
+
+        /* A mode the monitor cannot do is not knowable here — no monitor has
+         * been seen yet — so only the spelling is checked; the compositor
+         * reports one the hardware rejects when it tries to apply it. */
+        toml_datum_t mode = toml_string_in(tbl, "mode");
+        if (mode.ok) {
+            if (config_parse_mode(mode.u.s, &o->mode_w, &o->mode_h, &o->mode_refresh))
+                o->have_mode = 1;
+            else
+                config_report_error(cfg, "[[output]] %s: mode \"%s\" is not WIDTHxHEIGHT[@HZ] — ignored",
+                                    o->name, mode.u.s);
+            free(mode.u.s);
+        }
+
+        /* `scale = 2` is TOML for an integer, and toml_double_in will not take
+         * it — the one place in this file where a whole number is the value
+         * people reach for first, so it is read either way. */
+        toml_datum_t scale = toml_double_in(tbl, "scale");
+        if (!scale.ok) {
+            toml_datum_t si = toml_int_in(tbl, "scale");
+            if (si.ok) { scale.ok = 1; scale.u.d = (double)si.u.i; }
+        }
+        if (scale.ok) {
+            /* wlroots refuses a scale of 0 or below with an abort, and past
+             * ~10 a desktop holds a single button. */
+            if (scale.u.d < 0.25 || scale.u.d > 10.0)
+                config_report_error(cfg, "[[output]] %s: scale %g out of range 0.25..10 — ignored",
+                                    o->name, scale.u.d);
+            else
+                o->scale = scale.u.d;
+        }
+
+        toml_datum_t tr = toml_string_in(tbl, "transform");
+        if (tr.ok) {
+            o->transform = config_parse_transform(tr.u.s);
+            if (o->transform < 0)
+                config_report_error(cfg, "[[output]] %s: transform \"%s\" is not one of "
+                                         "normal, 90, 180, 270, flipped, flipped-90, "
+                                         "flipped-180, flipped-270 — ignored",
+                                    o->name, tr.u.s);
+            free(tr.u.s);
+        }
 
         cfg->output_count++;
     }

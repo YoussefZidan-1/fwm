@@ -84,6 +84,13 @@ typedef struct FwmOutput {
      * light the panel inside a closed laptop back up. */
     int forced_off;
 
+    /* Where `fwmctl output position=` put this screen. Remembered because
+     * leaving the layout (the lid, `output_off`) forgets everything, and a
+     * screen coming back where the layout feels like putting it would undo an
+     * arrangement nobody re-typed. A [[output]] x/y still wins over it. */
+    int manual_pos;
+    int manual_x, manual_y;
+
     int desktop;             /* which of the ten columns this monitor shows */
     int camera_x;            /* world x of this monitor's left edge */
     int target_camera_x;
@@ -500,6 +507,37 @@ int server_output_set_enabled(FwmServer *server, FwmOutput *out, int on);
 /* The built-in laptop panel, or NULL. Name-based (eDP/LVDS/DSI), which is what
  * every other compositor does with it. */
 FwmOutput *server_internal_output(FwmServer *server);
+/* The monitor with this connector name ("HDMI-A-1"), or NULL. */
+FwmOutput *server_output_find(FwmServer *server, const char *name);
+
+/* How one monitor should be driven: what `[[output]]` and `fwmctl output` both
+ * end up saying. Every field is optional, and the have_* flags are what make
+ * "put this screen at 1920,0" leave its resolution alone — a request carries
+ * only what was asked for, never a full state that would overwrite the rest. */
+typedef struct {
+    int    have_mode;
+    int    mode_w, mode_h;
+    int    mode_refresh;    /* mHz; 0 = whatever refresh that size comes in */
+    int    have_scale;
+    double scale;
+    int    have_transform;
+    int    transform;       /* enum wl_output_transform */
+    int    have_pos;
+    int    x, y;            /* top-left in layout coordinates */
+} FwmOutputSetup;
+
+/* Apply a setup to one monitor, atomically: the whole thing is tested against
+ * the hardware first, so a refused mode leaves the screen exactly as it was
+ * rather than half-changed or black. Returns true on success; on failure it
+ * writes a one-line reason into `err` (which may be NULL).
+ *
+ * Anything this changes resizes or moves the monitor's box, and the layout's
+ * change event does the rest — wallpaper, strip, cameras, tiling. */
+bool server_output_apply_setup(FwmServer *server, FwmOutput *out,
+                               const FwmOutputSetup *setup, char *err, size_t err_len);
+/* The setup a `[[output]]` entry asks for. Only the fields the file actually
+ * set come back flagged. */
+FwmOutputSetup server_output_setup_from_config(const ConfigOutput *cfg);
 /* The lid opening or closing, from the switch device in server_input.c. */
 void server_lid_changed(FwmServer *server, int closed);
 

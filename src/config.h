@@ -16,6 +16,7 @@
 #define FWM_CONFIG_H
 
 #include <regex.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <xkbcommon/xkbcommon.h>
 
@@ -497,17 +498,21 @@ typedef struct {
 #define CONFIG_MAX_OUTPUTS 8
 
 /*
- * Where a monitor sits, and what it starts on.
+ * Where a monitor sits, how it is driven, and what it starts on.
  *
  *   [[output]]
- *   name    = "HDMI-A-1"     # as fwm logs it at startup
- *   x       = 1366           # top-left in layout coordinates; both or neither
- *   y       = 0
- *   desktop = 3              # the desktop it comes up on
- *   enabled = false          # leave it dark
+ *   name      = "HDMI-A-1"     # as fwm logs it at startup
+ *   mode      = "1920x1080@60" # resolution, refresh optional
+ *   scale     = 1.5            # HiDPI factor
+ *   transform = "90"           # rotation / flip
+ *   x         = 1366           # top-left in layout coordinates; both or neither
+ *   y         = 0
+ *   desktop   = 3              # the desktop it comes up on
+ *   enabled   = false          # leave it dark
  *
- * Without an entry a monitor is placed to the right of the ones already there
- * and takes the lowest free desktop, which is what fwm did before this existed.
+ * Without an entry a monitor comes up in its preferred mode, is placed to the
+ * right of the ones already there and takes the lowest free desktop, which is
+ * what fwm did before this existed.
  */
 typedef struct {
     char name[64];
@@ -515,7 +520,34 @@ typedef struct {
     int  x, y;
     int  desktop;    /* -1: take whatever is free */
     int  enabled;    /* 0 only when the file says so */
+
+    /* Mode, scale and rotation. Each has an "unset" value rather than a
+     * default, because "leave the monitor as the backend brought it up" is a
+     * different thing from any value we could pick: an entry that only moves a
+     * screen must not also force a resolution on it. */
+    int    have_mode;
+    int    mode_w, mode_h;
+    int    mode_refresh;   /* mHz; 0 = any refresh at that size */
+    double scale;          /* 0 = leave alone */
+    int    transform;      /* -1 = leave alone; else a wl_output_transform */
 } ConfigOutput;
+
+/* "1920x1080" or "1920x1080@59.94", the wlr-randr spelling. The refresh is
+ * given in Hz and comes back in mHz, or 0 when the string named none. False on
+ * anything malformed, and the out-params are then left untouched.
+ *
+ * Lives here rather than beside the compositor because both the config file
+ * and `fwmctl output` take the same spelling, and two parsers would drift. */
+bool config_parse_mode(const char *s, int *w, int *h, int *refresh_mhz);
+
+/* "normal", "90", "180", "270", "flipped", "flipped-90", "flipped-180",
+ * "flipped-270" — the wlr-randr vocabulary. Returns the matching
+ * wl_output_transform value (0..7), or -1 if the name is not one of them. */
+int config_parse_transform(const char *s);
+
+/* The spelling config_parse_transform would accept for this value, for error
+ * messages and for `fwmctl outputs`. "?" if it is not a valid transform. */
+const char *config_transform_name(int transform);
 
 typedef struct {
     /* Compiled matchers; the has_* flag says whether the regex_t is live. */
