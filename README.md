@@ -18,20 +18,20 @@ This is the primary, actively developed version. The legacy X11 version lives on
 
 ## 🎬 Demonstration
 
-Six clips of about fifteen seconds each, one per idea. They live in [`assets/demo/`](assets/demo) — if your viewer does not play them inline, the caption below each one is a link.
+Six clips of about fifteen seconds each, one per idea. They play here on GitHub; everywhere else the caption below each one is a link to the same file in [`assets/demo/`](assets/demo), which is where they live in the repository.
 
 <table>
 <tr>
 <td width="50%">
 
-<video src="https://github.com/iluaii/fwm/raw/main/assets/demo/physics-gravity-rotate.mp4" controls muted loop width="100%"></video>
+https://github.com/user-attachments/assets/1b9550eb-0b91-417c-811c-852cc5f01381
 
 **[Physics, gravity and free rotation](assets/demo/physics-gravity-rotate.mp4)** — windows thrown, stacked under gravity, and one handed to the simulation with `Super+R` so it tumbles off the walls corner-first.
 
 </td>
 <td width="50%">
 
-<video src="https://github.com/iluaii/fwm/raw/main/assets/demo/tiling.mp4" controls muted loop width="100%"></video>
+https://github.com/user-attachments/assets/73b2be14-1169-4078-b731-9c24321b275e
 
 **[Tiling](assets/demo/tiling.mp4)** — the BSP layout, splits, and windows springing into place: tiling here is a property of the desktop, so the same windows go back to being physical objects when it is switched off.
 
@@ -40,14 +40,14 @@ Six clips of about fifteen seconds each, one per idea. They live in [`assets/dem
 <tr>
 <td width="50%">
 
-<video src="https://github.com/iluaii/fwm/raw/main/assets/demo/3d-mode.mp4" controls muted loop width="100%"></video>
+https://github.com/user-attachments/assets/0e50334e-264a-4588-b52c-8fe880958ee5
 
 **[The desktop strip in 3D](assets/demo/3d-mode.mp4)** — `expo`, then `z` for the wider view: the desktops become cards on a ring you can fly around, click into, and drag windows between.
 
 </td>
 <td width="50%">
 
-<video src="https://github.com/iluaii/fwm/raw/main/assets/demo/camera-scroll.mp4" controls muted loop width="100%"></video>
+https://github.com/user-attachments/assets/05d21e85-6169-4acf-a2dc-346e368c964e
 
 **[Camera and desktops](assets/demo/camera-scroll.mp4)** — the world is one strip of ten desktops and the screen is a window onto it, so moving between them is a pan rather than a cut, and it can be scrolled freely mid-way.
 
@@ -56,14 +56,14 @@ Six clips of about fifteen seconds each, one per idea. They live in [`assets/dem
 <tr>
 <td width="50%">
 
-<video src="https://github.com/iluaii/fwm/raw/main/assets/demo/launcher-wallpaper-picker.mp4" controls muted loop width="100%"></video>
+https://github.com/user-attachments/assets/7480adff-5140-47df-93c5-f48452a3690f
 
 **[Launcher and wallpaper picker](assets/demo/launcher-wallpaper-picker.mp4)** — the built-in app launcher, and picking a wallpaper (stills or video) without leaving the compositor.
 
 </td>
 <td width="50%">
 
-<video src="https://github.com/iluaii/fwm/raw/main/assets/demo/tray-desktops-modes.mp4" controls muted loop width="100%"></video>
+https://github.com/user-attachments/assets/f9c94f4f-5215-4980-91d6-7c0bcc764d65
 
 **[Status strip, desktops and modes](assets/demo/tray-desktops-modes.mp4)** — the strip each monitor gets, the desktop dots, and the modes menu: tiling, floating, gravity, the visualiser and the desktop ring, toggled from one place.
 
