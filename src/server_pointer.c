@@ -152,13 +152,19 @@ static void handle_cursor_motion(struct wl_listener *listener, void *data) {
             double nx = server->cursor->x + event->delta_x;
             double ny = server->cursor->y + event->delta_y;
             double vsx, vsy;
-            server_world_to_screen(server, cv->x, cv->y, &vsx, &vsy);
-            double sx = nx - vsx;
-            double sy = ny - vsy;
-            if (!pixman_region32_contains_point(&server->active_constraint->region,
-                                                (int)sx, (int)sy, NULL)) {
-                server_notify_activity(server);
-                return;
+            /* Only testable while the window has a place on a screen. With its
+             * desktop off every monitor there is nothing to measure the region
+             * against, and confining the pointer to a rectangle read out of
+             * uninitialised memory would strand the cursor; let the move
+             * through instead. */
+            if (server_world_to_screen(server, cv->x, cv->y, &vsx, &vsy)) {
+                double sx = nx - vsx;
+                double sy = ny - vsy;
+                if (!pixman_region32_contains_point(&server->active_constraint->region,
+                                                    (int)sx, (int)sy, NULL)) {
+                    server_notify_activity(server);
+                    return;
+                }
             }
         }
     }

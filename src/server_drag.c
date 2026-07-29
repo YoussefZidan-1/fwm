@@ -370,8 +370,15 @@ bool server_drag_motion(FwmServer *server, double lx, double ly,
         PhysicsBody *pb = view ? physics_find_body(&server->physics, view->id) : NULL;
         if (pb && pb->spin) {
             double cx, cy;
-            server_world_to_screen(server, view->x + view->width / 2.0,
-                                   view->y + view->height / 2.0, &cx, &cy);
+            /* No screen position for the centre means the window's desktop is
+             * not on any monitor any more — a screen unplugged, or a lid closed,
+             * with the hand still down. There is no angle to measure against, so
+             * sit the frame out rather than turn the window by whatever the
+             * uninitialised stack happened to hold. The unwrap below keeps the
+             * jump to half a turn if the monitor comes back mid-twist. */
+            if (!server_world_to_screen(server, view->x + view->width / 2.0,
+                                        view->y + view->height / 2.0, &cx, &cy))
+                return true;
             double a = atan2(ly - cy, lx - cx);
 
             /* atan2 jumps by 2π at the back of the circle; unwrap against the
@@ -492,10 +499,10 @@ bool server_drag_press(FwmServer *server, uint32_t button, double lx, double ly,
                     /* Turning a window by hand. Same gate as the spin_window
                      * bind: a tiled, pinned or fullscreen window has nowhere to
                      * turn to. */
-                    if (pb && server_can_spin(pb) && server->config.effects.spin > 0.0) {
-                        double cx, cy;
-                        server_world_to_screen(server, view->x + view->width / 2.0,
-                                               view->y + view->height / 2.0, &cx, &cy);
+                    double cx, cy;
+                    if (pb && server_can_spin(pb) && server->config.effects.spin > 0.0
+                        && server_world_to_screen(server, view->x + view->width / 2.0,
+                                                  view->y + view->height / 2.0, &cx, &cy)) {
                         /* Spinning it with no kick: the hand supplies the
                          * rotation from here, and physics only takes over at
                          * the release. */
