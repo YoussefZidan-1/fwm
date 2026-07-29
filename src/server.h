@@ -194,8 +194,14 @@ typedef struct {
     double twist_vel;
     struct timespec twist_time;
 
-    /* BSP resize */
+    /* BSP resize. The node is borrowed from a tree that is free to rebuild
+     * itself under the hand — a window opening, closing or leaving the desktop
+     * does exactly that — so it is only ever touched after bsp_contains says it
+     * is still there, and bsp_desktop remembers whose tree to ask. That desktop
+     * is also the one the drag lays out again: the monitor the hand is on can
+     * be showing another one. */
     BspNode *bsp_node;
+    int bsp_desktop;
     float bsp_start_ratio;
     
     /* Swap drag */

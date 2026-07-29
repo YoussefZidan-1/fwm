@@ -127,6 +127,18 @@ void bsp_swap(BspNode *root, uint32_t a, uint32_t b) {
     nb->id = a;
 }
 
+/* Is this exact node still part of this tree?
+ *
+ * For holders of a node pointer across events. The tree is rebuilt from under
+ * them by anything that opens, closes or moves a window, and a freed node
+ * cannot be told apart from a live one by looking at it — only by asking the
+ * tree whether it is still there. */
+bool bsp_contains(const BspNode *root, const BspNode *node) {
+    if (!root || !node) return false;
+    if (root == node) return true;
+    return bsp_contains(root->left, node) || bsp_contains(root->right, node);
+}
+
 BspNode *bsp_find_border(BspNode *root, int x, int y, int threshold) {
     if (!root || root->id != 0) return NULL;
 

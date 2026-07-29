@@ -354,6 +354,22 @@ bool server_drag_motion(FwmServer *server, double lx, double ly,
         physics_sync_body(&server->physics, view->id, view->x, view->y, view->width, view->height, server->screen_width);
     } else if (server->interactive.action == FWM_ACTION_BSP_RESIZE) {
         BspNode *n = server->interactive.bsp_node;
+        int d = server->interactive.bsp_desktop;
+        /* The border is a pointer into a tree that belongs to the layout, not
+         * to the drag: a window closing frees the node under the hand, and
+         * toggling the desktop out of tiling frees the whole tree. Both are a
+         * keypress or a client exit away while a border is held, and the drag
+         * used to write the new ratio into that freed memory. Ask the tree
+         * whether the node is still in it, every event, and let go if not. */
+        if (d < 0 || d >= FWM_DESKTOPS || !bsp_contains(server->bsp_roots[d], n)) {
+            server->interactive.bsp_node = NULL;
+            server->interactive.action = FWM_ACTION_NONE;
+            return true;
+        }
+        /* A split with no extent yet — the layout has not been applied since
+         * the tree changed — has no distance to measure the drag against. */
+        if (n->w <= 0 || n->h <= 0) return true;
+
         float delta;
         if (!n->split_h) {
             delta = (float)(lx - server->interactive.start_x) / n->w;
@@ -363,8 +379,10 @@ bool server_drag_motion(FwmServer *server, double lx, double ly,
         n->ratio = server->interactive.bsp_start_ratio + delta;
         if (n->ratio < 0.1f) n->ratio = 0.1f;
         if (n->ratio > 0.9f) n->ratio = 0.9f;
-        
-        server_apply_tiling(server, server_active_desktop(server));
+
+        /* The desktop the border belongs to, which on a second monitor is not
+         * the one the hand happens to be over. */
+        server_apply_tiling(server, d);
     } else if (server->interactive.action == FWM_ACTION_TWIST) {
         FwmView *view = server->interactive.view;
         PhysicsBody *pb = view ? physics_find_body(&server->physics, view->id) : NULL;
@@ -521,6 +539,7 @@ bool server_drag_press(FwmServer *server, uint32_t button, double lx, double ly,
                         if (node) {
                             server->interactive.action = FWM_ACTION_BSP_RESIZE;
                             server->interactive.bsp_node = node;
+                            server->interactive.bsp_desktop = d;
                             server->interactive.bsp_start_ratio = node->ratio;
                             server->interactive.start_x = lx;
                             server->interactive.start_y = ly;

@@ -15,6 +15,7 @@
 #ifndef FWM_BSP_H
 #define FWM_BSP_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 typedef struct BspNode {
@@ -52,6 +53,9 @@ void bsp_recalc(BspNode *node, int x, int y, int w, int h, int gap);
 void bsp_collect_leaves(BspNode *node, BspNode **out, int *count, int max);
 void bsp_swap(BspNode *root, uint32_t a, uint32_t b);
 BspNode *bsp_find_border(BspNode *root, int x, int y, int threshold);
+/* Whether `node` is still part of `root`'s tree — for anything holding a node
+ * pointer across events, which the tree does not promise to keep alive. */
+bool bsp_contains(const BspNode *root, const BspNode *node);
 /* Lay out the tree inside (x, y, w, h) against the sizes clients really
  * committed, writing each node's position to ax/ay and the size to ask it for
  * to aw/ah. `actual` gives the committed size per window id; an id missing

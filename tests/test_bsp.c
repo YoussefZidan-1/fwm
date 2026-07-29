@@ -268,6 +268,36 @@ static void test_find_border(void) {
     bsp_free(root);
 }
 
+/* A held border is a bare pointer into a tree the layout is free to rebuild.
+ * Dragging one while a window closes used to write the new ratio into freed
+ * memory, so the drag now asks the tree whether it still holds the node. */
+static void test_contains(void) {
+    CASE("a node of the tree is in it, a stranger is not");
+    BspNode *root = tree_of(3);
+    BspNode *leaf = bsp_find(root, 2);
+    CHECK(bsp_contains(root, root));
+    CHECK(bsp_contains(root, leaf));
+    CHECK_NOT_NULL(leaf);
+
+    BspNode *stray = bsp_new_leaf(99);
+    CHECK(!bsp_contains(root, stray));
+    free(stray);
+
+    CASE("nothing is in an empty tree, and nothing contains nothing");
+    CHECK(!bsp_contains(NULL, root));
+    CHECK(!bsp_contains(root, NULL));
+
+    CASE("removing a window takes its border out of the tree");
+    /* bsp_remove frees the leaf AND its parent — which is exactly the node a
+     * hand may be holding. The pointer is stale afterwards, so it must be
+     * compared, never dereferenced: only the address is used here. */
+    BspNode *parent = leaf->parent;
+    CHECK(bsp_contains(root, parent));
+    bsp_remove(&root, 2);
+    CHECK(!bsp_contains(root, parent));
+    bsp_free(root);
+}
+
 /* The bug this was written for: a terminal rounds its height down to whole
  * character cells, so it commits less than its slot. Anchored at the slot's
  * top-left, that leftover sits between windows and the gap reads far wider
@@ -495,6 +525,7 @@ int main(void) {
     test_collect_leaves();
     test_swap();
     test_find_border();
+    test_contains();
     test_place_actual();
     return t_report("bsp");
 }
