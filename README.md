@@ -17,9 +17,59 @@ This is the primary, actively developed version. The legacy X11 version lives on
 ---
 
 ## 🎬 Demonstration
-![Demonstration](demo.gif)
 
-[Full-quality demo (mp4, 1.8 MB)](https://github.com/iluaii/fwm/releases/download/v0.3.0/demo.mp4)
+Six clips of about fifteen seconds each, one per idea. They live in [`assets/demo/`](assets/demo) — if your viewer does not play them inline, the caption below each one is a link.
+
+<table>
+<tr>
+<td width="50%">
+
+<video src="https://github.com/iluaii/fwm/raw/main/assets/demo/physics-gravity-rotate.mp4" controls muted loop width="100%"></video>
+
+**[Physics, gravity and free rotation](assets/demo/physics-gravity-rotate.mp4)** — windows thrown, stacked under gravity, and one handed to the simulation with `Super+R` so it tumbles off the walls corner-first.
+
+</td>
+<td width="50%">
+
+<video src="https://github.com/iluaii/fwm/raw/main/assets/demo/tiling.mp4" controls muted loop width="100%"></video>
+
+**[Tiling](assets/demo/tiling.mp4)** — the BSP layout, splits, and windows springing into place: tiling here is a property of the desktop, so the same windows go back to being physical objects when it is switched off.
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+<video src="https://github.com/iluaii/fwm/raw/main/assets/demo/3d-mode.mp4" controls muted loop width="100%"></video>
+
+**[The desktop strip in 3D](assets/demo/3d-mode.mp4)** — `expo`, then `z` for the wider view: the desktops become cards on a ring you can fly around, click into, and drag windows between.
+
+</td>
+<td width="50%">
+
+<video src="https://github.com/iluaii/fwm/raw/main/assets/demo/camera-scroll.mp4" controls muted loop width="100%"></video>
+
+**[Camera and desktops](assets/demo/camera-scroll.mp4)** — the world is one strip of ten desktops and the screen is a window onto it, so moving between them is a pan rather than a cut, and it can be scrolled freely mid-way.
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+<video src="https://github.com/iluaii/fwm/raw/main/assets/demo/launcher-wallpaper-picker.mp4" controls muted loop width="100%"></video>
+
+**[Launcher and wallpaper picker](assets/demo/launcher-wallpaper-picker.mp4)** — the built-in app launcher, and picking a wallpaper (stills or video) without leaving the compositor.
+
+</td>
+<td width="50%">
+
+<video src="https://github.com/iluaii/fwm/raw/main/assets/demo/tray-desktops-modes.mp4" controls muted loop width="100%"></video>
+
+**[Status strip, desktops and modes](assets/demo/tray-desktops-modes.mp4)** — the strip each monitor gets, the desktop dots, and the modes menu: tiling, floating, gravity, the visualiser and the desktop ring, toggled from one place.
+
+</td>
+</tr>
+</table>
 
 ## Features
 
