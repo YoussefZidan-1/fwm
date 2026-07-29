@@ -730,8 +730,12 @@ static int physics_tick_cb(void *data) {
         if (server->sim_accum < 0.0) server->sim_accum = 0.0;
     }
 
-    uint32_t drag_win = (server->interactive.action == FWM_ACTION_MOVE && server->interactive.collision_disabled) ? server->interactive.view->id : 0;
-    uint32_t dragged_win = (server->interactive.action == FWM_ACTION_MOVE) ? server->interactive.view->id : 0;
+    /* interactive.view goes NULL when the dragged client exits mid-drag, while
+     * the action stays — every read of it has to allow for that. */
+    uint32_t drag_win = (server->interactive.action == FWM_ACTION_MOVE && server->interactive.collision_disabled
+                         && server->interactive.view) ? server->interactive.view->id : 0;
+    uint32_t dragged_win = (server->interactive.action == FWM_ACTION_MOVE && server->interactive.view)
+                         ? server->interactive.view->id : 0;
     // Freeze the window being resized into a static anchor (skip_b): it must not
     // sink under gravity, get shoved by neighbors, or jitter while its collision
     // box is rebuilt every motion event — the mouse owns it entirely.

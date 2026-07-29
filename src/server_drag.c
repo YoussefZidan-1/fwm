@@ -122,6 +122,7 @@ bool server_drag_motion(FwmServer *server, double lx, double ly,
     (void)now;
     if (server->interactive.action == FWM_ACTION_MOVE) {
         FwmView *view = server->interactive.view;
+        if (!view) return true;   /* client exited mid-drag; see the resize arm */
         double dx = lx - server->interactive.start_x;
         double dy = ly - server->interactive.start_y;
         PhysicsBody *db = physics_find_body(&server->physics, view->id);
@@ -319,19 +320,33 @@ bool server_drag_motion(FwmServer *server, double lx, double ly,
         }
     } else if (server->interactive.action == FWM_ACTION_RESIZE) {
         FwmView *view = server->interactive.view;
+        /* The window can go while the hand is still on it — a client that
+         * exits mid-drag. Destroy clears the view but not the action. */
+        if (!view) return true;
         double dx = lx - server->interactive.start_x;
         double dy = ly - server->interactive.start_y;
-        
+
         int new_w = server->interactive.view_start_width + dx;
         int new_h = server->interactive.view_start_height + dy;
-        int max_w = server->screen_width - server->interactive.view_start_x;
+        /* Room to grow reaches the right edge of the window's OWN desktop, not
+         * of the world: view_start_x is a world coordinate, so on desktop N it
+         * is already N screens along and a plain screen_width - x is negative
+         * there. That negative then beat the 50px floor below (the ceiling was
+         * applied second) and a negative width tripped an assertion inside
+         * wlroots — resizing any window off desktop 0 killed the compositor. */
+        int desk = server->interactive.view_start_x / server->screen_width;
+        if (desk < 0) desk = 0;
+        int max_w = (desk + 1) * server->screen_width - server->interactive.view_start_x;
         int max_h = server->screen_height - server->interactive.view_start_y;
-        
-        if (new_w < 50) new_w = 50;
-        if (new_h < 50) new_h = 50;
+
         if (new_w > max_w) new_w = max_w;
         if (new_h > max_h) new_h = max_h;
-        
+        /* The floor is applied last, so a window standing right at an edge —
+         * where the room left is under 50px — still keeps a usable size and
+         * simply overhangs. */
+        if (new_w < 50) new_w = 50;
+        if (new_h < 50) new_h = 50;
+
         view->width = new_w;
         view->height = new_h;
         
