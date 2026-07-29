@@ -38,6 +38,17 @@ struct FwmPointer {
     struct wl_listener destroy;
 };
 
+/* A lid or tablet-mode switch. Kept only so the listeners can be removed when
+ * the device goes; the state it reports is acted on immediately and never
+ * cached — the outputs are the record of what the lid did. */
+struct FwmSwitch {
+    struct wl_list link;
+    FwmServer *server;
+    struct wlr_switch *wlr_switch;
+    struct wl_listener toggle;
+    struct wl_listener destroy;
+};
+
 struct FwmKeyboard {
     struct wl_list link;
     FwmServer *server;

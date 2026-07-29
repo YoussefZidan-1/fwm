@@ -111,17 +111,19 @@ struct FwmView *view_at(FwmServer *server, double lx, double ly,
     return tree->node.data;
 }
 
-/* The status strip under the pointer, and where in it the cursor is. NULL when
- * the pointer is not over a monitor that has one — every tray hit test below
- * goes through this, so a click on the second monitor's strip talks to THAT
- * strip. */
-static struct wlr_scene_buffer *tray_under_pointer(FwmServer *server,
-                                                   double *tx, double *ty) {
+/* The monitor whose status strip is under the pointer, and where in that strip
+ * the cursor is. NULL when the pointer is not over a monitor that has one.
+ *
+ * Every tray hit test below goes through this and then asks THAT monitor's
+ * TrayStrip: the islands sit at different x on strips of different widths, so
+ * the geometry and the coordinates have to come from the same screen. */
+static FwmOutput *tray_under_pointer(FwmServer *server,
+                                     double *tx, double *ty) {
     FwmOutput *o = server_output_at(server, server->cursor->x, server->cursor->y);
     if (!o || !o->tray_buffer) return NULL;
     if (tx) *tx = server->cursor->x - o->tray_buffer->node.x;
     if (ty) *ty = server->cursor->y - o->tray_buffer->node.y;
-    return o->tray_buffer;
+    return o;
 }
 
 static void handle_cursor_motion(struct wl_listener *listener, void *data) {
@@ -265,7 +267,8 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
         server->interactive.action == FWM_ACTION_NONE &&
         server->config.error_count > 0) {
         double tx, ty;
-        if (tray_under_pointer(server, &tx, &ty) && tray_error_pill_hit(tx, ty)) {
+        FwmOutput *to = tray_under_pointer(server, &tx, &ty);
+        if (to && tray_error_pill_hit(&to->tray_strip, tx, ty)) {
             server_dispatch_action(server, "show_errors");
             server->group_click = 1; /* swallow the matching release */
             return;
@@ -294,8 +297,8 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
         int on_pill = 0;
         {
             double tx, ty;
-            if (tray_under_pointer(server, &tx, &ty))
-                on_pill = tray_modes_pill_hit(tx, ty);
+            FwmOutput *to = tray_under_pointer(server, &tx, &ty);
+            if (to) on_pill = tray_modes_pill_hit(&to->tray_strip, tx, ty);
         }
         if (!on_pill) {
             server_close_modes_menu(server);
@@ -309,7 +312,8 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
     if (event->state == WL_POINTER_BUTTON_STATE_PRESSED && event->button == BTN_LEFT &&
         server->interactive.action == FWM_ACTION_NONE) {
         double tx, ty;
-        if (tray_under_pointer(server, &tx, &ty) && tray_modes_pill_hit(tx, ty)) {
+        FwmOutput *to = tray_under_pointer(server, &tx, &ty);
+        if (to && tray_modes_pill_hit(&to->tray_strip, tx, ty)) {
             server_toggle_modes_menu(server);
             server->group_click = 1;
             return;
@@ -320,7 +324,8 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
     if (event->state == WL_POINTER_BUTTON_STATE_PRESSED && event->button == BTN_LEFT &&
         server->interactive.action == FWM_ACTION_NONE) {
         double tx, ty;
-        int d = tray_under_pointer(server, &tx, &ty) ? tray_desktop_hit(tx, ty) : -1;
+        FwmOutput *to = tray_under_pointer(server, &tx, &ty);
+        int d = to ? tray_desktop_hit(&to->tray_strip, tx, ty) : -1;
         if (d >= 0) {
             server_goto_desktop(server, d, 0);
             server->group_click = 1; /* swallow the matching release */
@@ -394,10 +399,11 @@ static void handle_cursor_axis(struct wl_listener *listener, void *data) {
     // Vertical only: a touchpad sends both axes in one frame, and honouring
     // horizontal too would step two desktops per gesture.
     double stx, sty;
+    FwmOutput *sto = NULL;
     if (event->delta != 0.0 &&
         event->orientation == WL_POINTER_AXIS_VERTICAL_SCROLL &&
-        tray_under_pointer(server, &stx, &sty)) {
-        if (tray_desktop_island_hit(stx, sty)) {
+        (sto = tray_under_pointer(server, &stx, &sty))) {
+        if (tray_desktop_island_hit(&sto->tray_strip, stx, sty)) {
             /* Step from where the camera is HEADED, not where it is: spinning
              * the wheel several notches must advance several desktops rather
              * than fight the slide still in flight. */

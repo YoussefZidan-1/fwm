@@ -18,6 +18,7 @@
 #include "modes.h"
 #include "../theme.h"
 #include <stdio.h>
+#include <stddef.h>
 #include <string.h>
 #include <math.h>
 #include <time.h>
@@ -40,37 +41,30 @@
  * whatever the wallpaper suggests. */
 static const double COL_WARN[3]  = {0.98, 0.75, 0.27};    /* config-error amber */
 
-/* Screen rect of the error pill, in tray-buffer coordinates, published for
- * hit-testing. Width depends on the rendered text, so it is recorded during
- * the draw rather than recomputed by the caller. */
-static struct { double x, y, w, h; int valid; } g_err_pill;
+/* The islands' rects are decided DURING the draw — the error pill's width
+ * depends on its text, the desktop island's indicator spacing on its own width,
+ * and the modes pill is dropped entirely when the screen is too narrow — so
+ * they are recorded there, into the caller's TrayStrip. One per monitor: see
+ * the header. */
 
-int tray_error_pill_hit(double x, double y) {
-    return g_err_pill.valid &&
-           x >= g_err_pill.x && x <= g_err_pill.x + g_err_pill.w &&
-           y >= g_err_pill.y && y <= g_err_pill.y + g_err_pill.h;
+static int rect_hit(const TrayRect *r, double x, double y) {
+    return r->valid && x >= r->x && x <= r->x + r->w &&
+                       y >= r->y && y <= r->y + r->h;
 }
 
-/* Same idea for the desktop island: the indicator geometry is decided during
- * the draw (it depends on the pill width), so it is recorded there. */
-static struct {
-    double x, y, w, h;   /* the whole island */
-    double first_cx;     /* centre of indicator 0 */
-    double spacing;
-    int valid;
-} g_desk;
-
-int tray_desktop_island_hit(double x, double y) {
-    return g_desk.valid &&
-           x >= g_desk.x && x <= g_desk.x + g_desk.w &&
-           y >= g_desk.y && y <= g_desk.y + g_desk.h;
+int tray_error_pill_hit(const TrayStrip *strip, double x, double y) {
+    return strip && rect_hit(&strip->err, x, y);
 }
 
-int tray_desktop_hit(double x, double y) {
-    if (!tray_desktop_island_hit(x, y)) return -1;
+int tray_desktop_island_hit(const TrayStrip *strip, double x, double y) {
+    return strip && rect_hit(&strip->desk, x, y);
+}
+
+int tray_desktop_hit(const TrayStrip *strip, double x, double y) {
+    if (!tray_desktop_island_hit(strip, x, y)) return -1;
     /* Snap to the nearest indicator rather than demanding a hit on the dot
      * itself: the dots are 4-7px across, which is not a clickable target. */
-    int i = (int)lround((x - g_desk.first_cx) / g_desk.spacing);
+    int i = (int)lround((x - strip->desk_first_cx) / strip->desk_spacing);
     if (i < 0) i = 0;
     if (i > 9) i = 9;
     return i;
@@ -78,15 +72,13 @@ int tray_desktop_hit(double x, double y) {
 
 /* Modes pill: fixed width (see MODES_PILL_W), so the clock on its right and the
  * desktop island on its left keep the positions they had before it existed. */
-static struct { double x, y, w, h; int valid; } g_modes;
-
-int tray_modes_pill_hit(double x, double y) {
-    return g_modes.valid &&
-           x >= g_modes.x && x <= g_modes.x + g_modes.w &&
-           y >= g_modes.y && y <= g_modes.y + g_modes.h;
+int tray_modes_pill_hit(const TrayStrip *strip, double x, double y) {
+    return strip && rect_hit(&strip->modes, x, y);
 }
 
-double tray_modes_pill_x(void) { return g_modes.x; }
+double tray_modes_pill_x(const TrayStrip *strip) {
+    return strip ? strip->modes.x : 0.0;
+}
 
 /* Island with pointed (chevron) ends: same silhouette family as the old bar. */
 static void pill_path(cairo_t *cr, double x, double y, double w, double h) {
@@ -110,12 +102,14 @@ static void draw_pill(cairo_t *cr, double x, double y, double w, double h, doubl
 
 typedef struct {
     const TrayData *data;
+    TrayStrip *strip;   /* geometry is written back here as it is drawn */
 } DrawTrayData;
 
 static void draw_tray_content(cairo_t *cr, int w, int h, void *user_data) {
     DrawTrayData *draw_data = user_data;
     const TrayData *data = draw_data->data;
-    if (!data) return;
+    TrayStrip *strip = draw_data->strip;
+    if (!data || !strip) return;
 
     const FwmTheme *thm = theme_get();
 
@@ -136,7 +130,7 @@ static void draw_tray_content(cairo_t *cr, int w, int h, void *user_data) {
 
     /* ── error pill: leftmost, only while the config has problems ── */
     double left_x = 0.0;
-    g_err_pill.valid = 0;
+    strip->err.valid = 0;
     if (data->error_count > 0) {
         char warn[64];
         snprintf(warn, sizeof(warn), "\xE2\x9A\xA0 %d", data->error_count);
@@ -158,8 +152,8 @@ static void draw_tray_content(cairo_t *cr, int w, int h, void *user_data) {
         cairo_move_to(cr, PILL_PAD, text_y);
         pango_cairo_show_layout(cr, layout);
 
-        g_err_pill.x = 0; g_err_pill.y = 0;
-        g_err_pill.w = pw; g_err_pill.h = h; g_err_pill.valid = 1;
+        strip->err.x = 0; strip->err.y = 0;
+        strip->err.w = pw; strip->err.h = h; strip->err.valid = 1;
         left_x = pw + 8.0;
     }
 
@@ -251,10 +245,10 @@ static void draw_tray_content(cairo_t *cr, int w, int h, void *user_data) {
         double px = desk_px;
         draw_pill(cr, px, 0, pw, h, data->opacity);
 
-        g_desk.x = px; g_desk.y = 0; g_desk.w = pw; g_desk.h = h;
-        g_desk.first_cx = px + PILL_PAD + 3;
-        g_desk.spacing = spacing;
-        g_desk.valid = 1;
+        strip->desk.x = px; strip->desk.y = 0;
+        strip->desk.w = pw; strip->desk.h = h; strip->desk.valid = 1;
+        strip->desk_first_cx = px + PILL_PAD + 3;
+        strip->desk_spacing = spacing;
 
         for (int i = 0; i < 10; i++) {
             double cx = px + PILL_PAD + 3 + i * spacing;
@@ -342,8 +336,9 @@ static void draw_tray_content(cairo_t *cr, int w, int h, void *user_data) {
                                       data->opacity);
             cairo_fill(cr);
 
-            g_modes.x = px; g_modes.y = 0;
-            g_modes.w = MODES_PILL_W; g_modes.h = h; g_modes.valid = 1;
+            strip->modes.x = px; strip->modes.y = 0;
+            strip->modes.w = MODES_PILL_W; strip->modes.h = h;
+            strip->modes.valid = 1;
 
             /* Four slots, always in the same order and always all four drawn:
              * an icon that vanished when its mode went off would make the
@@ -372,7 +367,7 @@ static void draw_tray_content(cairo_t *cr, int w, int h, void *user_data) {
                 modes_icon(cr, icons[i], px + PILL_PAD + i * (is + gap), iy, is);
             }
         } else {
-            g_modes.valid = 0;
+            strip->modes.valid = 0;
         }
     }
 
@@ -393,55 +388,50 @@ struct wlr_scene_buffer *tray_init(struct wlr_scene_tree *parent, int screen_wid
 
 /* Everything the tray renders, rounded to displayed precision. Redrawing a
  * full-width ARGB strip at 60 Hz when nothing changed is pure memory/GPU
- * churn, so tray_redraw compares against the last drawn signature first. */
-typedef struct {
-    char name[128];
-    int  speed, angle;   /* displayed as %.0f */
-    int  mass10;         /* displayed as %.1f */
-    int  flying;
-    int  counts[10];
-    int  active_desktop;
-    int  pos_mil; /* active_pos in thousandths — redraw while it glides */
-    int  opacity1000;
-    int  minute;         /* clock shows minutes at most */
-    char kbd[8];
-    int  errors, err_expanded;
-    int  m_tiling, m_floating, m_gravity, m_cava, m_open;
-    unsigned theme_gen;
-} TraySig;
+ * churn, so tray_redraw compares against the last drawn signature first.
+ *
+ * The signature lives in the caller's TrayStrip, not in a static: with one per
+ * process, two monitors compared each strip against the OTHER one's contents —
+ * which repainted both every frame, and, on the frame where the two happened to
+ * agree, left the second strip blank because its buffer had never been drawn at
+ * all. */
+void tray_redraw(struct wlr_scene_buffer *tray_buf, const TrayData *data,
+                 TrayStrip *strip) {
+    if (!tray_buf || !data || !strip) return;
 
-void tray_redraw(struct wlr_scene_buffer *tray_buf, const TrayData *data) {
-    static TraySig last;
-    static int have_last = 0;
-
-    TraySig sig = {0};
-    if (data->win_name) snprintf(sig.name, sizeof(sig.name), "%s", data->win_name);
-    sig.speed = (int)lround(data->speed);
-    sig.angle = (int)lround(data->angle);
-    sig.mass10 = (int)lround(data->mass * 10.0);
-    sig.flying = data->flying;
-    memcpy(sig.counts, data->desktop_window_counts, sizeof(sig.counts));
-    sig.active_desktop = data->active_desktop;
-    sig.pos_mil = (int)lround(data->active_pos * 1000.0);
-    sig.opacity1000 = (int)lround(data->opacity * 1000.0);
+    TrayStrip sig = *strip;
+    memset(sig.sig_name, 0, sizeof(sig.sig_name));
+    if (data->win_name) snprintf(sig.sig_name, sizeof(sig.sig_name), "%s", data->win_name);
+    sig.sig_speed = (int)lround(data->speed);
+    sig.sig_angle = (int)lround(data->angle);
+    sig.sig_mass10 = (int)lround(data->mass * 10.0);
+    sig.sig_flying = data->flying;
+    memcpy(sig.sig_counts, data->desktop_window_counts, sizeof(sig.sig_counts));
+    sig.sig_active_desktop = data->active_desktop;
+    sig.sig_pos_mil = (int)lround(data->active_pos * 1000.0);
+    sig.sig_opacity1000 = (int)lround(data->opacity * 1000.0);
     time_t now = time(NULL);
     struct tm tm;
     localtime_r(&now, &tm);
-    sig.minute = tm.tm_yday * 1440 + tm.tm_hour * 60 + tm.tm_min;
-    memcpy(sig.kbd, data->kbd_layout, sizeof(sig.kbd));
-    sig.errors = data->error_count;
-    sig.err_expanded = data->error_expanded;
-    sig.m_tiling   = data->modes_tiling;
-    sig.m_floating = data->modes_floating;
-    sig.m_gravity  = data->modes_gravity;
-    sig.m_cava     = data->modes_cava;
-    sig.m_open     = data->modes_open;
-    sig.theme_gen = theme_generation();
+    sig.sig_minute = tm.tm_yday * 1440 + tm.tm_hour * 60 + tm.tm_min;
+    memcpy(sig.sig_kbd, data->kbd_layout, sizeof(sig.sig_kbd));
+    sig.sig_errors = data->error_count;
+    sig.sig_err_expanded = data->error_expanded;
+    sig.sig_m_tiling   = data->modes_tiling;
+    sig.sig_m_floating = data->modes_floating;
+    sig.sig_m_gravity  = data->modes_gravity;
+    sig.sig_m_cava     = data->modes_cava;
+    sig.sig_m_open     = data->modes_open;
+    sig.sig_theme_gen = theme_generation();
 
-    if (have_last && memcmp(&sig, &last, sizeof(sig)) == 0) return;
-    last = sig;
-    have_last = 1;
+    /* Compare the signature fields only: the rects below them are an OUTPUT of
+     * the draw, so folding them in would compare this frame's inputs against
+     * last frame's results and never match. */
+    size_t n = offsetof(TrayStrip, have_sig);
+    if (strip->have_sig && memcmp(&sig, strip, n) == 0) return;
+    memcpy(strip, &sig, n);
+    strip->have_sig = 1;
 
-    DrawTrayData draw_data = { .data = data };
+    DrawTrayData draw_data = { .data = data, .strip = strip };
     cairo_overlay_update(tray_buf, draw_tray_content, &draw_data);
 }

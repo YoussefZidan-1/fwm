@@ -34,6 +34,9 @@
 #include "bsp.h"
 #include "config.h"
 #include "gestures.h"
+/* For TrayStrip: each monitor owns the geometry of the status strip drawn on
+ * it, so a click is answered by the strip it landed on. */
+#include "ui/tray.h"
 
 #define DESKTOP_MODE_PHYSICS 0
 #define DESKTOP_MODE_TILING  1
@@ -75,7 +78,11 @@ typedef struct FwmOutput {
     struct FwmServer *server;
     struct wlr_output *wlr_output;
     struct wlr_box box;      /* position and size in layout coordinates */
-    int enabled;             /* 0 when [[output]] turned this screen off */
+    int enabled;             /* 0 while this screen is dark */
+    /* Turned off at RUNTIME (the lid, `output_off`) rather than by the config.
+     * A reload re-applies the file to every monitor, and without this it would
+     * light the panel inside a closed laptop back up. */
+    int forced_off;
 
     int desktop;             /* which of the ten columns this monitor shows */
     int camera_x;            /* world x of this monitor's left edge */
@@ -96,8 +103,11 @@ typedef struct FwmOutput {
      * camera. */
     struct FwmWallpaper *wallpaper;
     struct FwmWallpaper *wallpaper_prev;  /* outgoing set, alive during a fade */
-    /* Its own status strip, at the top of this monitor. */
+    /* Its own status strip, at the top of this monitor, and where that strip's
+     * islands landed — hit-testing and the modes menu's anchor both read the
+     * geometry of the strip they were aimed at, never another monitor's. */
     struct wlr_scene_buffer *tray_buffer;
+    TrayStrip tray_strip;
     struct wlr_box usable_area;           /* this monitor minus exclusive zones */
 
     /* Impact shake, and the slide across the ring's join. Both move what this
@@ -340,6 +350,7 @@ typedef struct FwmServer {
     /* Keyboard input */
     struct wl_list keyboards;
     struct wl_list pointers;   /* struct FwmPointer; see server_internal.h */
+    struct wl_list switches;   /* struct FwmSwitch: the laptop lid */
     struct wl_listener new_xdg_toplevel;
     struct wl_listener new_xdg_popup;
     struct wl_listener new_toplevel_decoration;
@@ -480,6 +491,18 @@ FwmOutput *server_output_at(FwmServer *server, double lx, double ly);
 FwmOutput *server_active_output(FwmServer *server);
 /* The monitor showing desktop `d`, or NULL when none is. */
 FwmOutput *server_output_showing(FwmServer *server, int d);
+/* Light a monitor or put it out at runtime — a keybind, `fwmctl dispatch`, the
+ * laptop lid. A dark monitor leaves the layout entirely, so it holds no desktop
+ * and no window can be placed on it; lighting it again gives it a free desktop,
+ * a wallpaper and a strip, exactly like one just plugged in. Returns 1 if
+ * anything changed; refuses to put out the last lit screen. */
+int server_output_set_enabled(FwmServer *server, FwmOutput *out, int on);
+/* The built-in laptop panel, or NULL. Name-based (eDP/LVDS/DSI), which is what
+ * every other compositor does with it. */
+FwmOutput *server_internal_output(FwmServer *server);
+/* The lid opening or closing, from the switch device in server_input.c. */
+void server_lid_changed(FwmServer *server, int closed);
+
 /* The desktop of the active monitor, and the desktop a world x falls on. */
 int server_active_desktop(FwmServer *server);
 int server_desktop_at_x(FwmServer *server, double wx);

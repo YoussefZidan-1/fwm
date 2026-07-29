@@ -201,6 +201,7 @@ bool server_init(FwmServer *server) {
     wl_list_init(&server->outputs);
     wl_list_init(&server->keyboards);
     wl_list_init(&server->pointers);
+    wl_list_init(&server->switches);
     
     server->xdg_shell = wlr_xdg_shell_create(server->wl_display, 3); // xdg-shell v3/v6 depending on wlroots version (v3 is standard in 0.17+)
     layer_shell_init(server);

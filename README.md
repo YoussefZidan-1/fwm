@@ -650,6 +650,9 @@ fit  = "pan"
 | `wallpaper_picker` | built-in wallpaper browser; Enter applies the image at once |
 | `show_errors` | open the config-problem panel (same as clicking the tray's ⚠ pill) |
 | `modes_menu` | open the modes menu (same as clicking the tray's modes pill) |
+| `output_off` | turn off the monitor the pointer is on — it leaves the layout, hands its desktop back and the pointer moves to a screen that is still lit. The last lit screen is never turned off |
+| `toggle_internal_output` | the same for the built-in laptop panel (eDP/LVDS/DSI) whichever screen the pointer is on. Closing the lid does this by itself, as long as another monitor is plugged in |
+| `outputs_on` | every monitor back on — the way out when you turned off the screen you were looking at |
 | `EXIT` | quit the compositor |
 
 ### Mouse

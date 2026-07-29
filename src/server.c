@@ -436,6 +436,6 @@ void server_request_tray_redraw(FwmServer *server) {
             }
         }
 
-        tray_redraw(out->tray_buffer, &d2);
+        tray_redraw(out->tray_buffer, &d2, &out->tray_strip);
     }
 }

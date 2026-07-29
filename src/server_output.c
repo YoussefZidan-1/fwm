@@ -323,6 +323,9 @@ static void server_animate(FwmServer *server) {
 static void handle_output_frame(struct wl_listener *listener, void *data) {
     FwmOutput *output = wl_container_of(listener, output, frame);
     struct wlr_scene_output *scene_output = wlr_scene_get_scene_output(output->server->scene, output->wlr_output);
+    /* A monitor turned off loses its scene output with its layout output, and a
+     * frame event can still be in flight when it does. */
+    if (!scene_output) return;
     server_animate(output->server);
     wlr_scene_output_commit(scene_output, NULL);
 
@@ -634,6 +637,13 @@ static void output_build_tray(FwmOutput *out) {
         cairo_overlay_destroy(out->tray_buffer);
         out->tray_buffer = NULL;
     }
+    /* A fresh buffer has nothing in it, so the record of what was last drawn
+     * has to go with the old one. Kept, it says "this strip already shows
+     * exactly that" and tray_redraw skips the paint — the new buffer then stays
+     * blank until something in it happens to change, which for an idle strip
+     * means until the clock rolls over to the next minute. Every rebuild hits
+     * this: a second monitor arriving, a mode change, a screen coming back. */
+    out->tray_strip = (TrayStrip){0};
     out->tray_buffer = tray_init(server->layer_overlay, out->box.width);
     if (!out->tray_buffer) return;
     wlr_scene_node_set_position(&out->tray_buffer->node,
@@ -741,39 +751,188 @@ static void handle_output_layout_change(struct wl_listener *listener, void *data
     server_output_layout_update(server);
 }
 
-/* Put one monitor where [[output]] says, or leave it where the layout put it.
- * Called when a monitor arrives and again on every config reload, so moving a
- * screen in config.toml takes effect without a restart. */
-static void output_apply_config(FwmServer *server, FwmOutput *out) {
+/* ── turning a monitor off and on ─────────────────────────────────────────
+ *
+ * Three things have to move together, and every path below goes through these
+ * two helpers so they cannot drift apart:
+ *
+ *   the OUTPUT itself   — the panel's backlight, via a commit;
+ *   the LAYOUT          — a dark monitor must not be in it, or it still holds a
+ *                         desktop and windows can be placed on a screen nobody
+ *                         can see;
+ *   the SCENE OUTPUT    — destroyed with the layout output, so re-lighting a
+ *                         monitor has to build a new one or it stays black
+ *                         while claiming to be on.
+ *
+ * Everything sized to the monitor (wallpaper, status strip) goes too: it is
+ * rebuilt from the layout-change event when the screen comes back, and left in
+ * place it would sit at coordinates the remaining monitors have since moved
+ * into. */
+static void output_leave_layout(FwmServer *server, FwmOutput *out) {
+    /* Bars and docks anchored to this screen go with it — the same thing that
+     * happens when a monitor is unplugged, and for the same reason: they hold a
+     * pointer to it and are laid out against a box that is about to be zero. */
+    layer_output_gone(server, out->wlr_output);
+    server_wrap_slide_stop(server, out);
+    if (out->wallpaper_prev) {
+        wallpaper_destroy(out->wallpaper_prev);
+        out->wallpaper_prev = NULL;
+    }
+    if (out->wallpaper) {
+        wallpaper_destroy(out->wallpaper);
+        out->wallpaper = NULL;
+    }
+    if (out->tray_buffer) {
+        cairo_overlay_destroy(out->tray_buffer);
+        out->tray_buffer = NULL;
+        out->tray_strip = (TrayStrip){0};
+    }
+    wlr_output_layout_remove(server->output_layout, out->wlr_output);
+    out->box = (struct wlr_box){0};
+    out->desktop = -1;
+}
+
+static void output_join_layout(FwmServer *server, FwmOutput *out) {
     const ConfigOutput *cfg = config_find_output(&server->config, out->wlr_output->name);
-    int want_on = !cfg || cfg->enabled;
-
-    if (out->enabled != want_on) {
-        struct wlr_output_state state;
-        wlr_output_state_init(&state);
-        wlr_output_state_set_enabled(&state, want_on);
-        if (want_on) {
-            struct wlr_output_mode *mode = wlr_output_preferred_mode(out->wlr_output);
-            if (mode) wlr_output_state_set_mode(&state, mode);
-        }
-        wlr_output_commit_state(out->wlr_output, &state);
-        wlr_output_state_finish(&state);
-        out->enabled = want_on;
-    }
-
-    if (!want_on) {
-        /* Out of the layout entirely: a dark monitor must not hold a desktop or
-         * count as somewhere a window could be. */
-        wlr_output_layout_remove(server->output_layout, out->wlr_output);
-        out->box = (struct wlr_box){0};
-        out->desktop = -1;
-        return;
-    }
-
     if (cfg && cfg->have_pos)
         wlr_output_layout_add(server->output_layout, out->wlr_output, cfg->x, cfg->y);
     else
         wlr_output_layout_add_auto(server->output_layout, out->wlr_output);
+
+    /* A monitor that has never been in the layout, or that left it while it was
+     * dark, has no scene output — nothing would ever be composited onto it. */
+    if (!wlr_scene_get_scene_output(server->scene, out->wlr_output)) {
+        struct wlr_output_layout_output *l_output =
+            wlr_output_layout_get(server->output_layout, out->wlr_output);
+        struct wlr_scene_output *scene_output =
+            wlr_scene_output_create(server->scene, out->wlr_output);
+        if (l_output && scene_output)
+            wlr_scene_output_layout_add_output(server->scene_layout, l_output, scene_output);
+    }
+}
+
+/* The cursor is standing on a screen that just went dark, so it is nowhere.
+ * Put it in the middle of a monitor that still exists — a pointer off every
+ * output means the next click and every "which monitor am I at" question fall
+ * back to guesses. */
+static void cursor_to_output(FwmServer *server, FwmOutput *out) {
+    if (!server->cursor || !out || out->box.width <= 0) return;
+    wlr_cursor_warp(server->cursor, NULL,
+                    out->box.x + out->box.width / 2.0,
+                    out->box.y + out->box.height / 2.0);
+}
+
+/* Light one monitor or put it out, with nothing standing in the way. Returns 1
+ * if anything changed. */
+static int output_set_enabled(FwmServer *server, FwmOutput *out, int on) {
+    if (!out || out->enabled == !!on) return 0;
+
+    struct wlr_output_state state;
+    wlr_output_state_init(&state);
+    wlr_output_state_set_enabled(&state, on);
+    if (on) {
+        struct wlr_output_mode *mode = wlr_output_preferred_mode(out->wlr_output);
+        if (mode) wlr_output_state_set_mode(&state, mode);
+    }
+    wlr_output_commit_state(out->wlr_output, &state);
+    wlr_output_state_finish(&state);
+    out->enabled = on;
+
+    if (on) {
+        output_join_layout(server, out);
+    } else {
+        /* Anchored to the strip on a screen that is going dark. */
+        if (server->modes_buffer) server_kill_modes_menu(server);
+        output_leave_layout(server, out);
+    }
+    wlr_log(WLR_INFO, "output %s: %s", out->wlr_output->name, on ? "on" : "off");
+
+    /* Both branches above fired the layout's change event, which rebuilds the
+     * world; all that is left is the pointer, which may be standing on a screen
+     * that no longer exists. */
+    if (!on) cursor_to_output(server, server_primary_output(server));
+    return 1;
+}
+
+/* The same thing asked for by a person: a keybind, `fwmctl dispatch`, or the
+ * lid coming down. Refuses to put out the last lit screen — a session with no
+ * output has nowhere left to show the bind that would bring one back, and the
+ * config's own `enabled = false` is not routed through here precisely so a file
+ * that turns a monitor off before its neighbour has arrived still works. */
+int server_output_set_enabled(FwmServer *server, FwmOutput *out, int on) {
+    if (!out || out->enabled == !!on) return 0;
+    if (!on) {
+        int others = 0;
+        FwmOutput *o;
+        wl_list_for_each(o, &server->outputs, link)
+            if (o != out && o->enabled) others++;
+        if (!others) {
+            wlr_log(WLR_INFO, "output %s: refusing to turn off the last screen",
+                    out->wlr_output->name);
+            return 0;
+        }
+    }
+    if (!output_set_enabled(server, out, on)) return 0;
+    /* Remembered so the next config reload does not undo it. Cleared by
+     * turning the screen back on, whoever asks. */
+    out->forced_off = !on;
+    return 1;
+}
+
+/* ── the laptop lid ───────────────────────────────────────────────────────
+ *
+ * Which monitor is the built-in panel is not something the kernel tells us in
+ * any usable way, so it is read off the connector name — eDP, LVDS and DSI are
+ * the three that mean "soldered to the machine". Every other compositor draws
+ * the line in the same place. */
+FwmOutput *server_internal_output(FwmServer *server) {
+    FwmOutput *o;
+    wl_list_for_each(o, &server->outputs, link) {
+        const char *n = o->wlr_output->name;
+        if (!n) continue;
+        if (strncmp(n, "eDP", 3) == 0 || strncmp(n, "LVDS", 4) == 0 ||
+            strncmp(n, "DSI", 3) == 0) return o;
+    }
+    return NULL;
+}
+
+/* Closing the lid puts the panel out, opening it brings it back.
+ *
+ * server_output_set_enabled refuses to turn off the last screen, which is
+ * exactly the right answer for a laptop with nothing plugged in: shutting the
+ * lid there is a suspend for logind to handle, not a request to leave the
+ * session running on no display at all. */
+void server_lid_changed(FwmServer *server, int closed) {
+    FwmOutput *panel = server_internal_output(server);
+    if (!panel) return;
+    if (closed) server_output_set_enabled(server, panel, 0);
+    else        server_output_set_enabled(server, panel, 1);
+}
+
+/* Put one monitor where [[output]] says, or leave it where the layout put it.
+ * Called when a monitor arrives and again on every config reload, so moving a
+ * screen in config.toml takes effect without a restart.
+ *
+ * `enabled = false` in the file is honoured; a monitor turned off at RUNTIME
+ * (the lid, the keybind) is left alone — the file did not ask for it, and a
+ * reload must not light up the panel of a closed laptop. */
+static void output_apply_config(FwmServer *server, FwmOutput *out) {
+    const ConfigOutput *cfg = config_find_output(&server->config, out->wlr_output->name);
+    int want_on = !cfg || cfg->enabled;
+
+    if (!want_on) {
+        output_set_enabled(server, out, 0);
+        return;
+    }
+    /* The file says on. A monitor the FILE turned off comes back — that is the
+     * reload doing its job — but one a person turned off stays off. */
+    if (!out->enabled) {
+        if (out->forced_off) return;
+        output_set_enabled(server, out, 1);
+        return;
+    }
+
+    output_join_layout(server, out);
 }
 
 /* Every monitor re-placed from the current config. */
@@ -832,15 +991,11 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
     wl_list_insert(&server->outputs, &output->link);
 
     /* In the list BEFORE it joins the layout: adding fires the layout's change
-     * event, and the handler walks server->outputs to find the primary. */
+     * event, and the handler walks server->outputs to find the primary. The
+     * scene output is built by output_join_layout, the one path that knows a
+     * monitor is only really on when it has all three of output, layout entry
+     * and scene output. */
     output_apply_config(server, output);
-    if (output->enabled) {
-        struct wlr_output_layout_output *l_output =
-            wlr_output_layout_get(server->output_layout, wlr_output);
-        struct wlr_scene_output *scene_output = wlr_scene_output_create(server->scene, wlr_output);
-        if (l_output && scene_output)
-            wlr_scene_output_layout_add_output(server->scene_layout, l_output, scene_output);
-    }
 }
 
 /* The first output in the layout: everything below exists once and needs a

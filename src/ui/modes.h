@@ -17,6 +17,7 @@
 
 #include <stdbool.h>
 #include <cairo.h>
+#include <wlr/util/box.h>
 #include <wlr/types/wlr_scene.h>
 
 /*
@@ -89,10 +90,15 @@ enum {
     MODES_CAVA_SEGS,
 };
 
-/* Open the menu under the pill. `pill_x` is where the pill starts in SCREEN
- * coordinates, so the menu can line its right edge up with the pill's. */
+/* Open the menu under the pill.
+ *
+ * `screen` is the MONITOR the pill is on, in layout coordinates, and `pill_x`
+ * is where the pill starts in those same coordinates — both, because the menu
+ * hangs off one particular strip and must be clamped to the screen that strip
+ * is drawn on. Clamping to the primary monitor's size instead is what used to
+ * drag a menu opened on the second screen back onto the first. */
 struct wlr_scene_buffer *modes_menu_show(struct wlr_scene_tree *parent,
-                                         int screen_w, int screen_h,
+                                         const struct wlr_box *screen,
                                          double pill_x, const ModesState *st);
 
 /* Redraw an open menu after a toggle, without the flicker of a destroy+show.

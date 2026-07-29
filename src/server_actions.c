@@ -367,6 +367,25 @@ void server_dispatch_action(FwmServer *server, const char *action) {
         server_request_tray_redraw(server);
     } else if (strcmp(action, "modes_menu") == 0) {
         server_toggle_modes_menu(server);
+    } else if (strcmp(action, "output_off") == 0) {
+        /* The monitor the pointer is on goes dark. Its desktop is handed back
+         * to the pool and the pointer is moved to a screen that still exists,
+         * so the session goes on working on what is left — the answer to
+         * "I want this screen off" that does not need the config file. */
+        server_output_set_enabled(server, server_active_output(server), 0);
+    } else if (strcmp(action, "toggle_internal_output") == 0) {
+        /* The built-in panel specifically, whichever screen the pointer is on:
+         * the one people actually want a key for, and the only one they cannot
+         * aim at once it is dark. */
+        FwmOutput *panel = server_internal_output(server);
+        if (panel) server_output_set_enabled(server, panel, !panel->enabled);
+    } else if (strcmp(action, "outputs_on") == 0) {
+        /* Everything back. The way out of "I turned off the screen I was
+         * looking at": it needs no pointer and no visible monitor, only a key
+         * that still works. */
+        FwmOutput *o;
+        wl_list_for_each(o, &server->outputs, link)
+            server_output_set_enabled(server, o, 1);
     } else if (strcmp(action, "group_toggle") == 0) {
         FwmView *v = server->focused_view;
         if (v) {
@@ -698,12 +717,15 @@ void server_toggle_modes_menu(FwmServer *server) {
         /* The pill is dropped on a screen too narrow to hold it, and then there
          * is nothing to hang the menu off. The keybind lands here too, so this
          * is also what stops it opening a menu pointing at nothing. */
-        if (!tray_modes_pill_hit(tray_modes_pill_x(), 1.0)) return;
+        if (!tray_modes_pill_hit(&out->tray_strip, tray_modes_pill_x(&out->tray_strip), 1.0))
+            return;
         ModesState st;
         server_modes_state(server, &st);
+        /* Both in layout coordinates: the strip's node is already on its own
+         * monitor, and the menu is clamped to that monitor's box. */
         server->modes_buffer = modes_menu_show(
-            server->layer_overlay, server->screen_width, server->screen_height,
-            out->tray_buffer->node.x + tray_modes_pill_x(), &st);
+            server->layer_overlay, &out->box,
+            out->tray_buffer->node.x + tray_modes_pill_x(&out->tray_strip), &st);
     }
     server_request_tray_redraw(server);
 }

@@ -73,7 +73,8 @@ int action_is_known(const char *a) {
         "toggle_floating", "toggle_floating_all",
         "calm_all", "fake_fullscreen", "real_fullscreen",
         "launcher", "toggle_tray", "spin_window", "spin_all", "terminal",
-        "expo", "toggle_wrap", NULL
+        "expo", "toggle_wrap",
+        "output_off", "toggle_internal_output", "outputs_on", NULL
     };
     static const char *prefixes[] = {
         "spawn:", "view:", "move_camera:", "tile_focus:", "tile_move:",

@@ -68,6 +68,7 @@ static int key_repeat_cb(void *data);
 #include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_pointer.h>
+#include <wlr/types/wlr_switch.h>
 #include <wlr/backend/libinput.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_scene.h>
@@ -553,6 +554,25 @@ static void handle_pointer_destroy(struct wl_listener *listener, void *data) {
     free(pointer);
 }
 
+/* Laptop lid (and tablet-mode) switches. Only the lid is acted on: closing it
+ * puts the built-in panel out, so the machine can be shut with an external
+ * monitor plugged in and go on working — without this the closed panel stays
+ * lit, holding a desktop and half the windows on a screen inside the case. */
+static void handle_switch_toggle(struct wl_listener *listener, void *data) {
+    struct FwmSwitch *sw = wl_container_of(listener, sw, toggle);
+    struct wlr_switch_toggle_event *event = data;
+    if (event->switch_type != WLR_SWITCH_TYPE_LID) return;
+    server_lid_changed(sw->server, event->switch_state == WLR_SWITCH_STATE_ON);
+}
+
+static void handle_switch_destroy(struct wl_listener *listener, void *data) {
+    struct FwmSwitch *sw = wl_container_of(listener, sw, destroy);
+    wl_list_remove(&sw->toggle.link);
+    wl_list_remove(&sw->destroy.link);
+    wl_list_remove(&sw->link);
+    free(sw);
+}
+
 static void handle_new_input(struct wl_listener *listener, void *data) {
     FwmServer *server = wl_container_of(listener, server, new_input);
     struct wlr_input_device *device = data;
@@ -585,6 +605,18 @@ static void handle_new_input(struct wl_listener *listener, void *data) {
             pointer->destroy.notify = handle_pointer_destroy;
             wl_signal_add(&device->events.destroy, &pointer->destroy);
             wl_list_insert(&server->pointers, &pointer->link);
+        }
+    } else if (device->type == WLR_INPUT_DEVICE_SWITCH) {
+        struct FwmSwitch *sw = calloc(1, sizeof(*sw));
+        if (sw) {
+            sw->server = server;
+            sw->wlr_switch = wlr_switch_from_input_device(device);
+            sw->toggle.notify = handle_switch_toggle;
+            sw->destroy.notify = handle_switch_destroy;
+            wl_signal_add(&sw->wlr_switch->events.toggle, &sw->toggle);
+            wl_signal_add(&device->events.destroy, &sw->destroy);
+            wl_list_insert(&server->switches, &sw->link);
+            wlr_log(WLR_INFO, "input: %s (switch)", device->name);
         }
     }
 

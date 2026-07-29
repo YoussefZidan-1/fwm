@@ -429,18 +429,20 @@ static void draw_menu(cairo_t *cr, int w, int h, void *user) {
 }
 
 struct wlr_scene_buffer *modes_menu_show(struct wlr_scene_tree *parent,
-                                         int screen_w, int screen_h,
+                                         const struct wlr_box *screen,
                                          double pill_x, const ModesState *st) {
-    (void)screen_h;
     struct MenuCtx ctx = { .st = *st };
 
     /* Right-aligned with the pill, so the menu reads as hanging off it rather
-     * than as a panel that happened to appear. Clamped to the screen for the
-     * narrow case where the pill sits close to the right edge. */
+     * than as a panel that happened to appear. Clamped to ITS OWN monitor for
+     * the narrow case where the pill sits close to the right edge — the whole
+     * arithmetic is in layout coordinates, so the clamp cannot pull the menu
+     * onto a neighbouring screen. */
     int wx = (int)lround(pill_x + MODES_PILL_W - MENU_W);
-    if (wx + MENU_W > screen_w - 8) wx = screen_w - 8 - MENU_W;
-    if (wx < 8) wx = 8;
-    int wy = TRAY_BOTTOM + 6;
+    if (wx + MENU_W > screen->x + screen->width - 8)
+        wx = screen->x + screen->width - 8 - MENU_W;
+    if (wx < screen->x + 8) wx = screen->x + 8;
+    int wy = screen->y + TRAY_BOTTOM + 6;
 
     anim_reset(st);
 
