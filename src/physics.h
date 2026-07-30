@@ -66,6 +66,15 @@ typedef struct {
     double rule_gravity;   /* multiplies the profile's gravity; -1 floats up */
     double rule_bounce;    /* restitution 0..1, absolute */
     double rule_friction;  /* per-tick velocity retention, absolute */
+
+    /* What the compositor last decided this window weighs relative to a plain
+     * area * mass_density one, when something other than its size is deciding —
+     * [physics] mass = "ram" (see server_mass_sync). 1.0 means "nothing has an
+     * opinion", which is what every body starts on, so the simulation is
+     * untouched until that mode is actually turned on. Multiplies the same
+     * density rule_mass does, and is kept separate from it so a [[rule]]
+     * mass = 3 still means "three times whatever this window weighs". */
+    double mass_scale;
 } PhysicsBody;
 
 /* The physics of one desktop. Every field starts as the [physics] value and is

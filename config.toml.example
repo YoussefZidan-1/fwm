@@ -13,6 +13,19 @@ stop_speed_threshold  = 1.0
 restitution           = 0.3
 gravity               = 981.0
 tick_rate             = 60.0
+# What decides how heavy a window is:
+#   "size"  window mass = area * mass_density (the default)
+#   "ram"   how much memory the application is using, its size ignored — the
+#           browser that has eaten two gigabytes becomes the heaviest thing on
+#           the desktop and shoves everything else out of the way. Counted over
+#           the whole process tree, so a browser's tabs count toward its window,
+#           and re-read every second and a half.
+# Also switchable in the modes menu (the tray pill), which remembers the choice
+# in ~/.local/state/fwm/modes and thereafter overrides what is written here.
+#mass                 = "ram"
+#mass_ram_ref         = 300.0   # MB that weighs a normal window
+#mass_ram_max         = 20.0    # heaviest a window may get, x normal. Uncap it
+                                # and a 6GB browser is not heavy, it is a wall.
 # What super+g cycles through: multipliers on the gravity above, in order.
 # The default is the built-in trio — weightless, a lick of it, earth.
 #gravity_steps        = [0.0, 0.15, 1.0]

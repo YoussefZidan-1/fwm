@@ -119,10 +119,50 @@ static void test_ring_crosses_only_when_clear(void) {
     physics_destroy(&w);
 }
 
+/* mass_scale is how [physics] mass = "ram" reaches the simulation: the
+ * compositor writes a multiplier per body and nothing else about the world
+ * changes. What has to be true is that the multiplier is felt in a collision —
+ * a two-gigabyte browser must shove a terminal harder than a terminal shoves
+ * back — and that is not visible anywhere except here. */
+static double shove_speed(double scale) {
+    PhysicsWorld w;
+    physics_init(&w);
+    w.gravity_scale = 0.0;
+    w.wrap = 0;
+
+    PhysicsBody *heavy = physics_sync_body(&w, 1, 400, 400, 400, 300, SW);
+    PhysicsBody *light = physics_sync_body(&w, 2, 900, 400, 400, 300, SW);
+    heavy->mass_scale = scale;
+    light->mass_scale = 1.0;
+
+    /* Same size, same everything else: the only asymmetry is the multiplier. */
+    physics_throw_body(&w, 1, 3000.0, 0.0);
+    run(&w, 30);
+
+    light = physics_find_body(&w, 2);
+    double vx = light ? light->vx : 0.0;
+    physics_destroy(&w);
+    return vx;
+}
+
+static void test_mass_scale_is_felt(void) {
+    CASE("mass_scale");
+    double even  = shove_speed(1.0);
+    double heavy = shove_speed(10.0);
+
+    CHECK(even > 0.0);            /* it was hit, so it is moving away */
+    CHECK(heavy > even * 1.2);    /* ... and much faster when hit by a hog */
+
+    /* A body nobody has an opinion about weighs what it always did, so a scale
+     * of 1 must be indistinguishable from the field not being there. */
+    CHECK_DBL(shove_speed(1.0), even, 1e-9);
+}
+
 int main(void) {
     test_wall_holds_a_line();
     test_ring_carries_a_throw_round();
     test_ring_carries_a_throw_the_other_way();
     test_ring_crosses_only_when_clear();
+    test_mass_scale_is_felt();
     return t_report("physics");
 }

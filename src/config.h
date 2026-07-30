@@ -55,9 +55,32 @@ typedef struct {
 /* How many steps cycle_gravity walks through. */
 #define CONFIG_MAX_GRAVITY_STEPS 8
 
+/* What decides how heavy a window is.
+ *
+ *   [physics]
+ *   mass = "size"   # area * mass_density — what it has always been
+ *   mass = "ram"    # how much memory the application is using
+ *
+ * "ram" is the joke asked for in issue #5: Chrome, having eaten two gigabytes,
+ * becomes the heaviest thing on the desktop and shoves everything else aside.
+ * It replaces area rather than multiplying it — under "ram" a window's size
+ * says nothing about its weight, which is the whole point of the choice. */
+enum {
+    PHYSICS_MASS_SIZE = 0,
+    PHYSICS_MASS_RAM,
+};
+
 typedef struct {
     double friction;
     double mass_density;
+    int    mass_mode;      /* PHYSICS_MASS_* */
+    /* The memory footprint that weighs the same as a window did before any of
+     * this existed, and the ceiling on how much heavier one can get. Without the
+     * ceiling a 6GB browser next to a 20MB terminal is not a heavy window, it is
+     * an immovable wall — and Box2D solves a 300:1 mass ratio by shoving the
+     * light body through the floor. */
+    double mass_ram_ref;   /* MB that counts as normal weight */
+    double mass_ram_max;   /* clamp, in multiples of normal */
     double throw_speed_multiplier;
     double max_throw_speed;
     double stop_speed_threshold;

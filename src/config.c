@@ -27,6 +27,9 @@
 static const PhysicsConfig physics_defaults = {
     .friction               = 0.97,
     .mass_density           = 0.0005,
+    .mass_mode              = PHYSICS_MASS_SIZE,
+    .mass_ram_ref           = 300.0,
+    .mass_ram_max           = 20.0,
     .throw_speed_multiplier = 0.65,
     .max_throw_speed        = 1800.0,
     .stop_speed_threshold   = 1.0,
@@ -221,6 +224,25 @@ static void load_physics(toml_table_t *root, FwmConfig *cfg) {
     LOAD_DOUBLE(tbl, "restitution",            p->restitution);
     LOAD_DOUBLE(tbl, "gravity",                p->gravity);
     LOAD_DOUBLE(tbl, "tick_rate",              p->tick_rate);
+    LOAD_DOUBLE(tbl, "mass_ram_ref",           p->mass_ram_ref);
+    LOAD_DOUBLE(tbl, "mass_ram_max",           p->mass_ram_max);
+
+    toml_datum_t mm = toml_string_in(tbl, "mass");
+    if (mm.ok) {
+        if      (strcmp(mm.u.s, "size") == 0) p->mass_mode = PHYSICS_MASS_SIZE;
+        else if (strcmp(mm.u.s, "area") == 0) p->mass_mode = PHYSICS_MASS_SIZE;
+        else if (strcmp(mm.u.s, "ram")  == 0) p->mass_mode = PHYSICS_MASS_RAM;
+        else if (strcmp(mm.u.s, "memory") == 0) p->mass_mode = PHYSICS_MASS_RAM;
+        else config_report_error(cfg, "[physics] mass: unknown value \"%s\" (size | ram)",
+                                 mm.u.s);
+        free(mm.u.s);
+    }
+
+    /* A reference of zero divides every window's weight by nothing at all, and
+     * a ceiling below 1 would make a memory hog LIGHTER than an idle one. */
+    if (p->mass_ram_ref < 1.0)  p->mass_ram_ref = 1.0;
+    if (p->mass_ram_max < 1.0)  p->mass_ram_max = 1.0;
+    if (p->mass_ram_max > 200.0) p->mass_ram_max = 200.0;
 
     toml_array_t *steps = toml_array_in(tbl, "gravity_steps");
     if (steps) {

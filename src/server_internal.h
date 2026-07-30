@@ -67,6 +67,11 @@ void server_video_sync(FwmServer *server);
  * leave it be. Called from the tick, so `fwmctl set cava.mode` and a config
  * reload both land through the same path. */
 void server_cava_sync(FwmServer *server);
+/* Bring what every window weighs in line with [physics] mass. Does nothing at
+ * all while mass = "size" (a body's area already decides), and walks /proc on a
+ * timer of its own while mass = "ram" — so the tick can call it unconditionally.
+ * Called from the tick, so the menu, `fwmctl set` and a reload all land here. */
+void server_mass_sync(FwmServer *server);
 void server_reclaim_memory(void);
 void server_dispatch_action(FwmServer *server, const char *action);
 FwmView *server_find_view(FwmServer *server, uint32_t id);
@@ -112,10 +117,16 @@ void server_toggle_modes_menu(FwmServer *server);
 void server_close_modes_menu(FwmServer *server);
 /* Immediate, unanimated close, for teardown. */
 void server_kill_modes_menu(FwmServer *server);
-/* Apply a click on menu row `row`. `seg` is the MODES_CAVA_* segment for the
- * cava row and ignored otherwise. Returns 1 if anything changed. */
+/* Apply a click on menu row `row`. `seg` is the segment under the pointer for
+ * the rows that carry a segmented control (cava, mass) and ignored for the
+ * switch rows. Returns 1 if anything changed. */
 int server_modes_menu_click(FwmServer *server, int row, int seg);
 void server_state_apply_wallpaper(FwmServer *server);
+/* The modes menu's choices, remembered across restarts in
+ * ~/.local/state/fwm/modes. Applied over the config after every load; saved the
+ * moment one of them is clicked. */
+void server_state_apply_modes(FwmServer *server);
+void server_state_save_modes(FwmServer *server);
 
 /* ── server_desktop.c ─────────────────────────────────────────────────── */
 void server_toggle_desktop_tiling(FwmServer *server, int d);

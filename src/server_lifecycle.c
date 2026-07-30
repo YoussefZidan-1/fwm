@@ -272,6 +272,7 @@ bool server_init(FwmServer *server) {
     server_config_path(path, sizeof(path));
     config_load(&server->config, path);
     server_state_apply_wallpaper(server);
+    server_state_apply_modes(server);
     // Palette for every overlay and window border; may sample the wallpaper.
     theme_build(&server->config);
 

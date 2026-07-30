@@ -92,6 +92,7 @@ set(SOURCES
     src/video.c
     src/audio.c
     src/cava.c
+    src/ram.c
     src/view.c
     src/view_effects.c
     src/rotate.c
@@ -270,6 +271,13 @@ if(FWM_TESTS)
     target_include_directories(test_gestures PRIVATE src tests ${XKBCOMMON_INCLUDE_DIRS})
     target_link_libraries(test_gestures PRIVATE m)
 
+    # Application memory footprints come out of /proc, which cannot be faked
+    # and is easy to misparse. The suite forks its own child to check the tree
+    # walk, so it needs nothing of the machine but a working /proc.
+    add_executable(test_ram tests/test_ram.c src/ram.c)
+    target_include_directories(test_ram PRIVATE src tests)
+    target_link_libraries(test_ram PRIVATE m)
+
     add_test(NAME bsp        COMMAND test_bsp)
     add_test(NAME config     COMMAND test_config)
     add_test(NAME input      COMMAND test_input)
@@ -277,4 +285,5 @@ if(FWM_TESTS)
     add_test(NAME ipc_events COMMAND test_ipc_events)
     add_test(NAME wobble     COMMAND test_wobble)
     add_test(NAME gestures   COMMAND test_gestures)
+    add_test(NAME ram        COMMAND test_ram)
 endif()

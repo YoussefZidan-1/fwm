@@ -70,6 +70,27 @@ static void icon_gravity(cairo_t *cr, double x, double y, double s) {
     cairo_fill(cr);
 }
 
+/* A weight plate: wide base, narrow top, with a handle over it. Drawn as one
+ * solid mass because that is the whole content of the icon — the row beside it
+ * says what decides how much of it there is. */
+static void icon_mass(cairo_t *cr, double x, double y, double s) {
+    double lw = fmax(1.0, s * 0.11);
+
+    /* Handle: a half ring rising out of the top face, drawn before the body so
+     * the body covers where the two meet. */
+    cairo_set_line_width(cr, lw);
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, x + s / 2.0, y + s * 0.34, s * 0.20, M_PI, 2.0 * M_PI);
+    cairo_stroke(cr);
+
+    cairo_move_to(cr, x + s * 0.26, y + s * 0.34);
+    cairo_line_to(cr, x + s * 0.74, y + s * 0.34);
+    cairo_line_to(cr, x + s,        y + s);
+    cairo_line_to(cr, x,            y + s);
+    cairo_close_path(cr);
+    cairo_fill(cr);
+}
+
 static void icon_cava(cairo_t *cr, double x, double y, double s) {
     /* Four bars of different heights — the feature drawn as itself. */
     static const double h[4] = { 0.45, 1.0, 0.65, 0.85 };
@@ -109,6 +130,7 @@ void modes_icon(cairo_t *cr, int icon, double x, double y, double size) {
     case MODE_ICON_TILING:   icon_tiling(cr, x, y, size);   break;
     case MODE_ICON_FLOATING: icon_floating(cr, x, y, size); break;
     case MODE_ICON_GRAVITY:  icon_gravity(cr, x, y, size);  break;
+    case MODE_ICON_MASS:     icon_mass(cr, x, y, size);     break;
     case MODE_ICON_CAVA:     icon_cava(cr, x, y, size);     break;
     case MODE_ICON_RING:     icon_ring(cr, x, y, size);     break;
     default: break;
@@ -133,6 +155,14 @@ void modes_menu_size(int *w, int *h) {
     if (h) *h = MENU_H;
 }
 
+int modes_row_segs(int row) {
+    switch (row) {
+    case MODES_ROW_CAVA: return MODES_CAVA_SEGS;
+    case MODES_ROW_MASS: return MODES_MASS_SEGS;
+    default:             return 0;   /* a switch row */
+    }
+}
+
 /* Row rect in menu-local coords. */
 static double row_y(int row) { return MENU_PAD + MENU_ROW_H * row; }
 
@@ -141,8 +171,9 @@ int modes_menu_hit(double x, double y, int *seg) {
     for (int r = 0; r < MODES_ROW_COUNT; r++) {
         double ry = row_y(r);
         if (y < ry || y >= ry + MENU_ROW_H) continue;
-        if (r == MODES_ROW_CAVA) {
-            /* The segmented control is the whole point of this row: a click
+        int segs = modes_row_segs(r);
+        if (segs > 0) {
+            /* The segmented control is the whole point of such a row: a click
              * anywhere else on it would have to guess which way to cycle, so it
              * does nothing instead. */
             double sx = MENU_W - MENU_PAD - SEG_W;
@@ -150,9 +181,9 @@ int modes_menu_hit(double x, double y, int *seg) {
             if (seg) {
                 *seg = -1;
                 if (x >= sx && x < sx + SEG_W && y >= sy && y < sy + SEG_H) {
-                    int i = (int)((x - sx) / (SEG_W / MODES_CAVA_SEGS));
+                    int i = (int)((x - sx) / (SEG_W / segs));
                     if (i < 0) i = 0;
-                    if (i >= MODES_CAVA_SEGS) i = MODES_CAVA_SEGS - 1;
+                    if (i >= segs) i = segs - 1;
                     *seg = i;
                 }
             }
@@ -177,24 +208,29 @@ int modes_menu_hit(double x, double y, int *seg) {
 #define ANIM_EPS      0.002 /* below this, snap and stop redrawing */
 
 static struct {
-    double sw[MODES_ROW_COUNT]; /* 0 = off position, 1 = on */
-    double seg;                 /* cava highlight, in segment units */
+    double sw[MODES_ROW_COUNT];  /* 0 = off position, 1 = on */
+    /* Highlight position of each segmented row, in segment units. Per row
+     * rather than one shared number: two such rows sharing it would drag each
+     * other's highlight across the menu every time either was clicked. */
+    double seg[MODES_ROW_COUNT];
     double open;                /* 0..1, drives the row stagger */
     int    moving;              /* something is still easing; drives server_is_busy */
     int    live;
 } g_anim;
 
-static int cava_seg(int mode);
+static int row_target_seg(int row, const ModesState *st);
 
 /* Snap every control to `st` with the menu closed, so opening animates the
  * rows in but NOT the switches — a switch that slid on open would suggest the
  * user had just flipped it. */
 static void anim_reset(const ModesState *st) {
-    for (int r = 0; r < MODES_ROW_COUNT; r++) g_anim.sw[r] = 0.0;
+    for (int r = 0; r < MODES_ROW_COUNT; r++) {
+        g_anim.sw[r]  = 0.0;
+        g_anim.seg[r] = row_target_seg(r, st);
+    }
     g_anim.sw[MODES_ROW_TILING]   = st->tiling   ? 1.0 : 0.0;
     g_anim.sw[MODES_ROW_FLOATING] = st->floating ? 1.0 : 0.0;
     g_anim.sw[MODES_ROW_GRAVITY]  = st->gravity  ? 1.0 : 0.0;
-    g_anim.seg  = cava_seg(st->cava);
     g_anim.open   = 0.0;
     g_anim.moving = 1;
     g_anim.live   = 1;
@@ -294,11 +330,28 @@ static int cava_seg(int mode) {
     }
 }
 
-static void draw_segments(cairo_t *cr, PangoLayout *layout,
-                          double x, double y, int active, double alpha) {
-    static const char *label[MODES_CAVA_SEGS] = { "off", "visual", "physical" };
+/* Where a segmented row's highlight belongs for the given state. Switch rows
+ * answer 0, which costs nothing: their entry is never read. */
+static int row_target_seg(int row, const ModesState *st) {
+    switch (row) {
+    case MODES_ROW_CAVA: return cava_seg(st->cava);
+    /* PHYSICS_MASS_* and MODES_MASS_* are the same two values in the same
+     * order, so there is nothing to map — only a clamp, because the segment
+     * index indexes an array of labels. */
+    case MODES_ROW_MASS: return st->mass == MODES_MASS_RAM ? MODES_MASS_RAM
+                                                           : MODES_MASS_SIZE;
+    default:             return 0;
+    }
+}
+
+/* One segmented control, `segs` positions wide, labelled from `label`. `active`
+ * is the segment the state says is current (already mapped by row_target_seg);
+ * `anim` is where the highlight has actually eased to, in segment units. */
+static void draw_segments(cairo_t *cr, PangoLayout *layout, double x, double y,
+                          const char *const *label, int segs,
+                          int active, double anim, double alpha) {
     const FwmTheme *thm = theme_get();
-    double sw = SEG_W / MODES_CAVA_SEGS;
+    double sw = SEG_W / segs;
 
     cairo_set_source_rgba(cr, thm->dim[0], thm->dim[1], thm->dim[2], alpha * 0.4);
     cairo_rectangle(cr, x, y, SEG_W, SEG_H);
@@ -306,18 +359,16 @@ static void draw_segments(cairo_t *cr, PangoLayout *layout,
 
     /* The highlight slides between positions rather than jumping, so the eye
      * can follow which way the setting moved — the whole reason this is a
-     * three-position control and not a label that changes text. */
-    double hp = g_anim.live ? g_anim.seg : (double)cava_seg(active);
+     * multi-position control and not a label that changes text. */
+    double hp = g_anim.live ? anim : (double)active;
     if (hp < 0.0) hp = 0.0;
-    if (hp > MODES_CAVA_SEGS - 1) hp = MODES_CAVA_SEGS - 1;
+    if (hp > segs - 1) hp = segs - 1;
     cairo_set_source_rgba(cr, thm->accent[0], thm->accent[1], thm->accent[2], alpha);
     cairo_rectangle(cr, x + hp * sw, y, sw, SEG_H);
     cairo_fill(cr);
-    active = cava_seg(active);
 
-    const FwmTheme *t2 = thm;
-    cairo_set_source_rgba(cr, t2->pill[0], t2->pill[1], t2->pill[2], alpha * 0.8);
-    for (int i = 1; i < MODES_CAVA_SEGS; i++)
+    cairo_set_source_rgba(cr, thm->pill[0], thm->pill[1], thm->pill[2], alpha * 0.8);
+    for (int i = 1; i < segs; i++)
         cairo_rectangle(cr, x + i * sw - 0.5, y + 3, 1.0, SEG_H - 6);
     cairo_fill(cr);
 
@@ -325,7 +376,7 @@ static void draw_segments(cairo_t *cr, PangoLayout *layout,
     pango_layout_set_font_description(layout, desc);
     pango_font_description_free(desc);
 
-    for (int i = 0; i < MODES_CAVA_SEGS; i++) {
+    for (int i = 0; i < segs; i++) {
         int tw, th;
         pango_layout_set_text(layout, label[i], -1);
         pango_layout_get_pixel_size(layout, &tw, &th);
@@ -345,7 +396,6 @@ static void draw_segments(cairo_t *cr, PangoLayout *layout,
         cairo_move_to(cr, x + i * sw + (sw - tw) / 2.0, y + (SEG_H - th) / 2.0);
         pango_cairo_show_layout(cr, layout);
     }
-    (void)active;
 
     desc = pango_font_description_from_string("sans 10");
     pango_layout_set_font_description(layout, desc);
@@ -369,15 +419,22 @@ static void draw_menu(cairo_t *cr, int w, int h, void *user) {
     pango_font_description_free(desc);
 
     static const char *name[MODES_ROW_COUNT] = {
-        "Tiling", "Floating", "Gravity", "Cava", "Ring",
+        "Tiling", "Floating", "Gravity", "Mass", "Cava", "Ring",
     };
     static const int   icon[MODES_ROW_COUNT] = {
-        MODE_ICON_TILING, MODE_ICON_FLOATING, MODE_ICON_GRAVITY, MODE_ICON_CAVA,
-        MODE_ICON_RING,
+        MODE_ICON_TILING, MODE_ICON_FLOATING, MODE_ICON_GRAVITY, MODE_ICON_MASS,
+        MODE_ICON_CAVA, MODE_ICON_RING,
     };
+    /* Lights the icon. Mass is never off, so what lights it is the position
+     * that is doing something beyond the default — the same reading the cava
+     * row gets from `cava != 0`. */
     const int on[MODES_ROW_COUNT] = {
-        st->tiling, st->floating, st->gravity, st->cava != 0, st->ring,
+        st->tiling, st->floating, st->gravity, st->mass == MODES_MASS_RAM,
+        st->cava != 0, st->ring,
     };
+    /* Segment labels, per row; NULL for the rows that carry a switch. */
+    static const char *const cava_labels[MODES_CAVA_SEGS] = { "off", "visual", "physical" };
+    static const char *const mass_labels[MODES_MASS_SEGS] = { "size", "ram" };
 
     for (int r = 0; r < MODES_ROW_COUNT; r++) {
         double ry = row_y(r);
@@ -408,9 +465,12 @@ static void draw_menu(cairo_t *cr, int w, int h, void *user) {
         cairo_move_to(cr, MENU_PAD + icon_s + 12.0, ry + (MENU_ROW_H - th) / 2.0);
         pango_cairo_show_layout(cr, layout);
 
-        if (r == MODES_ROW_CAVA) {
+        int segs = modes_row_segs(r);
+        if (segs > 0) {
+            const char *const *labels = r == MODES_ROW_CAVA ? cava_labels : mass_labels;
             draw_segments(cr, layout, MENU_W - MENU_PAD - SEG_W,
-                          ry + (MENU_ROW_H - SEG_H) / 2.0, st->cava, st->opacity);
+                          ry + (MENU_ROW_H - SEG_H) / 2.0, labels, segs,
+                          row_target_seg(r, st), g_anim.seg[r], st->opacity);
         } else {
             draw_switch(cr, MENU_W - MENU_PAD - SWITCH_W,
                         ry + (MENU_ROW_H - SWITCH_H) / 2.0,
@@ -468,14 +528,16 @@ void modes_menu_redraw(struct wlr_scene_buffer *buf, const ModesState *st) {
 bool modes_menu_tick(struct wlr_scene_buffer *buf, const ModesState *st, double dt) {
     if (!buf || !st || !g_anim.live) return false;
 
+    /* Switch positions. The segmented rows have no switch — their entry is
+     * never drawn, and their highlight is eased below instead. */
     double target[MODES_ROW_COUNT] = {
         st->tiling ? 1.0 : 0.0,
         st->floating ? 1.0 : 0.0,
         st->gravity ? 1.0 : 0.0,
-        0.0, /* the cava row has no switch; its highlight is animated below */
+        0.0, /* mass */
+        0.0, /* cava */
         st->ring ? 1.0 : 0.0,
     };
-    double seg_target = cava_seg(st->cava);
 
     /* Clamp the step before easing with it.
      *
@@ -501,16 +563,18 @@ bool modes_menu_tick(struct wlr_scene_buffer *buf, const ModesState *st, double 
     int moving = 0;
 
     for (int r = 0; r < MODES_ROW_COUNT; r++) {
-        if (r == MODES_ROW_CAVA) continue;
+        if (modes_row_segs(r) > 0) {
+            double seg_target = row_target_seg(r, st);
+            double ds = seg_target - g_anim.seg[r];
+            if (fabs(ds) < ANIM_EPS) g_anim.seg[r] = seg_target;
+            else { g_anim.seg[r] += ds * k; moving = 1; }
+            continue;
+        }
         double d = target[r] - g_anim.sw[r];
         if (fabs(d) < ANIM_EPS) { g_anim.sw[r] = target[r]; continue; }
         g_anim.sw[r] += d * k;
         moving = 1;
     }
-
-    double ds = seg_target - g_anim.seg;
-    if (fabs(ds) < ANIM_EPS) g_anim.seg = seg_target;
-    else { g_anim.seg += ds * k; moving = 1; }
 
     if (g_anim.open < 1.0 - ANIM_EPS) {
         /* Linear, not eased: row_reveal puts the easing on each row, and easing

@@ -461,6 +461,56 @@ static void test_physics_profiles(void) {
     drop_config();
 }
 
+static void test_mass_mode(void) {
+    CASE("[physics] mass picks what a window weighs");
+    const char *p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[physics]\n"
+        "mass = \"ram\"\n"
+        "mass_ram_ref = 512.0\n"
+        "mass_ram_max = 8.0\n");
+    FwmConfig cfg;
+    config_load(&cfg, p);
+    CHECK_INT(cfg.error_count, 0);
+    CHECK_INT(cfg.physics.mass_mode, PHYSICS_MASS_RAM);
+    CHECK_DBL(cfg.physics.mass_ram_ref, 512.0, 1e-9);
+    CHECK_DBL(cfg.physics.mass_ram_max, 8.0, 1e-9);
+    config_free(&cfg);
+    drop_config();
+
+    CASE("mass defaults to the window's size");
+    p = write_config("[binds]\n\"super+q\" = \"killclient\"\n");
+    config_load(&cfg, p);
+    CHECK_INT(cfg.physics.mass_mode, PHYSICS_MASS_SIZE);
+    CHECK_DBL(cfg.physics.mass_ram_ref, 300.0, 1e-9);
+    config_free(&cfg);
+    drop_config();
+
+    /* A typo here is the difference between a heavy browser and a silently
+     * ordinary one, so it is reported rather than guessed at. */
+    CASE("an unknown mass mode is reported and the default kept");
+    p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[physics]\nmass = \"memry\"\n");
+    config_load(&cfg, p);
+    CHECK_INT(cfg.error_count, 1);
+    CHECK_INT(cfg.physics.mass_mode, PHYSICS_MASS_SIZE);
+    config_free(&cfg);
+    drop_config();
+
+    /* Nonsense limits would divide a weight by nothing, or make the hog the
+     * lightest thing on screen. */
+    CASE("mass limits are clamped to something usable");
+    p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[physics]\nmass_ram_ref = 0.0\nmass_ram_max = 0.2\n");
+    config_load(&cfg, p);
+    CHECK_DBL(cfg.physics.mass_ram_ref, 1.0, 1e-9);
+    CHECK_DBL(cfg.physics.mass_ram_max, 1.0, 1e-9);
+    config_free(&cfg);
+    drop_config();
+}
+
 static void test_mouse(void) {
     CASE("[mouse] defaults reproduce the old hard-coded drags");
     const char *p = write_config("[binds]\n\"super+q\" = \"killclient\"\n");
@@ -731,6 +781,7 @@ int main(void) {
     test_gestures();
     test_rule_material();
     test_physics_profiles();
+    test_mass_mode();
     test_mouse();
     test_modes();
     test_option_table();

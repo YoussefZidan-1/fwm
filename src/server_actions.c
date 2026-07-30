@@ -680,6 +680,7 @@ void server_modes_state(FwmServer *server, ModesState *out) {
     out->tiling   = server->desktop_mode[d] == DESKTOP_MODE_TILING;
     out->floating = server->desktop_mode[d] == DESKTOP_MODE_FLOATING;
     out->gravity  = server->physics.gravity_scale > 0.0;
+    out->mass     = server->config.physics.mass_mode;
     out->cava     = server->config.cava.mode;
     out->ring     = server->config.camera.wrap;
     out->opacity  = server->config.decor.tray_opacity;
@@ -767,6 +768,19 @@ int server_modes_menu_click(FwmServer *server, int row, int seg) {
         }
         ipc_emit_gravity(server->ipc, server->physics.gravity_scale);
         changed = 1;
+        break;
+    }
+    case MODES_ROW_MASS: {
+        if (seg < 0) break;
+        int want = seg == MODES_MASS_RAM ? PHYSICS_MASS_RAM : PHYSICS_MASS_SIZE;
+        if (want != server->config.physics.mass_mode) {
+            server->config.physics.mass_mode = want;
+            /* server_mass_sync picks it up on the next tick: it compares the
+             * mode against the one it last acted on, so switching either way
+             * takes effect at once without this having to know how. */
+            server_state_save_modes(server);
+            changed = 1;
+        }
         break;
     }
     case MODES_ROW_RING:

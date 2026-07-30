@@ -28,6 +28,11 @@
 static const ConfigOption config_option_table[] = {
     { "physics.friction",               CFG_OPT_DOUBLE, offsetof(FwmConfig, physics.friction),               0.0,     1.0,     "velocity retained per tick" },
     { "physics.mass_density",           CFG_OPT_DOUBLE, offsetof(FwmConfig, physics.mass_density),            0.0,     1.0,     "mass per pixel of window area" },
+    /* Numeric for the same reason cava.mode is: the table is typed. 0 = size,
+     * 1 = ram, the two the enum spells out. */
+    { "physics.mass",                   CFG_OPT_INT,    offsetof(FwmConfig, physics.mass_mode),               0.0,     1.0,     "0 mass from window size, 1 from RAM use" },
+    { "physics.mass_ram_ref",           CFG_OPT_DOUBLE, offsetof(FwmConfig, physics.mass_ram_ref),            1.0, 1000000.0,   "MB that weighs a normal window" },
+    { "physics.mass_ram_max",           CFG_OPT_DOUBLE, offsetof(FwmConfig, physics.mass_ram_max),            1.0,   200.0,     "heaviest a window may get, x normal" },
     { "physics.throw_speed_multiplier", CFG_OPT_DOUBLE, offsetof(FwmConfig, physics.throw_speed_multiplier),  0.0,    10.0,     "how hard a drag throws" },
     { "physics.max_throw_speed",        CFG_OPT_DOUBLE, offsetof(FwmConfig, physics.max_throw_speed),         0.0, 100000.0,    "throw speed cap, px/s" },
     { "physics.stop_speed_threshold",   CFG_OPT_DOUBLE, offsetof(FwmConfig, physics.stop_speed_threshold),    0.0,  1000.0,    "below this a body is put to sleep" },

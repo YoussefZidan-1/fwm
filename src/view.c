@@ -132,6 +132,21 @@ const char *view_title(FwmView *view) {
                                       : view->xwl_surface->title;
 }
 
+/* The pid behind a view's client. xdg clients are asked through the Wayland
+ * connection; XWayland surfaces carry the pid themselves. 0 when there is
+ * nobody to ask — an unmapped X11 surface, or a client that has gone. */
+pid_t view_pid(FwmView *view) {
+    if (view->type == FWM_VIEW_XDG) {
+        if (!view->xdg_toplevel || !view->xdg_toplevel->resource) return 0;
+        struct wl_client *client = wl_resource_get_client(view->xdg_toplevel->resource);
+        if (!client) return 0;
+        pid_t pid = 0;
+        wl_client_get_credentials(client, &pid, NULL, NULL);
+        return pid;
+    }
+    return view->xwl_surface ? (pid_t)view->xwl_surface->pid : 0;
+}
+
 /* X11's closest equivalent of an app id is the WM_CLASS class. */
 const char *view_app_id(FwmView *view) {
     return view->type == FWM_VIEW_XDG ? view->xdg_toplevel->app_id

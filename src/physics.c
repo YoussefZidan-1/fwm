@@ -133,6 +133,11 @@ static struct Material material_for(const PhysicsWorld *world, const PhysicsBody
 
     double mass = p->mass_density / density_ref;
     if (!isnan(m->rule_mass)) mass *= m->rule_mass;
+    /* Whatever the compositor decided this window weighs for reasons the
+     * simulation knows nothing about (memory use, today). Guarded rather than
+     * trusted: a body that predates the field, or one whose sampler has not run
+     * yet, must weigh what it always did rather than nothing at all. */
+    if (m->mass_scale > 0.0) mass *= m->mass_scale;
 
     double bounce = isnan(m->rule_bounce) ? p->restitution : m->rule_bounce;
 
@@ -304,6 +309,8 @@ PhysicsBody *physics_sync_body(PhysicsWorld *world, uint32_t id, int x, int y, i
      * one matched), so every material property defers to the desktop. */
     body->rule_mass = body->rule_gravity = NAN;
     body->rule_bounce = body->rule_friction = NAN;
+    /* Weighs exactly what its area says until a sampler says otherwise. */
+    body->mass_scale = 1.0;
     update_body_geometry(body, x, y, width, height, world->mass_density);
 
     int d = (int)((body->x + body->width / 2.0) / screen_width);

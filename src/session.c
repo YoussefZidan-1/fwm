@@ -72,20 +72,6 @@ static void mkdir_parents(const char *file) {
     mkdir(dir, 0755);
 }
 
-/* The pid behind a view's client. xdg clients are asked through the Wayland
- * connection; XWayland surfaces carry the pid themselves. */
-static pid_t view_pid(struct FwmView *view) {
-    if (view->type == FWM_VIEW_XDG) {
-        if (!view->xdg_toplevel || !view->xdg_toplevel->resource) return 0;
-        struct wl_client *client = wl_resource_get_client(view->xdg_toplevel->resource);
-        if (!client) return 0;
-        pid_t pid = 0;
-        wl_client_get_credentials(client, &pid, NULL, NULL);
-        return pid;
-    }
-    return view->xwl_surface ? (pid_t)view->xwl_surface->pid : 0;
-}
-
 /* /proc/<pid>/cmdline is a NUL-separated argv. Join it with tabs, which is
  * what the state file stores and what pending entries are matched on. Returns
  * 0 when the process is gone or the cmdline is unusable. */

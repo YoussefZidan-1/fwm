@@ -250,6 +250,14 @@ typedef struct FwmServer {
      * being abandoned — see server_cava_sync. */
     double cava_retry_at;
     int cava_reported;   /* the "no sound server" line has been logged once */
+
+    /* [physics] mass = "ram": the mode server_mass_sync last acted on, and when
+     * it may next walk /proc. Zero-initialised to PHYSICS_MASS_SIZE, which is
+     * both the default and a state with nothing to do — so a compositor nobody
+     * asked for this never reads /proc at all. */
+    int mass_applied;
+    double mass_sample_at;
+
     struct wlr_output_layout *output_layout;
     struct wlr_scene_output_layout *scene_layout;
     struct wlr_xdg_shell *xdg_shell;

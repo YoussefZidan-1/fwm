@@ -33,6 +33,7 @@
 #include "ui/cairo_overlay.h"
 #include "wallpaper.h"
 #include "cava.h"
+#include "ram.h"
 #include "group.h"
 #include "expo.h"
 #include "snapshot.h"
@@ -410,6 +411,77 @@ static double server_now_s(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+/* ── mass from memory use ────────────────────────────────────────────── */
+
+/* How often /proc is walked while mass = "ram". A window's memory footprint is
+ * not a thing that moves at 60Hz, and the walk costs a few ms — but a browser
+ * opening a heavy page should be visibly heavier before the user has finished
+ * looking at it, so this is seconds and not tens of seconds. */
+#define MASS_SAMPLE_S 1.5
+
+/* The window a memory footprint is measured against: mass = "ram" means the
+ * SIZE of a window says nothing about its weight, so the area term has to be
+ * replaced by a constant rather than kept alongside. A middling window, so a
+ * desktop switched into this mode does not suddenly weigh ten times what it
+ * did — only the hogs do. */
+#define MASS_REF_AREA (1280.0 * 720.0)
+
+/* Reset every body to the weight its area gives it. */
+static void server_mass_clear(FwmServer *server) {
+    for (int i = 0; i < server->physics.body_count; i++)
+        server->physics.bodies[i].mass_scale = 1.0;
+}
+
+void server_mass_sync(FwmServer *server) {
+    const PhysicsConfig *pc = &server->config.physics;
+    int mode = pc->mass_mode;
+
+    if (mode != PHYSICS_MASS_RAM) {
+        /* Only on the way out of the mode, not every tick: bodies carry a
+         * scale of 1.0 from birth, so a compositor that never turns this on has
+         * nothing to undo. */
+        if (server->mass_applied != mode) {
+            server_mass_clear(server);
+            server->mass_applied = mode;
+        }
+        return;
+    }
+
+    double now = server_now_s();
+    /* A mode that has only just been switched on samples immediately; after
+     * that it is on the timer. */
+    if (server->mass_applied == mode && now < server->mass_sample_at) return;
+    server->mass_applied = mode;
+    server->mass_sample_at = now + MASS_SAMPLE_S;
+
+    ram_snapshot();
+
+    double hi = pc->mass_ram_max > 1.0 ? pc->mass_ram_max : 1.0;
+    double ref = pc->mass_ram_ref > 1.0 ? pc->mass_ram_ref : 1.0;
+
+    FwmView *view;
+    wl_list_for_each(view, &server->views, link) {
+        PhysicsBody *b = physics_find_body(&server->physics, view->id);
+        if (!b) continue;
+
+        double mb = ram_tree_mb(view_pid(view));
+        /* Nothing to read — an X11 surface with no pid, a client on another
+         * machine, a process that vanished mid-walk. Weighing it nothing would
+         * fling it off the screen on the next collision; leave it as its area
+         * says instead. */
+        if (mb <= 0.0) { b->mass_scale = 1.0; continue; }
+
+        double area = (double)b->width * (double)b->height;
+        if (area < 1.0) area = 1.0;
+        /* Area out, memory in: what a "size" window of MASS_REF_AREA using
+         * `ref` MB would weigh, scaled by how far past that this one is. */
+        double scale = (MASS_REF_AREA / area) * (mb / ref);
+        if (scale > hi)       scale = hi;
+        if (scale < 1.0 / hi) scale = 1.0 / hi;
+        b->mass_scale = scale;
+    }
 }
 
 void server_cava_sync(FwmServer *server) {
@@ -923,6 +995,10 @@ static int physics_tick_cb(void *data) {
      * twice as fast on a slow frame. */
     server_cava_sync(server);
     if (server->cava) cava_tick(server->cava, &server->config.cava, elapsed);
+
+    /* What every window weighs, when that is decided by something outside the
+     * simulation. On its own timer inside, so calling it every tick is cheap. */
+    server_mass_sync(server);
 
     /* The desktop strip shows still pictures of every desktop. Letting the
      * simulation run behind them would mean the windows you are looking at have

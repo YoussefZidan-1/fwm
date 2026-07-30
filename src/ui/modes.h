@@ -37,6 +37,7 @@ enum {
     MODE_ICON_TILING = 0,
     MODE_ICON_FLOATING,
     MODE_ICON_GRAVITY,
+    MODE_ICON_MASS,
     MODE_ICON_CAVA,
     MODE_ICON_RING,
     MODE_ICON_COUNT,
@@ -53,6 +54,7 @@ typedef struct ModesState {
     int tiling;    /* active desktop is DESKTOP_MODE_TILING */
     int floating;  /* active desktop is DESKTOP_MODE_FLOATING */
     int gravity;   /* physics.gravity_scale > 0 */
+    int mass;      /* PHYSICS_MASS_*: what decides how heavy a window is */
     int cava;      /* CAVA_MODE_* */
     int ring;      /* camera.wrap: the desktops are a ring */
     double opacity;
@@ -69,12 +71,15 @@ typedef struct ModesState {
 #define MODES_MENU_ANIM_MS 170.0
 #define MODES_MENU_RISE_PX  14.0
 
-/* Rows of the menu, in draw order. */
+/* Rows of the menu, in draw order. Mass sits under Gravity because the two are
+ * the same subject — what the simulation does to a window and what the window
+ * weighs while it does it. */
 enum {
     MODES_ROW_NONE = -1,
     MODES_ROW_TILING = 0,
     MODES_ROW_FLOATING,
     MODES_ROW_GRAVITY,
+    MODES_ROW_MASS,
     MODES_ROW_CAVA,
     MODES_ROW_RING,
     MODES_ROW_COUNT,
@@ -89,6 +94,18 @@ enum {
     MODES_CAVA_PHYSICAL,
     MODES_CAVA_SEGS,
 };
+
+/* Mass's two positions, in the same order as PHYSICS_MASS_* — the row is a
+ * choice between two ways of being on, never an off, which is why it is a
+ * segmented control and not a switch. */
+enum {
+    MODES_MASS_SIZE = 0,
+    MODES_MASS_RAM,
+    MODES_MASS_SEGS,
+};
+
+/* Segments in row `row`, or 0 for the rows that carry a switch instead. */
+int modes_row_segs(int row);
 
 /* Open the menu under the pill.
  *
@@ -120,9 +137,9 @@ bool modes_menu_tick(struct wlr_scene_buffer *buf, const ModesState *st, double 
 bool modes_menu_animating(void);
 
 /* Hit-test the menu, in MENU-BUFFER-LOCAL coordinates. Returns a MODES_ROW_*,
- * or MODES_ROW_NONE outside any row. For MODES_ROW_CAVA, *seg receives the
- * MODES_CAVA_* segment under the point (-1 if the point is on the row but not
- * on the segmented control). *seg is untouched for every other row. */
+ * or MODES_ROW_NONE outside any row. For a row with a segmented control (see
+ * modes_row_segs) *seg receives the segment under the point, or -1 if the point
+ * is on the row but not on the control. *seg is untouched for switch rows. */
 int modes_menu_hit(double x, double y, int *seg);
 
 /* Size of the menu, so the caller can tell whether a click landed inside it at

@@ -15,6 +15,7 @@
 #ifndef FWM_VIEW_H
 #define FWM_VIEW_H
 
+#include <sys/types.h>
 #include <wayland-server-core.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_scene.h>
@@ -208,6 +209,9 @@ void view_unmap(FwmView *view);
 struct wlr_surface *view_surface(FwmView *view);
 const char *view_title(FwmView *view);
 const char *view_app_id(FwmView *view);
+/* The client's process, for anything that has to look the application up in
+ * /proc (session restore, mass-from-RAM). 0 when it cannot be determined. */
+pid_t view_pid(FwmView *view);
 void view_set_size(FwmView *view, int width, int height);
 void view_send_close(FwmView *view);
 void view_set_activated(FwmView *view, bool activated);

@@ -13,9 +13,9 @@
  */
 
 /* Config and persisted state: where the config and state files live, applying
- * a loaded config to a running compositor, live reload, and the wallpaper the
- * picker remembers without ever rewriting the user's config. Split out of
- * server.c; see server_internal.h. */
+ * a loaded config to a running compositor, live reload, and the choices the UI
+ * remembers (the picked wallpaper, the modes menu) without ever rewriting the
+ * user's config. Split out of server.c; see server_internal.h. */
 #include "server.h"
 #include "view.h"
 #include "physics.h"
@@ -93,34 +93,38 @@ void server_close_errors_panel(FwmServer *server) {
     }
 }
 
-/* ~/.local/state/fwm/wallpaper — the picker's choice, kept out of config.toml
- * so the user's file (comments, formatting) is never rewritten by us. */
-static void server_state_path(char *buf, size_t cap) {
+/* ~/.local/state/fwm/<name> — choices made through the UI, kept out of
+ * config.toml so the user's file (comments, formatting) is never rewritten by
+ * us. `wallpaper` is the picker's image; `modes` is what the modes menu was
+ * last left set to. */
+static void server_state_path(char *buf, size_t cap, const char *name) {
     const char *state = getenv("XDG_STATE_HOME");
     const char *home = getenv("HOME");
-    if (state && state[0]) snprintf(buf, cap, "%s/fwm/wallpaper", state);
-    else if (home)         snprintf(buf, cap, "%s/.local/state/fwm/wallpaper", home);
-    else                   snprintf(buf, cap, ".fwm-wallpaper");
+    if (state && state[0]) snprintf(buf, cap, "%s/fwm/%s", state, name);
+    else if (home)         snprintf(buf, cap, "%s/.local/state/fwm/%s", home, name);
+    else                   snprintf(buf, cap, ".fwm-%s", name);
+}
+
+/* mkdir -p of a file's parent, one component at a time. */
+static void server_state_mkdir_parents(const char *file) {
+    char dir[512];
+    snprintf(dir, sizeof(dir), "%s", file);
+    char *slash = strrchr(dir, '/');
+    if (!slash) return;
+    *slash = '\0';
+    for (char *p = dir + 1; *p; p++) {
+        if (*p != '/') continue;
+        *p = '\0';
+        mkdir(dir, 0755);
+        *p = '/';
+    }
+    mkdir(dir, 0755);
 }
 
 static void server_state_save_wallpaper(const char *path) {
     char sp[512];
-    server_state_path(sp, sizeof(sp));
-
-    /* mkdir -p of the parent, one component at a time. */
-    char dir[512];
-    snprintf(dir, sizeof(dir), "%s", sp);
-    char *slash = strrchr(dir, '/');
-    if (slash) {
-        *slash = '\0';
-        for (char *p = dir + 1; *p; p++) {
-            if (*p != '/') continue;
-            *p = '\0';
-            mkdir(dir, 0755);
-            *p = '/';
-        }
-        mkdir(dir, 0755);
-    }
+    server_state_path(sp, sizeof(sp), "wallpaper");
+    server_state_mkdir_parents(sp);
 
     FILE *f = fopen(sp, "w");
     if (!f) {
@@ -131,11 +135,72 @@ static void server_state_save_wallpaper(const char *path) {
     fclose(f);
 }
 
+/* ── remembered modes ────────────────────────────────────────────────────
+ *
+ * A setting flipped in the modes menu has to survive a restart, or the menu is
+ * a toy: nobody wants to re-pick "windows weigh what they eat" every login.
+ *
+ * Written as `key = value` lines rather than as TOML fragments the config
+ * loader also reads, deliberately: this file is OURS to rewrite whenever the
+ * user clicks something, and the moment a config parser touches it somebody's
+ * hand-written config.toml is one bug away from being reformatted. Unknown
+ * keys are skipped, so a file written by a newer fwm never stops an older one
+ * from starting. */
+void server_state_save_modes(FwmServer *server) {
+    char sp[512];
+    server_state_path(sp, sizeof(sp), "modes");
+    server_state_mkdir_parents(sp);
+
+    FILE *f = fopen(sp, "w");
+    if (!f) {
+        wlr_log(WLR_ERROR, "cannot save mode choices to %s", sp);
+        return;
+    }
+    fprintf(f, "mass = %s\n",
+            server->config.physics.mass_mode == PHYSICS_MASS_RAM ? "ram" : "size");
+    fclose(f);
+}
+
+/* Apply the remembered modes over the loaded config. Called after every config
+ * load, so a reload keeps what the menu was set to rather than snapping back —
+ * the same contract server_state_apply_wallpaper has. The remembered choice
+ * wins over the file because it is the more recent of the two: it exists only
+ * because the user clicked it. Deleting the state file goes back to the
+ * config. */
+void server_state_apply_modes(FwmServer *server) {
+    char sp[512];
+    server_state_path(sp, sizeof(sp), "modes");
+    FILE *f = fopen(sp, "r");
+    if (!f) return;
+
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = '\0';
+
+        /* Trim the spaces either side of the '='. */
+        char *key = line;
+        while (*key == ' ' || *key == '\t') key++;
+        for (char *e = key + strlen(key); e > key && (e[-1] == ' ' || e[-1] == '\t'); e--)
+            e[-1] = '\0';
+        char *val = eq + 1;
+        while (*val == ' ' || *val == '\t') val++;
+
+        if (strcmp(key, "mass") == 0) {
+            if      (strcmp(val, "ram")  == 0) server->config.physics.mass_mode = PHYSICS_MASS_RAM;
+            else if (strcmp(val, "size") == 0) server->config.physics.mass_mode = PHYSICS_MASS_SIZE;
+        }
+    }
+    fclose(f);
+}
+
 /* Apply the remembered wallpaper over the configured one. Called after every
  * config load, so a reload keeps the picked image rather than snapping back. */
 void server_state_apply_wallpaper(FwmServer *server) {
     char sp[512];
-    server_state_path(sp, sizeof(sp));
+    server_state_path(sp, sizeof(sp), "wallpaper");
     FILE *f = fopen(sp, "r");
     if (!f) return;
 
@@ -360,6 +425,7 @@ void server_reload_config(FwmServer *server) {
     config_free(&server->config);
     config_load(&server->config, path);
     server_state_apply_wallpaper(server);
+    server_state_apply_modes(server);
 
     /* Rereading the file also discards any `fwmctl set` overrides — the file
      * is the source of truth, and this is the documented way back to it. */
