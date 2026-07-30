@@ -38,6 +38,7 @@
 #include "ui/cairo_overlay.h"
 #include "wallpaper.h"
 #include "cava.h"
+#include "sound.h"
 #include "server_internal.h"
 
 #include <stdlib.h>
@@ -359,6 +360,10 @@ void server_destroy(FwmServer *server) {
      * left pointing at freed levels. */
     if (server->cava) cava_destroy(server->cava);
     server->cava = NULL;
+    /* Told to stop and let go of, never waited for — the mixer may be parked in
+     * a blocking write, and this is the teardown path. */
+    if (server->sound) sound_destroy(server->sound);
+    server->sound = NULL;
     launcher_destroy(server->launcher);
     server->launcher = NULL;
     expo_destroy(server);

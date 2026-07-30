@@ -67,6 +67,9 @@ void server_video_sync(FwmServer *server);
  * leave it be. Called from the tick, so `fwmctl set cava.mode` and a config
  * reload both land through the same path. */
 void server_cava_sync(FwmServer *server);
+/* Bring the collision mixer in line with [sound]: start it, stop it, or just
+ * push a new volume at it. Called from the tick, like the cava sync. */
+void server_sound_sync(FwmServer *server);
 /* Bring what every window weighs in line with [physics] mass. Does nothing at
  * all while mass = "size" (a body's area already decides), and walks /proc on a
  * timer of its own while mass = "ram" — so the tick can call it unconditionally.

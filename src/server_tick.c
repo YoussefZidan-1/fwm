@@ -33,6 +33,7 @@
 #include "ui/cairo_overlay.h"
 #include "wallpaper.h"
 #include "cava.h"
+#include "sound.h"
 #include "ram.h"
 #include "group.h"
 #include "expo.h"
@@ -116,10 +117,51 @@ static void server_squash_from_impact(FwmServer *server, uint32_t id,
     view_start_squash(v, nx, ny, strength * SQUASH_MAX_AMOUNT * sqrt(f));
 }
 
+/* How heavy a window has to be for the knock to sound its natural pitch — the
+ * same middling window MASS_REF_AREA describes, at the default density. */
+#define SOUND_REF_MASS 46.0
+
+/* Play one impact. The two numbers are the whole of the sound design: how hard
+ * it was hit, and how big the thing that was hit is. */
+static void server_sound_from_impact(FwmServer *server, const PhysicsImpact *im) {
+    const SoundConfig *sc = &server->config.sound;
+
+    double span = sc->max_speed - sc->min_speed;
+    if (span <= 0.0) return;
+    double gain = (im->speed - sc->min_speed) / span;
+    if (gain <= 0.0) return;      /* a nudge, not a knock */
+    if (gain > 1.0) gain = 1.0;
+
+    /* Heavier windows knock deeper: the same sample played slower IS a bigger
+     * object, which is why this is a pitch and not a second file. Taken from the
+     * heavier of the two bodies, since that is the one whose voice you would
+     * hear; a wall (id 0) has no body and simply does not vote. */
+    double mass = 0.0;
+    PhysicsBody *a = im->id_a ? physics_find_body(&server->physics, im->id_a) : NULL;
+    PhysicsBody *b = im->id_b ? physics_find_body(&server->physics, im->id_b) : NULL;
+    if (a && a->mass > mass) mass = a->mass;
+    if (b && b->mass > mass) mass = b->mass;
+
+    double pitch = 1.0;
+    if (mass > 1.0) pitch = pow(SOUND_REF_MASS / mass, 0.15);
+
+    /* A few percent of scatter, taken from where the hit happened rather than
+     * from a random number: two windows resting against each other can bump
+     * repeatedly, and identical clicks in a row sound like a stuck machine
+     * rather than like objects. */
+    int jig = ((int)(fabs(im->x) + fabs(im->y) * 7.0)) % 21 - 10;
+    pitch *= 1.0 + 0.04 * (jig / 10.0);
+
+    sound_play(server->sound, gain, pitch);
+}
+
 static void server_consume_impacts(FwmServer *server) {
     double shake = server->config.effects.camera_shake;
     double squash = server->config.effects.squash;
-    if (shake <= 0.0 && squash <= 0.0) { server->physics.impact_count = 0; return; }
+    if (shake <= 0.0 && squash <= 0.0 && !server->sound) {
+        server->physics.impact_count = 0;
+        return;
+    }
 
     /* An impact shakes the monitor SHOWING the desktop it happened on — and
      * only that one. A window landing on desktop 3 must not jolt the screen
@@ -142,6 +184,11 @@ static void server_consume_impacts(FwmServer *server) {
          * away from it for B — flip it for B. */
         server_squash_from_impact(server, im->id_a,  im->nx,  im->ny, im->speed);
         server_squash_from_impact(server, im->id_b, -im->nx, -im->ny, im->speed);
+
+        /* Only for a desktop somebody is looking at, like the shake above: a
+         * window landing on desktop 7 while you work on desktop 0 is not an
+         * event you asked to hear. */
+        if (server->sound) server_sound_from_impact(server, im);
 
         if (shake <= 0.0) continue;
         double f = im->speed / SHAKE_FULL_SPEED;
@@ -482,6 +529,50 @@ void server_mass_sync(FwmServer *server) {
         if (scale < 1.0 / hi) scale = 1.0 / hi;
         b->mass_scale = scale;
     }
+}
+
+/* ── collision sound ─────────────────────────────────────────────────── */
+
+/* Bring the mixer in line with [sound] collisions: start it, stop it, or leave
+ * it be. Cheap and idempotent, so the tick calls it unconditionally and the
+ * menu, `fwmctl set` and a reload all land here.
+ *
+ * A changed sample path is a rebuild rather than a live update — the sample is
+ * loaded once and read by the mixer without a lock — so server_reload_config
+ * drops the mixer and the next call here starts it again with the new file. */
+void server_sound_sync(FwmServer *server) {
+    int want = server->config.sound.collisions ? 1 : 0;
+
+    if (want == server->sound_applied) {
+        /* Volume is the one knob that can change under a running mixer. */
+        if (server->sound) sound_set_config(server->sound, &server->config.sound);
+        return;
+    }
+    server->sound_applied = want;
+
+    if (!want) {
+        if (server->sound) {
+            sound_destroy(server->sound);
+            server->sound = NULL;
+        }
+        return;
+    }
+
+    if (!sound_supported()) {
+        /* Once, not once per toggle: the build cannot grow a backend while it
+         * runs, and the switch still reads as on so the user can see what they
+         * asked for. */
+        static int told = 0;
+        if (!told) {
+            wlr_log(WLR_INFO, "sound: built without libpulse-simple — collisions stay silent");
+            told = 1;
+        }
+        return;
+    }
+
+    server->sound = sound_create(&server->config.sound);
+    if (!server->sound)
+        wlr_log(WLR_ERROR, "sound: could not start the mixer thread");
 }
 
 void server_cava_sync(FwmServer *server) {
@@ -995,6 +1086,10 @@ static int physics_tick_cb(void *data) {
      * twice as fast on a slow frame. */
     server_cava_sync(server);
     if (server->cava) cava_tick(server->cava, &server->config.cava, elapsed);
+
+    /* The collision mixer: started, stopped, or left alone. No device is open
+     * unless something is actually being played. */
+    server_sound_sync(server);
 
     /* What every window weighs, when that is decided by something outside the
      * simulation. On its own timer inside, so calling it every tick is cheap. */

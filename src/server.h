@@ -251,6 +251,13 @@ typedef struct FwmServer {
     double cava_retry_at;
     int cava_reported;   /* the "no sound server" line has been logged once */
 
+    /* The knock windows make when they collide ([sound] collisions). NULL
+     * whenever the feature is off or the mixer thread could not be started, and
+     * every use site must expect that. `sound_applied` is the setting the sync
+     * last acted on, so a toggle is noticed without anyone telling it. */
+    struct FwmSound *sound;
+    int sound_applied;
+
     /* [physics] mass = "ram": the mode server_mass_sync last acted on, and when
      * it may next walk /proc. Zero-initialised to PHYSICS_MASS_SIZE, which is
      * both the default and a state with nothing to do — so a compositor nobody

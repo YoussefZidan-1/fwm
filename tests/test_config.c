@@ -511,6 +511,69 @@ static void test_mass_mode(void) {
     drop_config();
 }
 
+static void test_sound(void) {
+    CASE("[sound] is off with sane defaults until asked for");
+    const char *p = write_config("[binds]\n\"super+q\" = \"killclient\"\n");
+    FwmConfig cfg;
+    config_load(&cfg, p);
+    CHECK_INT(cfg.sound.collisions, 0);
+    CHECK_STR(cfg.sound.path, "");
+    CHECK_DBL(cfg.sound.volume, 0.6, 1e-9);
+    CHECK(cfg.sound.max_speed > cfg.sound.min_speed);
+    config_free(&cfg);
+    drop_config();
+
+    CASE("[sound] values are read");
+    p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[sound]\n"
+        "collisions = true\n"
+        "volume     = 0.25\n"
+        "min_speed  = 150.0\n"
+        "max_speed  = 900.0\n");
+    config_load(&cfg, p);
+    CHECK_INT(cfg.error_count, 0);
+    CHECK_INT(cfg.sound.collisions, 1);
+    CHECK_DBL(cfg.sound.volume, 0.25, 1e-9);
+    CHECK_DBL(cfg.sound.min_speed, 150.0, 1e-9);
+    CHECK_DBL(cfg.sound.max_speed, 900.0, 1e-9);
+    config_free(&cfg);
+    drop_config();
+
+    /* A path that is not there is the likeliest thing to get wrong, and it must
+     * not leave the feature silently playing the click while the user believes
+     * their own file is being used. */
+    CASE("an unreadable sample is reported and dropped");
+    p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[sound]\ncollisions = true\npath = \"/nonexistent/fwm/knock.wav\"\n");
+    config_load(&cfg, p);
+    CHECK_INT(cfg.error_count, 1);
+    CHECK_STR(cfg.sound.path, "");     /* fall back to the built-in click */
+    CHECK_INT(cfg.sound.collisions, 1);  /* ... but the feature stays on */
+    config_free(&cfg);
+    drop_config();
+
+    CASE("an inverted speed range is reported and repaired");
+    p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[sound]\nmin_speed = 800.0\nmax_speed = 100.0\n");
+    config_load(&cfg, p);
+    CHECK_INT(cfg.error_count, 1);
+    CHECK(cfg.sound.max_speed > cfg.sound.min_speed);
+    config_free(&cfg);
+    drop_config();
+
+    CASE("volume is clamped");
+    p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[sound]\nvolume = 4.0\n");
+    config_load(&cfg, p);
+    CHECK_DBL(cfg.sound.volume, 1.0, 1e-9);
+    config_free(&cfg);
+    drop_config();
+}
+
 static void test_mouse(void) {
     CASE("[mouse] defaults reproduce the old hard-coded drags");
     const char *p = write_config("[binds]\n\"super+q\" = \"killclient\"\n");
@@ -782,6 +845,7 @@ int main(void) {
     test_rule_material();
     test_physics_profiles();
     test_mass_mode();
+    test_sound();
     test_mouse();
     test_modes();
     test_option_table();

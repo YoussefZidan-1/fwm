@@ -455,6 +455,35 @@ typedef struct {
     double min_hz, max_hz; /* band edges of the log-spaced spectrum */
 } CavaConfig;
 
+/* ── collision sound ─────────────────────────────────────────────────── */
+
+/*
+ * Windows make a noise when they hit something (issue #6):
+ *
+ *   [sound]
+ *   collisions = true
+ *   path       = "~/sounds/knock.wav"   # empty = the built-in click
+ *   volume     = 0.6
+ *   min_speed  = 200.0                  # px/s below which a hit is silent
+ *   max_speed  = 2000.0                 # ... and at which it is at full volume
+ *
+ * Off by default, like [cava] and for the same reason: opening a playback stream
+ * is not something a compositor should do because it was installed. Also
+ * switchable from the modes menu, which remembers the choice.
+ *
+ * `path` is a WAV file (16-bit PCM or 32-bit float, mono or stereo). Anything
+ * else — a missing file, an mp3, a header we cannot read — falls back to the
+ * built-in click and reports the problem, because a config typo must not leave
+ * the feature silently doing nothing.
+ */
+typedef struct {
+    int    collisions;  /* the feature's on/off, the only thing the menu flips */
+    char   path[512];   /* WAV to play; "" = the built-in click */
+    double volume;      /* 0..1 master gain */
+    double min_speed;   /* px/s: quieter than this is not worth hearing */
+    double max_speed;   /* px/s: full volume at and above this */
+} SoundConfig;
+
 /* ── wallpaper / parallax ────────────────────────────────────────────── */
 
 /*
@@ -662,6 +691,7 @@ typedef struct {
     MouseConfig     mouse;
     GesturesConfig  gestures;
     CavaConfig      cava;
+    SoundConfig     sound;
     KeyBind        *keys;
     int             key_count;
     ConfigMode      modes[CONFIG_MAX_MODES];

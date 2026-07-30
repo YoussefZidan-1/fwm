@@ -30,7 +30,7 @@
  *
  * Icons are drawn as cairo paths rather than set as text. A glyph font is not
  * something a compositor can assume — the tray already gambles on ⚠ and ⌨ —
- * and four shapes are less code than the fallback logic would be.
+ * and a handful of shapes is less code than the fallback logic would be.
  */
 
 enum {
@@ -38,6 +38,7 @@ enum {
     MODE_ICON_FLOATING,
     MODE_ICON_GRAVITY,
     MODE_ICON_MASS,
+    MODE_ICON_SOUND,
     MODE_ICON_CAVA,
     MODE_ICON_RING,
     MODE_ICON_COUNT,
@@ -55,6 +56,7 @@ typedef struct ModesState {
     int floating;  /* active desktop is DESKTOP_MODE_FLOATING */
     int gravity;   /* physics.gravity_scale > 0 */
     int mass;      /* PHYSICS_MASS_*: what decides how heavy a window is */
+    int sound;     /* sound.collisions: windows knock when they hit something */
     int cava;      /* CAVA_MODE_* */
     int ring;      /* camera.wrap: the desktops are a ring */
     double opacity;
@@ -71,15 +73,16 @@ typedef struct ModesState {
 #define MODES_MENU_ANIM_MS 170.0
 #define MODES_MENU_RISE_PX  14.0
 
-/* Rows of the menu, in draw order. Mass sits under Gravity because the two are
- * the same subject — what the simulation does to a window and what the window
- * weighs while it does it. */
+/* Rows of the menu, in draw order. Mass and Sound sit under Gravity because all
+ * three are the same subject — what the simulation does to a window, what the
+ * window weighs while it does it, and what that sounds like. */
 enum {
     MODES_ROW_NONE = -1,
     MODES_ROW_TILING = 0,
     MODES_ROW_FLOATING,
     MODES_ROW_GRAVITY,
     MODES_ROW_MASS,
+    MODES_ROW_SOUND,
     MODES_ROW_CAVA,
     MODES_ROW_RING,
     MODES_ROW_COUNT,

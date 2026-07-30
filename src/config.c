@@ -664,6 +664,56 @@ static void load_wallpaper_picker(toml_table_t *root, FwmConfig *cfg) {
     if (f.ok) cfg->wallpaper_picker_fps = f.u.d;
 }
 
+/* ── sound section ───────────────────────────────────────────────────── */
+
+static void load_sound(toml_table_t *root, FwmConfig *cfg) {
+    SoundConfig *s = &cfg->sound;
+
+    /* Off by default: a compositor that starts making noises because it was
+     * installed is a compositor people uninstall. */
+    s->collisions = 0;
+    s->path[0]    = '\0';
+    s->volume     = 0.6;
+    s->min_speed  = 200.0;
+    s->max_speed  = 2000.0;
+
+    if (!root) return;
+    toml_table_t *tbl = toml_table_in(root, "sound");
+    if (!tbl) return;
+
+    toml_datum_t b = toml_bool_in(tbl, "collisions");
+    if (b.ok) s->collisions = b.u.b ? 1 : 0;
+
+    toml_datum_t d = toml_string_in(tbl, "path");
+    if (d.ok) {
+        expand_tilde(d.u.s, s->path, sizeof(s->path));
+        free(d.u.s);
+        /* Reported here rather than at play time: the first collision is a bad
+         * moment to find out, and the built-in click sounds enough like a
+         * working feature to hide the typo completely. */
+        if (s->path[0] && access(s->path, R_OK) != 0) {
+            config_report_error(cfg, "[sound] path: cannot read \"%s\" — using the built-in click",
+                                s->path);
+            s->path[0] = '\0';
+        }
+    }
+
+    LOAD_DOUBLE(tbl, "volume",    s->volume);
+    LOAD_DOUBLE(tbl, "min_speed", s->min_speed);
+    LOAD_DOUBLE(tbl, "max_speed", s->max_speed);
+
+    if (s->volume < 0.0) s->volume = 0.0;
+    if (s->volume > 1.0) s->volume = 1.0;
+    if (s->min_speed < 0.0) s->min_speed = 0.0;
+    /* Equal or inverted ends divide by zero (or by a negative) when a hit is
+     * mapped onto them, and every collision would come out at one volume. */
+    if (s->max_speed <= s->min_speed + 1.0) {
+        config_report_error(cfg, "[sound] max_speed must be above min_speed — using %.0f..%.0f",
+                            s->min_speed, s->min_speed + 1800.0);
+        s->max_speed = s->min_speed + 1800.0;
+    }
+}
+
 static void load_wallpaper(toml_table_t *root, FwmConfig *cfg) {
     cfg->wallpapers      = NULL;
     cfg->wallpaper_count = 0;
@@ -1092,6 +1142,7 @@ void config_load(FwmConfig *cfg, const char *path) {
     load_session(NULL, &cfg->session, cfg);
     load_gestures(NULL, cfg);
     load_cava(NULL, cfg);
+    load_sound(NULL, cfg);
     load_mouse(NULL, cfg);   /* the built-in drag verbs, for every early-out below */
 
     FILE *f = fopen(path, "r");
@@ -1130,6 +1181,7 @@ void config_load(FwmConfig *cfg, const char *path) {
     load_mouse(root, cfg);
     load_gestures(root, cfg);
     load_cava(root, cfg);
+    load_sound(root, cfg);
     load_wallpaper(root, cfg);
     load_wallpaper_picker(root, cfg);
     load_rules(root, cfg);

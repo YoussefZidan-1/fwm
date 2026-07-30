@@ -50,6 +50,20 @@ tick_rate             = 60.0
 #gravity     = 300.0
 #desktops    = [7]
 
+# Windows knock when they hit each other, the floor or the walls. Off by
+# default — a compositor should not make noises because it was installed.
+# Also a switch in the modes menu (the tray pill), which remembers it.
+#
+# `path` is a WAV file (16-bit PCM or 32-bit float, mono or stereo); leave it
+# out for the built-in click. Volume follows how hard the hit was, between
+# min_speed (silent) and max_speed (full), and heavier windows knock deeper.
+#[sound]
+#collisions = true
+#path       = "~/sounds/knock.wav"
+#volume     = 0.6
+#min_speed  = 200.0    # px/s: a nudge below this is not worth hearing
+#max_speed  = 2000.0   # px/s: full volume at and above this
+
 # Window decorations: focus border colors ("#RRGGBB" or "#RRGGBBAA"),
 # border width (0 disables) and map fade-in duration (0 disables).
 [decor]

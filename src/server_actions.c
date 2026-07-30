@@ -681,6 +681,7 @@ void server_modes_state(FwmServer *server, ModesState *out) {
     out->floating = server->desktop_mode[d] == DESKTOP_MODE_FLOATING;
     out->gravity  = server->physics.gravity_scale > 0.0;
     out->mass     = server->config.physics.mass_mode;
+    out->sound    = server->config.sound.collisions;
     out->cava     = server->config.cava.mode;
     out->ring     = server->config.camera.wrap;
     out->opacity  = server->config.decor.tray_opacity;
@@ -783,6 +784,13 @@ int server_modes_menu_click(FwmServer *server, int row, int seg) {
         }
         break;
     }
+    case MODES_ROW_SOUND:
+        /* server_sound_sync starts or stops the mixer on the next tick; nothing
+         * here has to know that a thread and an audio device are involved. */
+        server->config.sound.collisions = !server->config.sound.collisions;
+        server_state_save_modes(server);
+        changed = 1;
+        break;
     case MODES_ROW_RING:
         server_dispatch_action(server, "toggle_wrap");
         changed = 1;

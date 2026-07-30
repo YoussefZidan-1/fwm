@@ -79,6 +79,14 @@ static const ConfigOption config_option_table[] = {
     { "cava.smoothing",                 CFG_OPT_DOUBLE, offsetof(FwmConfig, cava.smoothing),                  0.0,    0.99,    "bar fall inertia; 0 = instant" },
     { "cava.push",                      CFG_OPT_DOUBLE, offsetof(FwmConfig, cava.push),                       0.0,     4.0,    "physical bar height vs. drawn" },
     { "cava.opacity",                   CFG_OPT_DOUBLE, offsetof(FwmConfig, cava.opacity),                    0.0,     1.0,    "drawn bar alpha" },
+
+    /* `path` is absent for the same reason cava.bars is: a new sample means
+     * reloading it, which is a config-reload job. Everything else here is felt
+     * on the next collision. */
+    { "sound.collisions",               CFG_OPT_INT,    offsetof(FwmConfig, sound.collisions),                0.0,     1.0,    "1 = windows knock when they collide" },
+    { "sound.volume",                    CFG_OPT_DOUBLE, offsetof(FwmConfig, sound.volume),                   0.0,     1.0,    "collision sound volume" },
+    { "sound.min_speed",                CFG_OPT_DOUBLE, offsetof(FwmConfig, sound.min_speed),                 0.0, 100000.0,   "px/s below which a hit is silent" },
+    { "sound.max_speed",                CFG_OPT_DOUBLE, offsetof(FwmConfig, sound.max_speed),                 1.0, 100000.0,   "px/s at which a hit is full volume" },
 };
 
 const ConfigOption *config_options(int *count) {

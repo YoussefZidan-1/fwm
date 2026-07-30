@@ -49,10 +49,15 @@ pkg_check_modules(GLESV2 REQUIRED glesv2)
 # Video wallpaper decode. ffmpeg 6 on Void is the split libav* set + headers in
 # ffmpeg6-devel; the runtime is libav*6. Software decode only, so no libva pin.
 pkg_check_modules(LIBAV REQUIRED libavformat libavcodec libavutil libswscale)
-# Loopback audio capture for the [cava] visualiser. OPTIONAL on purpose: a
-# compositor must not refuse to build because the machine has no sound stack,
-# and src/audio.c compiles to working no-ops without it (the bars simply never
-# come up). On Void the headers are in pipewire-devel.
+# Audio: loopback capture for the [cava] visualiser, and playback for the
+# [sound] collision knock. OPTIONAL on purpose: a compositor must not refuse to
+# build because the machine has no sound stack, and src/audio.c and src/sound.c
+# compile to working no-ops without it (the bars never come up, the collisions
+# stay silent). On Void the headers are in pipewire-devel.
+#
+# Playback needs libpulse-simple specifically — PipeWire boxes serve that API
+# through pipewire-pulse, so one blocking write on one thread reaches both
+# stacks (src/sound.c explains why capture cannot do the same).
 #
 # BOTH are optional and BOTH are worth having: the visualiser picks at runtime
 # by probing for a socket, because which sound server a machine actually runs is
@@ -73,6 +78,9 @@ else()
     endif()
     message(STATUS "[cava] capture backends: ${CAVA_BACKENDS}")
 endif()
+if(NOT PULSE_FOUND)
+    message(STATUS "no libpulse-simple — [sound] collision audio disabled")
+endif()
 find_package(box2d REQUIRED)
 # The video decode runs on its own pthread; the compositor stays single-threaded.
 set(THREADS_PREFER_PTHREAD_FLAG ON)
@@ -92,6 +100,8 @@ set(SOURCES
     src/video.c
     src/audio.c
     src/cava.c
+    src/sound.c
+    src/wav.c
     src/ram.c
     src/view.c
     src/view_effects.c
@@ -278,6 +288,13 @@ if(FWM_TESTS)
     target_include_directories(test_ram PRIVATE src tests)
     target_link_libraries(test_ram PRIVATE m)
 
+    # [sound] path points wav.c at a file fwm did not write, so the parser is
+    # fed truncated and lying headers here. No wlroots and no audio backend:
+    # that is the whole reason the parse lives in its own module.
+    add_executable(test_wav tests/test_wav.c src/wav.c)
+    target_include_directories(test_wav PRIVATE src tests)
+    target_link_libraries(test_wav PRIVATE m)
+
     add_test(NAME bsp        COMMAND test_bsp)
     add_test(NAME config     COMMAND test_config)
     add_test(NAME input      COMMAND test_input)
@@ -286,4 +303,5 @@ if(FWM_TESTS)
     add_test(NAME wobble     COMMAND test_wobble)
     add_test(NAME gestures   COMMAND test_gestures)
     add_test(NAME ram        COMMAND test_ram)
+    add_test(NAME wav        COMMAND test_wav)
 endif()

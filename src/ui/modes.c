@@ -26,8 +26,8 @@
 
 /* ── icons ───────────────────────────────────────────────────────────── */
 
-/* All four are drawn inside a unit box and scaled, so the same shapes serve the
- * 14px pill and the 16px menu rows without a second set of numbers. */
+/* All of them are drawn inside a unit box and scaled, so the same shapes serve
+ * the 14px pill and the 16px menu rows without a second set of numbers. */
 
 static void icon_tiling(cairo_t *cr, double x, double y, double s) {
     /* Two columns, the right one split — the BSP split every tiling screenshot
@@ -91,6 +91,32 @@ static void icon_mass(cairo_t *cr, double x, double y, double s) {
     cairo_fill(cr);
 }
 
+/* A speaker: cone plus two arcs of sound leaving it. The arcs are what make it
+ * mean "audible" rather than "audio device" — a bare cone at 16px is a
+ * trapezoid, and there is already a trapezoid two rows up. */
+static void icon_sound(cairo_t *cr, double x, double y, double s) {
+    double cy = y + s / 2.0;
+    double lw = fmax(1.0, s * 0.10);
+
+    /* Cone: a small back box and the flare in front of it, as one filled path. */
+    cairo_move_to(cr, x,             y + s * 0.34);
+    cairo_line_to(cr, x + s * 0.16,  y + s * 0.34);
+    cairo_line_to(cr, x + s * 0.42,  y + s * 0.12);
+    cairo_line_to(cr, x + s * 0.42,  y + s * 0.88);
+    cairo_line_to(cr, x + s * 0.16,  y + s * 0.66);
+    cairo_line_to(cr, x,             y + s * 0.66);
+    cairo_close_path(cr);
+    cairo_fill(cr);
+
+    cairo_set_line_width(cr, lw);
+    for (int i = 0; i < 2; i++) {
+        double r = s * (0.24 + 0.20 * i);
+        cairo_new_sub_path(cr);
+        cairo_arc(cr, x + s * 0.46, cy, r, -M_PI / 3.5, M_PI / 3.5);
+        cairo_stroke(cr);
+    }
+}
+
 static void icon_cava(cairo_t *cr, double x, double y, double s) {
     /* Four bars of different heights — the feature drawn as itself. */
     static const double h[4] = { 0.45, 1.0, 0.65, 0.85 };
@@ -131,6 +157,7 @@ void modes_icon(cairo_t *cr, int icon, double x, double y, double size) {
     case MODE_ICON_FLOATING: icon_floating(cr, x, y, size); break;
     case MODE_ICON_GRAVITY:  icon_gravity(cr, x, y, size);  break;
     case MODE_ICON_MASS:     icon_mass(cr, x, y, size);     break;
+    case MODE_ICON_SOUND:    icon_sound(cr, x, y, size);    break;
     case MODE_ICON_CAVA:     icon_cava(cr, x, y, size);     break;
     case MODE_ICON_RING:     icon_ring(cr, x, y, size);     break;
     default: break;
@@ -231,6 +258,7 @@ static void anim_reset(const ModesState *st) {
     g_anim.sw[MODES_ROW_TILING]   = st->tiling   ? 1.0 : 0.0;
     g_anim.sw[MODES_ROW_FLOATING] = st->floating ? 1.0 : 0.0;
     g_anim.sw[MODES_ROW_GRAVITY]  = st->gravity  ? 1.0 : 0.0;
+    g_anim.sw[MODES_ROW_SOUND]    = st->sound    ? 1.0 : 0.0;
     g_anim.open   = 0.0;
     g_anim.moving = 1;
     g_anim.live   = 1;
@@ -419,18 +447,18 @@ static void draw_menu(cairo_t *cr, int w, int h, void *user) {
     pango_font_description_free(desc);
 
     static const char *name[MODES_ROW_COUNT] = {
-        "Tiling", "Floating", "Gravity", "Mass", "Cava", "Ring",
+        "Tiling", "Floating", "Gravity", "Mass", "Sound", "Cava", "Ring",
     };
     static const int   icon[MODES_ROW_COUNT] = {
         MODE_ICON_TILING, MODE_ICON_FLOATING, MODE_ICON_GRAVITY, MODE_ICON_MASS,
-        MODE_ICON_CAVA, MODE_ICON_RING,
+        MODE_ICON_SOUND, MODE_ICON_CAVA, MODE_ICON_RING,
     };
     /* Lights the icon. Mass is never off, so what lights it is the position
      * that is doing something beyond the default — the same reading the cava
      * row gets from `cava != 0`. */
     const int on[MODES_ROW_COUNT] = {
         st->tiling, st->floating, st->gravity, st->mass == MODES_MASS_RAM,
-        st->cava != 0, st->ring,
+        st->sound, st->cava != 0, st->ring,
     };
     /* Segment labels, per row; NULL for the rows that carry a switch. */
     static const char *const cava_labels[MODES_CAVA_SEGS] = { "off", "visual", "physical" };
@@ -534,8 +562,9 @@ bool modes_menu_tick(struct wlr_scene_buffer *buf, const ModesState *st, double 
         st->tiling ? 1.0 : 0.0,
         st->floating ? 1.0 : 0.0,
         st->gravity ? 1.0 : 0.0,
-        0.0, /* mass */
-        0.0, /* cava */
+        0.0, /* mass: segmented, eased below */
+        st->sound ? 1.0 : 0.0,
+        0.0, /* cava: segmented, eased below */
         st->ring ? 1.0 : 0.0,
     };
 

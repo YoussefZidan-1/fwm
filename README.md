@@ -162,7 +162,7 @@ rate your hand was turning it.
 - **Rotated and bent windows** — a spinning window is drawn at any angle, not in quarter turns, and a dragged one is drawn through a deforming mesh. wlroots' scene graph is axis-aligned to its bones, so these two draw their own geometry on the renderer's GL context (`src/rotate.c`); everything else stays on the public API.
 - **Wallpaper-derived palette** — optionally tint the whole UI toward the wallpaper's dominant hue (`color_source = "wallpaper"`).
 - **Minimal tray** — flat chevron-ended islands: focused window + physics readout, desktop indicators, a modes pill, clock. No titlebars anywhere (server-side decorations).
-- **Modes pill** — four icons between the desktop indicators and the clock (tiling, floating, gravity, cava), lit when the mode is on. Click it for a menu of switches; two rows are segmented controls rather than switches, because they are not on-off things — cava (off / visual / physical) and mass (size / ram: what decides how heavy a window is, its size or how much memory the application is using). The mass choice is remembered in `~/.local/state/fwm/modes` and survives a restart. Fixed width, and dropped rather than squeezed on a screen too narrow to hold it — the clock grows with the locale's date and the desktop island is centred, so something has to give, and losing a pill that is also a keybind beats overlapping the clock.
+- **Modes pill** — four icons between the desktop indicators and the clock (tiling, floating, gravity, cava), lit when the mode is on. Click it for a menu of switches; two rows are segmented controls rather than switches, because they are not on-off things — cava (off / visual / physical) and mass (size / ram: what decides how heavy a window is, its size or how much memory the application is using). The mass and sound choices are remembered in `~/.local/state/fwm/modes` and survive a restart. Fixed width, and dropped rather than squeezed on a screen too narrow to hold it — the clock grows with the locale's date and the desktop island is centred, so something has to give, and losing a pill that is also a keybind beats overlapping the clock.
 - **Transparency** — client alpha (e.g. kitty `background_opacity`) is rendered as-is.
 - **Fake fullscreen** (`Super+D`) keeps the tray visible; **real fullscreen** (`Super+F`) hides it and covers the whole output.
 
@@ -198,6 +198,32 @@ probes for the socket and never starts a sound server of its own. That last part
 is deliberate: libpulse will happily autospawn a daemon for any client that asks,
 and a second sound server fighting the first one for the ALSA device costs you
 your audio, not just your bars.
+
+### Windows that knock
+
+Turn `[sound]` on and a collision makes a noise: the harder the hit, the louder
+it is, and the heavier the window, the deeper it sounds. Nothing plays while
+nothing is colliding — the audio device is opened on the first hit and handed
+back a few seconds after the last one.
+
+```toml
+[sound]
+collisions = true
+path       = "~/sounds/knock.wav"   # omit for the built-in click
+volume     = 0.6
+min_speed  = 200.0    # px/s: a nudge below this is silent
+max_speed  = 2000.0   # px/s: full volume at and above this
+```
+
+`path` takes a WAV (16-bit PCM or 32-bit float, mono or stereo); anything it
+cannot read is reported in the tray and the built-in click stands in, so a typo
+never leaves the feature silently doing nothing. There is no sample shipped on
+disk: the default click is synthesised — a short noise burst for the contact and
+a low decaying sine for the weight behind it.
+
+Also a switch in the modes menu, which remembers it across restarts. Playback
+needs libpulse-simple (PipeWire boxes serve that through pipewire-pulse); the
+same rule as the visualiser applies — fwm never starts a sound server of its own.
 
 ### Wobbly windows
 
@@ -255,12 +281,13 @@ Known gaps: output scale is applied to the monitor and to client surfaces, but f
 | gdk-pixbuf | `gdk-pixbuf2` |
 | Box2D 3.x | `box2d` |
 | ffmpeg (libav*) — video wallpaper | `ffmpeg` |
-| PipeWire and/or PulseAudio — *optional*, `[cava]` visualiser | `libpipewire`, `libpulse` |
+| PipeWire and/or PulseAudio — *optional*, `[cava]` visualiser and `[sound]` knocks | `libpipewire`, `libpulse` |
 | CMake + pkg-config | `cmake`, `pkgconf` |
 | Xwayland (runtime) | `xorg-xwayland` |
 
 The sound libraries are the only optional ones: build without them and
-everything else works, minus the audio visualiser. Build against **both** if you
+everything else works, minus the audio visualiser and the collision knocks
+(those need libpulse-simple specifically). Build against **both** if you
 can — which server a machine actually runs is not a build-time fact, and the
 visualiser probes for a socket at startup and uses whichever it finds. CMake
 prints the backends it compiled in.

@@ -26,6 +26,7 @@
 #include "foreign.h"
 #include "ipc.h"
 #include "session.h"
+#include "sound.h"
 #include <signal.h>
 #include "ui/tray.h"
 #include "ui/hints.h"
@@ -158,6 +159,7 @@ void server_state_save_modes(FwmServer *server) {
     }
     fprintf(f, "mass = %s\n",
             server->config.physics.mass_mode == PHYSICS_MASS_RAM ? "ram" : "size");
+    fprintf(f, "sound = %s\n", server->config.sound.collisions ? "on" : "off");
     fclose(f);
 }
 
@@ -191,6 +193,9 @@ void server_state_apply_modes(FwmServer *server) {
         if (strcmp(key, "mass") == 0) {
             if      (strcmp(val, "ram")  == 0) server->config.physics.mass_mode = PHYSICS_MASS_RAM;
             else if (strcmp(val, "size") == 0) server->config.physics.mass_mode = PHYSICS_MASS_SIZE;
+        } else if (strcmp(key, "sound") == 0) {
+            if      (strcmp(val, "on")  == 0) server->config.sound.collisions = 1;
+            else if (strcmp(val, "off") == 0) server->config.sound.collisions = 0;
         }
     }
     fclose(f);
@@ -426,6 +431,17 @@ void server_reload_config(FwmServer *server) {
     config_load(&server->config, path);
     server_state_apply_wallpaper(server);
     server_state_apply_modes(server);
+
+    /* The collision sample is loaded once and then read by the mixer thread
+     * without a lock, so a new [sound] path is a rebuild rather than an update.
+     * Dropping the mixer here is the whole of it: the next tick sees the
+     * feature on with nothing running and starts it again, with the new file.
+     * Cheap, because a mixer that is not playing holds no audio device. */
+    if (server->sound) {
+        sound_destroy(server->sound);
+        server->sound = NULL;
+    }
+    server->sound_applied = 0;
 
     /* Rereading the file also discards any `fwmctl set` overrides — the file
      * is the source of truth, and this is the documented way back to it. */
