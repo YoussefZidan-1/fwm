@@ -511,6 +511,57 @@ static void test_mass_mode(void) {
     drop_config();
 }
 
+static void test_every_dispatchable_action_binds(void) {
+    /* action_is_known is the gate a bind has to pass at load time, and it is a
+     * hand-kept list next to a hand-kept switch in server_actions.c. When the two
+     * drift, the symptom is a bind that is REPORTED as unknown and dropped for an
+     * action the compositor performs perfectly well — which is how `modes_menu`
+     * spent its life documented but unbindable. This is the cheap half of the
+     * check: every name the docs promise, bound for real. */
+    CASE("documented actions are accepted in [binds]");
+    static const char *const actions[] = {
+        "killclient", "toggle_tiling", "toggle_split", "toggle_floating",
+        "toggle_tiling_all", "toggle_floating_all", "toggle_nocollide",
+        "toggle_nocollide_all", "pin_window", "calm_all", "cycle_gravity",
+        "spin_window", "spin_all", "fake_fullscreen", "real_fullscreen",
+        "group_toggle", "group_next", "group_prev", "group_add",
+        "terminal", "launcher", "expo", "toggle_tray", "toggle_wrap",
+        "modes_menu", "show_hints", "show_errors", "reload_config",
+        "wallpaper_picker", "output_off", "outputs_on",
+        "toggle_internal_output", "EXIT",
+        "view:3", "move_to:7", "move_to_view:next", "move_camera:-50",
+        "tile_focus:l", "tile_move:d", "spawn:true", "mode:default",
+        NULL,
+    };
+
+    /* One distinct, definitely-existing key per action, across two modifier sets
+     * so there are enough of them. Not F1..Fn: xkb stops at F35, and a bind
+     * failing on the KEY would look exactly like an action being rejected. */
+    static const char keys[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+    static const char *const mods[] = { "super+ctrl+shift", "super+alt+shift" };
+    const int per_mod = (int)(sizeof(keys) - 1);
+
+    char body[8192];
+    int n = snprintf(body, sizeof body, "[binds]\n");
+    int count = 0;
+    while (actions[count]) count++;
+    CHECK(count <= per_mod * (int)(sizeof(mods) / sizeof(mods[0])));
+    for (int i = 0; i < count; i++)
+        n += snprintf(body + n, sizeof body - (size_t)n, "\"%s+%c\" = \"%s\"\n",
+                      mods[i / per_mod], keys[i % per_mod], actions[i]);
+
+    const char *p = write_config(body);
+    FwmConfig cfg;
+    config_load(&cfg, p);
+    /* Not one of them may be reported, and every one must have produced a
+     * bind — the count is what catches a silently dropped line. */
+    CHECK_INT(cfg.error_count, 0);
+    CHECK_INT(cfg.fallback_binds, 0);
+    CHECK_INT(cfg.key_count, count);
+    config_free(&cfg);
+    drop_config();
+}
+
 static void test_sound(void) {
     CASE("[sound] is off with sane defaults until asked for");
     const char *p = write_config("[binds]\n\"super+q\" = \"killclient\"\n");
@@ -845,6 +896,7 @@ int main(void) {
     test_rule_material();
     test_physics_profiles();
     test_mass_mode();
+    test_every_dispatchable_action_binds();
     test_sound();
     test_mouse();
     test_modes();
