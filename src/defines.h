@@ -34,15 +34,26 @@
 /* Approach speed (px/s) a collision must reach before it counts as an impact
  * worth reacting to. Above resting jitter, below a short drop. */
 #define PHYSICS_HIT_MIN_SPEED   120.0
-/* Ceiling (px/s) on the momentum a DRAGGED window hands to what it runs into.
- * The mouse can move a window far faster than any throw, and a dragged body is
- * kinematic — infinitely heavy — so an uncapped shove launched the other window
- * onto the next desktop. Kept well above PHYSICS_HIT_MIN_SPEED so a shove still
- * squashes both windows, and below a full throw (MAX_THROW_SPEED *
- * THROW_SPEED_MULTIPLIER) so brushing past never outruns a deliberate fling.
- * Only the momentum is limited: the dragged window itself still tracks the
- * cursor exactly, its position comes from the mirror, not from this. */
-#define DRAG_PUSH_MAX_SPEED     600.0
+/* There used to be a DRAG_PUSH_MAX_SPEED here: a 600 px/s ceiling on the
+ * VELOCITY handed to Box2D for a window being dragged, meant to stop a fast
+ * shove launching its neighbour onto the next desktop. It did that, and it also
+ * broke collision outright above 600 px/s of mouse movement — which is an
+ * ordinary mouse movement.
+ *
+ * The reason is worth keeping. A dragged body is kinematic: its TRANSFORM is
+ * teleported to wherever the cursor put it, 33px in one step at 2000 px/s, while
+ * its velocity said 600. The solver believed the velocity, so it predicted a
+ * contact that was already 30px deep, and pushed the other window out slower
+ * than the dragged one advanced. Measured: the overlap grew monotonically to
+ * 295px — three quarters of a 400px window — and the dragged window came out the
+ * far side. Worse, the faster you dragged the LESS the other window was pushed
+ * (591 px/s at a 600 px/s drag, 98 px/s at 12000), because the lie got bigger.
+ *
+ * Box2D now gets the true velocity, so nothing tunnels, and the launch it would
+ * otherwise hand over is bounded on the OUTCOME instead: no dynamic body may
+ * exceed [physics] max_throw_speed after a step (physics.c). That keeps the
+ * property the old ceiling was really after — a shove can never outrun the
+ * hardest deliberate throw — without lying to the solver to get it. */
 /* Ceiling (px/s) on how fast a visualiser bar may RISE, before [cava] push
  * scales it. A bar is kinematic — infinitely heavy — so whatever speed it has
  * on contact goes straight into the window, and a kick drum moves a bar most of

@@ -264,6 +264,13 @@ if(FWM_TESTS)
     target_include_directories(test_physics PRIVATE src tests)
     target_link_libraries(test_physics PRIVATE box2d::box2d m)
 
+    # Everything the physics has to keep doing at speed. Its own suite because it
+    # came out of one bug report and every case is a measurement that used to
+    # fail — a drag needs a mouse, and a nested run cannot inject one.
+    add_executable(test_physics_speed tests/test_physics_speed.c src/physics.c)
+    target_include_directories(test_physics_speed PRIVATE src tests)
+    target_link_libraries(test_physics_speed PRIVATE box2d::box2d m)
+
     add_executable(test_ipc_events tests/test_ipc_events.c src/ipc_events.c)
     target_include_directories(test_ipc_events PRIVATE src tests)
 
@@ -299,6 +306,7 @@ if(FWM_TESTS)
     add_test(NAME config     COMMAND test_config)
     add_test(NAME input      COMMAND test_input)
     add_test(NAME physics    COMMAND test_physics)
+    add_test(NAME physics_speed COMMAND test_physics_speed)
     add_test(NAME ipc_events COMMAND test_ipc_events)
     add_test(NAME wobble     COMMAND test_wobble)
     add_test(NAME gestures   COMMAND test_gestures)

@@ -81,6 +81,9 @@ struct Engine {
     int    bar_screen_h;
     float linear_damping;    /* derived from world->friction */
     double last_gravity;     /* px/s^2 applied last step; wake bodies on change */
+    float engine_max_speed;  /* last value pushed into Box2D's own speed limit */
+    double drag_speed;       /* px/s the dragged window is moving, this step */
+    float contact_push;      /* last overlap-recovery speed pushed into Box2D */
 };
 
 static struct Engine *engine_of(PhysicsWorld *world) {
@@ -173,6 +176,49 @@ static struct Material material_for(const PhysicsWorld *world, const PhysicsBody
     return mat;
 }
 
+/* The one speed limit in this world: nothing dynamic moves faster than the
+ * hardest throw the config allows.
+ *
+ * Applied to every dynamic body after the solve, which is what lets everything
+ * that can hand out momentum — a fast drag, a visualiser bar, a stack collapsing
+ * on itself — be bounded in ONE place instead of each guessing its own ceiling.
+ * That is also the only reason the drag can now tell Box2D the truth about how
+ * fast it is moving (see the drag branch below and defines.h).
+ *
+ * It is deliberately not felt in ordinary use: a window falling the full height
+ * of a 1080px screen under earth gravity arrives at ~1456 px/s, below the 1800
+ * default, so gravity, bounces and throws behave exactly as they did. What it
+ * bounds is the pathological end — and with a ceiling of 1800 px/s a body covers
+ * 30px per step, an order of magnitude less than the smallest window, so
+ * window-through-window tunnelling stops being reachable at all. */
+static void clamp_world_speed(PhysicsWorld *world, struct Engine *eng) {
+    double cap = world->max_throw_speed;
+    if (cap <= 0.0) return;   /* 0 means "no limit", for anyone who wants chaos */
+
+    /* While a window is being dragged, the ceiling rises to whatever the hand is
+     * doing. Nothing else is capable of that speed in the same step, so this is
+     * in practice a licence for one thing only: the window being shoved may keep
+     * up with the window shoving it. Hold it to the lower ceiling instead and a
+     * hand moving faster than the cap simply walks through, because the victim
+     * physically cannot get out of the way in time. The moment the drag ends the
+     * ordinary ceiling applies again, so free flight is still bounded by what a
+     * throw can do. */
+    if (eng->drag_speed > cap) cap = eng->drag_speed;
+
+    for (int i = 0; i < world->body_count; i++) {
+        struct BodySlot *s = &eng->slots[i];
+        if (!world->bodies[i].active || !s->has) continue;
+        if (s->type != b2_dynamicBody) continue;
+
+        b2Vec2 v = b2Body_GetLinearVelocity(s->body);
+        double vx = m2px(v.x), vy = m2px(v.y);
+        double speed = hypot(vx, vy);
+        if (speed <= cap || speed <= 0.0) continue;
+        double k = cap / speed;
+        b2Body_SetLinearVelocity(s->body, (b2Vec2){ v.x * (float)k, v.y * (float)k });
+    }
+}
+
 static void clamp_velocity(double *vx, double *vy, double max_speed) {
     double speed = hypot(*vx, *vy);
     if (speed <= max_speed || speed <= 0.0) {
@@ -207,6 +253,13 @@ static int rects_overlap(int ax, int ay, int aw, int ah,
 void physics_init(PhysicsWorld *world) {
     world->body_count = 0;
     world->gravity_scale = 0.0;
+    /* The strip has ends until somebody says otherwise. Spelled out because the
+     * compositor happens to hand over zeroed memory and so never noticed this
+     * was missing: a caller with a stack-allocated world got a garbage `wrap`,
+     * which decides whether the world HAS end walls at all — and a world with no
+     * end walls quietly lets windows sail off it. */
+    world->wrap = 0;
+    world->impact_count = 0;
 
     // Set system defaults just in case config doesn't overwrite them.
     // Tuned for a "real object" feel: earth gravity at 100 px/m, a dull bounce
@@ -236,7 +289,16 @@ void physics_init(PhysicsWorld *world) {
     // but low enough that a short drop still registers (a 200px fall under
     // gravity 981 lands at ~630 px/s).
     wd.hitEventThreshold = px2m(PHYSICS_HIT_MIN_SPEED);
+    /* How fast overlap is undone. Box2D's default is 3 m/s, which is sensible
+     * for a scene whose objects move at walking pace and far too slow for this
+     * one: a window travels at up to 18 m/s here, so a shove that produced 100px
+     * of overlap in one step was being unwound at 5px per step and the window
+     * doing the shoving simply arrived first. Scaled to the world's own top speed
+     * instead — overlap is resolved as fast as anything in this world moves.
+     * Kept in step with the live knob below. */
+    wd.maxContactPushSpeed = px2m(world->max_throw_speed);
     eng->world = b2CreateWorld(&wd);
+    eng->contact_push = wd.maxContactPushSpeed;
     eng->walls_built = false;
 
     eng->linear_damping = damping_from_friction(world->friction);
@@ -723,6 +785,32 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
      * gravity vector for the whole world. */
     double g = world->gravity * world->gravity_scale;
     b2World_SetGravity(eng->world, (b2Vec2){0.0f, px2m(g)});
+
+    /* Box2D has a speed limit of its own — 400 m/s, which is 40000 px/s at this
+     * scale — and it enforces it silently. A config asking for a faster throw
+     * than that used to get 39550 px/s and no explanation, so the engine's
+     * ceiling is kept above ours rather than left at whatever the default was.
+     * Pushed every step because max_throw_speed is a live knob (`fwmctl set`),
+     * and it is one float compare inside Box2D when nothing changed. */
+    {
+        float want = (float)px2m(world->max_throw_speed > 0.0
+                                    ? world->max_throw_speed * 2.0
+                                    : 1.0e6);
+        if (want != eng->engine_max_speed) {
+            b2World_SetMaximumLinearSpeed(eng->world, want);
+            eng->engine_max_speed = want;
+        }
+
+        /* And overlap recovery with it, for the reason given where the world was
+         * created. The other two numbers are Box2D's own defaults, repeated here
+         * because the call takes all three. */
+        float push = (float)px2m(world->max_throw_speed > 0.0
+                                    ? world->max_throw_speed : 1800.0);
+        if (push != eng->contact_push) {
+            b2World_SetContactTuning(eng->world, 30.0f, 10.0f, push);
+            eng->contact_push = push;
+        }
+    }
     // Box2D does NOT wake sleeping bodies when world gravity changes — a
     // window that sat still long enough to sleep would just hang in the air
     // after cycle_gravity (until a drag changed its body type and woke it).
@@ -730,6 +818,8 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
     eng->last_gravity = g;
 
     // --- Push mirror -> Box2D ------------------------------------------------
+    /* Recomputed from this step's drag, never carried over from the last one. */
+    eng->drag_speed = 0.0;
     for (int i = 0; i < world->body_count; i++) {
         PhysicsBody *m = &world->bodies[i];
         struct BodySlot *s = &eng->slots[i];
@@ -894,13 +984,24 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
              * speed produces no hit event — which is why shoving one window
              * into another never squashed either of them (they only got pushed
              * apart by penetration resolution) while a thrown window bouncing
-             * off a wall, dynamic and honestly moving, always did. */
+             * off a wall, dynamic and honestly moving, always did.
+             *
+             * The velocity is handed over UNCLAMPED, and that is the fix for
+             * dragging through windows: it has to agree with how far the
+             * transform actually moved, or the solver resolves a contact that is
+             * already deeper than it believes and the dragged window walks
+             * straight through its neighbour (see defines.h, where the old
+             * ceiling used to be). What a shove is allowed to hand over is
+             * bounded after the step instead, by clamp_world_speed. */
             b2Vec2 v = {0.0f, 0.0f};
             if (type == b2_kinematicBody && dt > 0.0) {
                 double dvx = (m->x - s->sx) / dt;
                 double dvy = (m->y - s->sy) / dt;
-                clamp_velocity(&dvx, &dvy, DRAG_PUSH_MAX_SPEED);
                 v = (b2Vec2){px2m(dvx), px2m(dvy)};
+                if (dragged) {
+                    double sp = hypot(dvx, dvy);
+                    if (sp > eng->drag_speed) eng->drag_speed = sp;
+                }
             }
             b2Body_SetLinearVelocity(s->body, v);
             if (spin_drag) b2Body_SetAngularVelocity(s->body, (float)m->angvel);
@@ -909,6 +1010,10 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
 
     // --- Step ---------------------------------------------------------------
     b2World_Step(eng->world, (float)dt, 4);
+
+    /* Before the impacts are read and before the mirror is pulled, so both see
+     * the speeds the world actually allows. */
+    clamp_world_speed(world, eng);
 
     // --- Collect impacts ----------------------------------------------------
     // Refilled from scratch every step; consumers read world->impacts before
