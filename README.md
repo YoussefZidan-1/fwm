@@ -14,6 +14,21 @@ A Wayland compositor written in C (wlroots) where windows behave as physical obj
 
 This is the primary, actively developed version. The legacy X11 version lives on the [`x11`](https://github.com/iluaii/fwm/tree/x11) branch and is no longer supported.
 
+## 📚 Documentation
+
+This page is the tour. The manual is in [`docs/`](docs/):
+
+| | |
+|---|---|
+| [Getting started](docs/getting-started.md) | build, install, start a session, the first five minutes |
+| [Configuration](docs/configuration.md) | every section of `config.toml`, key by key |
+| [Keybindings and actions](docs/keybindings.md) | the defaults, the full action vocabulary, modes, mouse, gestures |
+| [Physics](docs/physics.md) | how the simulation works, its units, its limits |
+| [The interface](docs/interface.md) | tray, modes menu, launcher, desktop strip, picker, visualiser, sound |
+| [fwmctl and the IPC](docs/fwmctl.md) | reading state, live settings, events, scripting |
+| [Troubleshooting](docs/troubleshooting.md) | when something does not work |
+| [Architecture](docs/architecture.md) | for anyone changing the code |
+
 ---
 
 ## 🎬 Demonstration
@@ -78,7 +93,7 @@ https://github.com/user-attachments/assets/f9c94f4f-5215-4980-91d6-7c0bcc764d65
 - **Drag to throw** — velocity is sampled over the last frames, a quick flick sends windows flying naturally.
 - **Gravity modes** — cycle `Super+G` between zero-g, space mode, and Earth gravity (9.8 m/s² at the compositor's 100 px/m scale). Windows fall, thud, and stack on the floor.
 - **Realistic feel** — dull heavy bounces (restitution 0.3), contact friction, no mid-air braking under gravity; long weighty glides in zero-g.
-- **Continuous collision** — fast throws never tunnel through walls.
+- **One speed limit, and walls that hold** — nothing dynamic outruns `max_throw_speed`, so a shove can never outrun the hardest deliberate throw and no window covers more than a fraction of its own width per step. Walls are swept against (continuous collision) and measured to contain a throw at 96 000 px/s — fifty times the default cap. What that bound buys, and where a very fast *drag* still outruns the windows it is pushing, is in [docs/physics.md](docs/physics.md#speed).
 - **Free rotation** (`Super+R`, experimental) — hands a window's rotation to the simulation: the collision box turns with the picture, so it tumbles off the walls and shoves its neighbours corner-first. See below for how it is spun.
 - **Per-window toggles** — pin (`Super+P`), collision off (`Super+N`), calm everything (`Super+Shift+C`).
 - **What a window is made of** — `[[rule]]` sets `mass`, `bounce`, `friction` and `gravity` per window, so a video player can be eight times as heavy as a terminal and a terminal can be a balloon that drifts upward. The properties travel with the window, not with where it happens to be.
@@ -531,7 +546,7 @@ recorded.
 
 ## Configuration
 
-Everything lives in `~/.config/fwm/config.toml`. All sections are optional — missing values fall back to sane defaults.
+Everything lives in `~/.config/fwm/config.toml`. All sections are optional — missing values fall back to sane defaults. What follows is a tour of the interesting parts; **[docs/configuration.md](docs/configuration.md) is the complete reference**, key by key.
 
 ```toml
 [physics]
@@ -544,7 +559,8 @@ mass_ram_ref          = 300.0   # MB that weighs a normal window
 mass_ram_max          = 20.0    # ceiling, x normal — uncapped, a 6GB browser
                                 # is not a heavy window, it is a wall
 throw_speed_multiplier = 0.65
-max_throw_speed       = 1800.0
+max_throw_speed       = 1800.0   # the world's ONE speed limit: nothing dynamic
+                                 # goes faster, however it was set moving
 stop_speed_threshold  = 1.0     # below this a window is considered at rest
 tick_rate             = 60.0    # physics steps per second
 
