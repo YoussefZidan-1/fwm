@@ -1029,6 +1029,14 @@ static int physics_tick_cb(void *data) {
             if (body) server_place_node(server, &view->scene_tree->node, body->x, body->y);
         }
     }
+    /* A window in your hand goes where you go. The loop above moved every window
+     * the camera shows EXCEPT the dragged one, which is placed by the hand and
+     * so has to be carried across by its anchor instead — otherwise dragging a
+     * window into the screen edge scrolls you to the next desktop and leaves the
+     * window behind on the old one. After the slide, so it follows the camera
+     * within the same frame, and before physics_step, so the shove it hands out
+     * on the way is part of this tick's simulation. */
+    server_drag_follow_camera(server);
     if (any_settled) server_camera_settled(server);
 
     // Tile-glide animations: ease windows toward their tile slots (Hyprland-

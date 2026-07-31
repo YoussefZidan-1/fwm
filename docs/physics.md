@@ -109,6 +109,12 @@ moved it since the last step, which matters more than it sounds:
 > sound, while a thrown window bouncing off a wall — dynamic and honestly moving —
 > always did.
 
+A window in your hand goes where you go. Dragging one into the screen edge scrolls
+the strip under it, and the drag's anchor is carried along with the camera every
+frame of that slide, so the window arrives on the new desktop still under the
+cursor — including across the ring's join, which moves the camera nine screens at
+once.
+
 **Spinning** is `spin_window` (`Super+R`) or the `twist` mouse verb; see
 [rotation](#rotation).
 

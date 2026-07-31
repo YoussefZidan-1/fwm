@@ -342,6 +342,13 @@ static void handle_output_destroy(struct wl_listener *listener, void *data) {
      * is simply free again: its windows park off-layout until some monitor
      * takes that desktop. */
     server_wrap_slide_stop(output->server, output);
+    /* A drag in progress remembers which monitor's camera it is following, and
+     * compares that pointer every tick. Forget it here rather than leave it
+     * dangling onto memory the next monitor may be handed. */
+    if (output->server->interactive.cam_output == output) {
+        output->server->interactive.cam_output = NULL;
+        output->server->interactive.cam_have = 0;
+    }
     if (output->wallpaper_prev) wallpaper_destroy(output->wallpaper_prev);
     if (output->wallpaper) wallpaper_destroy(output->wallpaper);
     if (output->tray_buffer) cairo_overlay_destroy(output->tray_buffer);

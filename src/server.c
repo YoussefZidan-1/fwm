@@ -200,7 +200,12 @@ void server_start_interactive_move(FwmServer *server, struct FwmView *view, uint
     server->interactive.vy = 0;
     server->interactive.hist_count = 0;
     server->interactive.collision_disabled = 0;
-    
+    /* Seeded on the first tick, from whichever monitor the hand is over. Left
+     * unseeded here so a drag that starts with the cursor off every monitor is
+     * simply not following a camera yet, rather than following a stale one. */
+    server->interactive.cam_have = 0;
+    server->interactive.cam_output = NULL;
+
     physics_stop_body(&server->physics, view->id);
 }
 

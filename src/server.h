@@ -155,6 +155,15 @@ typedef struct {
     int hist_count;
     int collision_disabled;
 
+    /* Where the camera of the monitor under the hand stood when the dragged
+     * window was last placed, and which monitor that was. The drag anchors the
+     * window with a screen delta, so anything that moves the world underneath it
+     * — edge auto-scroll, above all — has to be added back in
+     * (server_drag_follow_camera). */
+    FwmOutput *cam_output;
+    int cam_ref;
+    int cam_have;
+
     /* Swirl: how the cursor's direction of travel is turning, which is what
      * winds a spinning window up mid-drag (see server_pointer.c). `dir` is the
      * angle of the velocity vector at the last sample; `acc`/`abs`/`span` are

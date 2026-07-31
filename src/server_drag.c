@@ -114,6 +114,115 @@
 #define SWIRL_DEADBAND    0.4   /* rad/s under which stirring is ignored */
 
 
+/* Put the dragged window where the anchor and the cursor say it goes, and tell
+ * the simulation. Split out of the motion handler because the CAMERA can move a
+ * drag as well as the hand can (server_drag_follow_camera), and that path has no
+ * pointer event to feed the velocity history and the swirl below.
+ *
+ * `lx`/`ly` are the cursor in layout coordinates. */
+static void drag_place(FwmServer *server, double lx, double ly) {
+    FwmView *view = server->interactive.view;
+    if (!view) return;
+    double dx = lx - server->interactive.start_x;
+    double dy = ly - server->interactive.start_y;
+    PhysicsBody *db = physics_find_body(&server->physics, view->id);
+    /* A spinning window is placed by server_drag_swing on the physics tick
+     * instead — it hangs from the grab point, so where it belongs depends
+     * on an angle that is still being integrated. Writing a second,
+     * unswung position here would fight it into a jitter. */
+    bool swinging = db && db->spin;
+
+    // Keep the window fully inside the play area while dragging. Because the
+    // dragged body is kinematic it would otherwise pass straight through the
+    // (static) boundary walls and, on release, either get stuck outside them
+    // or be shot out at 90 degrees as Box2D resolves the wall penetration.
+    int min_world_x = 0;
+    int max_world_x = 10 * server->screen_width - server->interactive.view_start_width;
+    int min_y = 0;
+    int max_y = server->screen_height - server->interactive.view_start_height;
+    if (max_world_x < min_world_x) max_world_x = min_world_x;
+    if (max_y < min_y) max_y = min_y;
+
+    /* view_start_x is already a world coordinate, and dx is a distance:
+      * a hand moving n px across a monitor moves the window n px through
+      * the world, whichever monitor that is. */
+    int target_world_x = server->interactive.view_start_x + dx;
+    int target_world_y = server->interactive.view_start_y + dy;
+    int want_x = target_world_x, want_y = target_world_y;
+
+    if (target_world_x < min_world_x) target_world_x = min_world_x;
+    if (target_world_x > max_world_x) target_world_x = max_world_x;
+    if (target_world_y < min_y) target_world_y = min_y;
+    if (target_world_y > max_y) target_world_y = max_y;
+
+    // When the clamp engages, re-base the grab anchor onto the clamped
+    // position: while the window is pinned against a wall the cursor keeps
+    // travelling, and without this the whole overshoot has to be dragged
+    // back before the window moves again — magnet-stuck to the edge.
+    // Only on an actual clamp: doing it unconditionally accumulates
+    // int-truncation error every motion event and the window drifts away
+    // from the cursor.
+    if (target_world_x != want_x) {
+        server->interactive.view_start_x += target_world_x - want_x;
+    }
+    if (target_world_y != want_y) {
+        server->interactive.view_start_y += target_world_y - want_y;
+    }
+
+    if (!swinging) {
+        view->x = target_world_x;
+        view->y = target_world_y;
+
+        if (view->scene_tree)
+            server_place_node(server, &view->scene_tree->node, view->x, view->y);
+    }
+
+    physics_sync_body(&server->physics, view->id, view->x, view->y,
+                      view->width, view->height, server->screen_width);
+}
+
+/* The camera has moved under a drag: bring the window along.
+ *
+ * A drag anchors its window with a SCREEN delta — where the window started plus
+ * how far the cursor has travelled — and that is right for exactly as long as
+ * the world does not move underneath it. Edge auto-scroll moves it: the camera
+ * slides a whole screen while the cursor sits still against the edge, so the
+ * world position the cursor is pointing at changes by a screen and the window's
+ * does not. You arrive on the next desktop and the window you were holding is
+ * still on the one you left.
+ *
+ * So carry the anchor with the camera. Called every tick the camera is
+ * travelling, not once when the slide is ordered: the slide is an eased
+ * animation and the window has to stay in the hand for every frame of it, not
+ * jump a screen ahead and wait to be caught up with.
+ *
+ * A spinning window needs none of this — server_drag_swing_place already places
+ * it from the cursor's WORLD position every frame, so the camera is in the sum
+ * already. */
+void server_drag_follow_camera(FwmServer *server) {
+    if (server->interactive.action != FWM_ACTION_MOVE || !server->interactive.view) return;
+    if (!server->cursor) return;
+
+    FwmOutput *o = server_output_at(server, server->cursor->x, server->cursor->y);
+    if (!o) return;
+
+    /* Re-seed rather than shift when the hand crosses to another monitor: the
+     * two cameras are independent, and the difference between them is not
+     * travel the window did. */
+    if (!server->interactive.cam_have || server->interactive.cam_output != o) {
+        server->interactive.cam_output = o;
+        server->interactive.cam_ref = o->camera_x;
+        server->interactive.cam_have = 1;
+        return;
+    }
+
+    int delta = o->camera_x - server->interactive.cam_ref;
+    if (delta == 0) return;
+    server->interactive.cam_ref = o->camera_x;
+    server->interactive.view_start_x += delta;
+    drag_place(server, server->cursor->x, server->cursor->y);
+}
+
 /* Motion while a gesture is held. False when there is none, and the caller
  * then does the ordinary hover-and-focus work. */
 bool server_drag_motion(FwmServer *server, double lx, double ly,
@@ -123,59 +232,9 @@ bool server_drag_motion(FwmServer *server, double lx, double ly,
     if (server->interactive.action == FWM_ACTION_MOVE) {
         FwmView *view = server->interactive.view;
         if (!view) return true;   /* client exited mid-drag; see the resize arm */
-        double dx = lx - server->interactive.start_x;
-        double dy = ly - server->interactive.start_y;
         PhysicsBody *db = physics_find_body(&server->physics, view->id);
-        /* A spinning window is placed by server_drag_swing on the physics tick
-         * instead — it hangs from the grab point, so where it belongs depends
-         * on an angle that is still being integrated. Writing a second,
-         * unswung position here would fight it into a jitter. */
-        bool swinging = db && db->spin;
 
-        // Keep the window fully inside the play area while dragging. Because the
-        // dragged body is kinematic it would otherwise pass straight through the
-        // (static) boundary walls and, on release, either get stuck outside them
-        // or be shot out at 90 degrees as Box2D resolves the wall penetration.
-        int min_world_x = 0;
-        int max_world_x = 10 * server->screen_width - server->interactive.view_start_width;
-        int min_y = 0;
-        int max_y = server->screen_height - server->interactive.view_start_height;
-        if (max_world_x < min_world_x) max_world_x = min_world_x;
-        if (max_y < min_y) max_y = min_y;
-        
-        /* view_start_x is already a world coordinate, and dx is a distance:
-          * a hand moving n px across a monitor moves the window n px through
-          * the world, whichever monitor that is. */
-        int target_world_x = server->interactive.view_start_x + dx;
-        int target_world_y = server->interactive.view_start_y + dy;
-        int want_x = target_world_x, want_y = target_world_y;
-        
-        if (target_world_x < min_world_x) target_world_x = min_world_x;
-        if (target_world_x > max_world_x) target_world_x = max_world_x;
-        if (target_world_y < min_y) target_world_y = min_y;
-        if (target_world_y > max_y) target_world_y = max_y;
-
-        // When the clamp engages, re-base the grab anchor onto the clamped
-        // position: while the window is pinned against a wall the cursor keeps
-        // travelling, and without this the whole overshoot has to be dragged
-        // back before the window moves again — magnet-stuck to the edge.
-        // Only on an actual clamp: doing it unconditionally accumulates
-        // int-truncation error every motion event and the window drifts away
-        // from the cursor.
-        if (target_world_x != want_x) {
-            server->interactive.view_start_x += target_world_x - want_x;
-        }
-        if (target_world_y != want_y) {
-            server->interactive.view_start_y += target_world_y - want_y;
-        }
-
-        if (!swinging) {
-            view->x = target_world_x;
-            view->y = target_world_y;
-
-            if (view->scene_tree)
-                server_place_node(server, &view->scene_tree->node, view->x, view->y);
-        }
+        drag_place(server, lx, ly);
 
         // Shift velocity history
         for (int i = 0; i < 3; i++) {
@@ -197,9 +256,6 @@ bool server_drag_motion(FwmServer *server, double lx, double ly,
                 server->interactive.vy = (ly - server->interactive.hist_y[oldest]) / dt;
             }
         }
-        
-        // Sync position in physics
-        physics_sync_body(&server->physics, view->id, view->x, view->y, view->width, view->height, server->screen_width);
 
         /* Swirl the dragged window up (only one that is already spinning: see
          * spin_window). What is measured is not where the cursor is but how

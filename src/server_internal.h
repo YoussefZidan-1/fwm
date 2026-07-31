@@ -177,6 +177,9 @@ bool server_drag_motion(FwmServer *server, double lx, double ly,
 bool server_drag_press(FwmServer *server, uint32_t button, double lx, double ly,
                        const struct timespec *now);
 void server_drag_release(FwmServer *server, double lx, double ly);
+/* Bring a dragged window along when the camera slides under it — edge
+ * auto-scroll, above all. Called from the tick while any camera is moving. */
+void server_drag_follow_camera(FwmServer *server);
 
 /* A wlroots button code as [mouse] names it, or -1. */
 int button_to_fwm(uint32_t button);
