@@ -102,6 +102,71 @@ fit in it; the walls hold what they can. Resize or fullscreen it.
 windows under an effect back on a periodic still frame, which is the better trade
 on slower hardware. `FWM_DEBUG_EFFECTS=1` prints frame timings.
 
+## Screen sharing
+
+Discord, Zoom, OBS and browsers do not capture a Wayland screen themselves. They
+ask a *portal* — `xdg-desktop-portal` — which hands the request to a backend that
+knows the compositor. fwm implements `wlr-screencopy-v1`, and the backend that
+speaks it is **`xdg-desktop-portal-wlr`**. Install it alongside `pipewire`, which
+carries the frames:
+
+```sh
+# Void
+sudo xbps-install -S xdg-desktop-portal-wlr
+# Arch
+sudo pacman -S xdg-desktop-portal-wlr
+# Debian/Ubuntu, Fedora
+sudo apt install xdg-desktop-portal-wlr    # sudo dnf install xdg-desktop-portal-wlr
+```
+
+Then log out and back in. fwm sets `XDG_CURRENT_DESKTOP=fwm:wlroots` and pushes
+its environment to the D-Bus session bus at startup, and `install.sh` puts a
+`fwm-portals.conf` in place that routes capture to the wlr backend — the portal
+needs all three, and it only picks them up on a fresh session.
+
+**The share dialog lists nothing — no monitor to pick.** If the backend is
+installed, this is almost always its *chooser*. xdg-desktop-portal-wlr asks
+which source to share before it captures anything, and it asks by running an
+external menu — it tries `slurp`, `wmenu`, `wofi`, `rofi`, `bemenu`, `mew` and
+`fuzzel` in turn. With none of them installed it exhausts the list, logs
+`no output found`, and closes the session, which arrives at the application as
+an empty list rather than as an error. It does this even with a single monitor.
+
+Either install a chooser (`slurp` is the usual one), or skip the question in
+`~/.config/xdg-desktop-portal-wlr/config`:
+
+```ini
+[screencast]
+chooser_type=none
+output_name=DVI-D-1   # a name from `fwmctl outputs`
+```
+
+`none` shares `output_name` without asking. With two monitors you want the
+chooser instead, so that you can pick between them.
+
+**The shared image is black, or nothing is offered at all.** Check that the
+backend is installed and reachable:
+
+```sh
+busctl --user list | grep portal      # xdg-desktop-portal + a backend
+echo "$XDG_CURRENT_DESKTOP"           # must contain fwm or wlroots
+```
+
+If `XDG_CURRENT_DESKTOP` is empty inside a running session, the compositor was
+started in a way that bypassed its own startup — or the D-Bus bus predates it and
+never got the update. `dbus-update-activation-environment WAYLAND_DISPLAY
+XDG_CURRENT_DESKTOP` repairs it for the session in progress.
+
+**The picker offers windows and only the whole screen works.** xdg-desktop-portal-wlr
+captures outputs, not individual windows; fwm does not implement the
+foreign-toplevel capture path a per-window share would need. Share the screen and
+put the window on a desktop of its own.
+
+**Flatpak applications still see nothing.** They need the portal *and* PipeWire
+across the sandbox boundary. `flatpak info --show-permissions com.discordapp.Discord`
+should show a `pipewire` socket; if it does not, grant it:
+`flatpak override --user --socket=pipewire com.discordapp.Discord`.
+
 ## Monitors
 
 `fwmctl outputs` lists what fwm sees, including every mode each screen offers, and

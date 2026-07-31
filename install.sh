@@ -155,6 +155,15 @@ install_files() {
         | $SUDO tee /usr/share/wayland-sessions/fwm.desktop >/dev/null
     $SUDO chmod 644 /usr/share/wayland-sessions/fwm.desktop
 
+    # Portal routing: sends screen capture to the wlroots backend. Harmless if
+    # xdg-desktop-portal-wlr is not installed — the frontend falls back — but
+    # without the file screen sharing silently picks a backend that cannot see
+    # fwm's outputs.
+    # Note the directory: portals/ holds .portal files describing backends,
+    # while the routing config belongs one level up, next to portals.conf.
+    $SUDO install -Dm644 "$REPO_DIR/session/fwm-portals.conf" \
+        /usr/share/xdg-desktop-portal/fwm-portals.conf
+
     # User config: never overwrite an existing one.
     local cfg_dir="${XDG_CONFIG_HOME:-$HOME/.config}/fwm"
     if [ ! -e "$cfg_dir/config.toml" ]; then
@@ -183,7 +192,8 @@ update)
 uninstall)
     msg "Uninstalling"
     $SUDO rm -f "$PREFIX/bin/fwm" "$PREFIX/bin/fwm-wayland" "$PREFIX/bin/fwmctl" "$PREFIX/bin/fwm-session" \
-                /usr/share/wayland-sessions/fwm.desktop
+                /usr/share/wayland-sessions/fwm.desktop \
+                /usr/share/xdg-desktop-portal/fwm-portals.conf
     msg "Removed (user config in ~/.config/fwm kept)"
     ;;
 *)

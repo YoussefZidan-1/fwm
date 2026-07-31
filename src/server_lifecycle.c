@@ -46,6 +46,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <errno.h>
 #include <time.h>
 #include <math.h>
 #include <wayland-server.h>
@@ -97,6 +99,53 @@ static int handle_signal(int signal, void *data) {
     server->running = 0;
     wl_display_terminate(server->wl_display);
     return 0;
+}
+
+/* Hand the session environment to the D-Bus session bus.
+ *
+ * Portals are D-Bus-activated, so a backend is spawned by the bus and inherits
+ * the bus daemon's environment — not ours. The bus is started before fwm, so
+ * without this it has no WAYLAND_DISPLAY and no XDG_CURRENT_DESKTOP: the
+ * frontend cannot tell which backend to pick, and xdg-desktop-portal-wlr
+ * cannot connect back to us to capture anything. That is what makes screen
+ * sharing fail in Discord, OBS and every other portal client.
+ *
+ * Entirely best-effort. dbus-update-activation-environment need not exist, and
+ * a session without a bus is still a working session — just one without
+ * portals, so we say so once and carry on. */
+static void export_session_environment(void) {
+    /* Identifies the desktop to the portal frontend. "wlroots" is the name
+     * xdg-desktop-portal-wlr answers to; "fwm" lets a portals.conf single us
+     * out. Never clobber a value the session script chose. */
+    setenv("XDG_CURRENT_DESKTOP", "fwm:wlroots", 0);
+    /* Display managers that launch us from a VT leave this as "tty". */
+    setenv("XDG_SESSION_TYPE", "wayland", 1);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        wlr_log(WLR_ERROR, "cannot fork to export the session environment: "
+                           "portals (screen sharing) will not work");
+        return;
+    }
+    if (pid == 0) {
+        execlp("dbus-update-activation-environment",
+               "dbus-update-activation-environment",
+               "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE",
+               "XDG_RUNTIME_DIR", "DISPLAY", (char *)NULL);
+        _exit(127);
+    }
+
+    /* Wait for it: the portal must not be activated with a half-updated
+     * environment, and the process is short-lived by construction. */
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+        // interrupted by a signal; keep waiting
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        wlr_log(WLR_INFO, "dbus-update-activation-environment did not run "
+                          "(is dbus installed?): portals such as screen "
+                          "sharing may not work");
+    }
 }
 
 bool server_init(FwmServer *server) {
@@ -300,6 +349,10 @@ bool server_init(FwmServer *server) {
     }
     wlr_log(WLR_INFO, "Wayland socket: %s", socket);
     setenv("WAYLAND_DISPLAY", socket, 1);
+
+    /* Now that the socket exists and is in our environment, publish it so
+     * D-Bus-activated services (portals above all) can reach us. */
+    export_session_environment();
 
     /* Control socket. Named after the Wayland display so several fwm
      * instances (a nested dev run inside a real session) never collide.
