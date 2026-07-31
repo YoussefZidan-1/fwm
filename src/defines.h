@@ -54,6 +54,25 @@
  * exceed [physics] max_throw_speed after a step (physics.c). That keeps the
  * property the old ceiling was really after — a shove can never outrun the
  * hardest deliberate throw — without lying to the solver to get it. */
+/* How far anything the mouse is carrying may advance in one SOLVER step before
+ * physics_step splits the tick into substeps (px, and how many are allowed).
+ *
+ * The honest velocity above bought collision back up to about 3000 px/s of hand
+ * movement, and no further: a drag is a teleport with a velocity attached, so at
+ * 6000 px/s the window arrives 100px inside its neighbour and the solver's first
+ * sight of the contact is already that deep. Push speed is finite, the window
+ * keeps arriving, and the overlap runs away — measured 269px through a 300px
+ * window at 6000 px/s and above, which is a flick across one screen in a third
+ * of a second and something any hand can do.
+ *
+ * Substepping is the fix the report asked for: the tick is cut into pieces small
+ * enough that the drag enters a contact rather than materialising inside it, so
+ * every step the solver sees is one it can still resolve. 32px is a quarter of
+ * the narrowest window anyone runs and an eighth of an ordinary one, and the
+ * ceiling of 16 bounds the cost of a hand nothing can keep up with (past ~30000
+ * px/s the pieces grow again — see docs/physics.md). */
+#define PHYSICS_MAX_STEP_ADVANCE 32.0
+#define PHYSICS_MAX_SUBSTEPS     16
 /* Ceiling (px/s) on how fast a visualiser bar may RISE, before [cava] push
  * scales it. A bar is kinematic — infinitely heavy — so whatever speed it has
  * on contact goes straight into the window, and a kick drum moves a bar most of

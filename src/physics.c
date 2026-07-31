@@ -83,6 +83,7 @@ struct Engine {
     double last_gravity;     /* px/s^2 applied last step; wake bodies on change */
     float engine_max_speed;  /* last value pushed into Box2D's own speed limit */
     double drag_speed;       /* px/s the dragged window is moving, this step */
+    double kin_advance;      /* px the fastest mouse-driven body covers, this step */
     float contact_push;      /* last overlap-recovery speed pushed into Box2D */
 };
 
@@ -179,7 +180,8 @@ static struct Material material_for(const PhysicsWorld *world, const PhysicsBody
 /* The one speed limit in this world: nothing dynamic moves faster than the
  * hardest throw the config allows.
  *
- * Applied to every dynamic body after the solve, which is what lets everything
+ * Applied to every dynamic body after every solve — including each piece of a
+ * tick that was cut into substeps — which is what lets everything
  * that can hand out momentum — a fast drag, a visualiser bar, a stack collapsing
  * on itself — be bounded in ONE place instead of each guessing its own ceiling.
  * That is also the only reason the drag can now tell Box2D the truth about how
@@ -786,31 +788,6 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
     double g = world->gravity * world->gravity_scale;
     b2World_SetGravity(eng->world, (b2Vec2){0.0f, px2m(g)});
 
-    /* Box2D has a speed limit of its own — 400 m/s, which is 40000 px/s at this
-     * scale — and it enforces it silently. A config asking for a faster throw
-     * than that used to get 39550 px/s and no explanation, so the engine's
-     * ceiling is kept above ours rather than left at whatever the default was.
-     * Pushed every step because max_throw_speed is a live knob (`fwmctl set`),
-     * and it is one float compare inside Box2D when nothing changed. */
-    {
-        float want = (float)px2m(world->max_throw_speed > 0.0
-                                    ? world->max_throw_speed * 2.0
-                                    : 1.0e6);
-        if (want != eng->engine_max_speed) {
-            b2World_SetMaximumLinearSpeed(eng->world, want);
-            eng->engine_max_speed = want;
-        }
-
-        /* And overlap recovery with it, for the reason given where the world was
-         * created. The other two numbers are Box2D's own defaults, repeated here
-         * because the call takes all three. */
-        float push = (float)px2m(world->max_throw_speed > 0.0
-                                    ? world->max_throw_speed : 1800.0);
-        if (push != eng->contact_push) {
-            b2World_SetContactTuning(eng->world, 30.0f, 10.0f, push);
-            eng->contact_push = push;
-        }
-    }
     // Box2D does NOT wake sleeping bodies when world gravity changes — a
     // window that sat still long enough to sleep would just hang in the air
     // after cycle_gravity (until a drag changed its body type and woke it).
@@ -820,6 +797,7 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
     // --- Push mirror -> Box2D ------------------------------------------------
     /* Recomputed from this step's drag, never carried over from the last one. */
     eng->drag_speed = 0.0;
+    eng->kin_advance = 0.0;
     for (int i = 0; i < world->body_count; i++) {
         PhysicsBody *m = &world->bodies[i];
         struct BodySlot *s = &eng->slots[i];
@@ -974,7 +952,6 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
              * the window at the angle it had when the grab started. */
             bool spin_drag = (type == b2_kinematicBody && m->spin);
             b2Rot rot = spin_drag ? b2Body_GetRotation(s->body) : body_rot(m);
-            b2Body_SetTransform(s->body, body_center_m(m), rot);
             /* A dragged window's velocity has to be DERIVED from how far the
              * mouse moved it since the last step. The mirror's vx/vy are not
              * it: the drag writes only a position (physics_sync_body), and the
@@ -994,43 +971,141 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
              * ceiling used to be). What a shove is allowed to hand over is
              * bounded after the step instead, by clamp_world_speed. */
             b2Vec2 v = {0.0f, 0.0f};
-            if (type == b2_kinematicBody && dt > 0.0) {
+            b2Vec2 c = body_center_m(m);
+            /* A whole monitor in one tick is not a hand — no arm covers 1920px
+             * in 16ms. It is the world being moved under a window somebody
+             * happens to be holding: the ring's join teleports the camera nine
+             * screens and the drag's anchor with it, and send-to-desktop moves a
+             * window a screen sideways on its own.
+             *
+             * Those must stay TELEPORTS. A body that appears somewhere did not
+             * travel there: it sweeps nothing on the way (or crossing the join
+             * mid-drag would batter every window on all ten desktops), it hands
+             * over no momentum when it lands, and it is not a speed anything else
+             * in the world is allowed to be measured against. Below the line,
+             * everything is a hand and is swept. */
+            bool teleport = (hypot(m->x - s->sx, m->y - s->sy) >= (double)screen_width);
+            if (type == b2_kinematicBody && dt > 0.0 && !teleport) {
                 double dvx = (m->x - s->sx) / dt;
                 double dvy = (m->y - s->sy) / dt;
                 v = (b2Vec2){px2m(dvx), px2m(dvy)};
+                /* Start it where it WAS and let the velocity above carry it the
+                 * rest of the way. Over a whole step that lands it in exactly the
+                 * place the old teleport put it, so nothing changes for an
+                 * ordinary drag — but a step cut into pieces now moves it a piece
+                 * at a time instead of all at once, which is the entire point of
+                 * the substepping below. Box2D's own kinematic integration is
+                 * the "interpolated data"; there is nothing to interpolate by
+                 * hand. */
+                c = (b2Vec2){ px2m(s->sx + m->width  / 2.0),
+                              px2m(s->sy + m->height / 2.0) };
+                double adv = hypot(m->x - s->sx, m->y - s->sy);
+                if (adv > eng->kin_advance) eng->kin_advance = adv;
                 if (dragged) {
                     double sp = hypot(dvx, dvy);
                     if (sp > eng->drag_speed) eng->drag_speed = sp;
                 }
             }
+            b2Body_SetTransform(s->body, c, rot);
             b2Body_SetLinearVelocity(s->body, v);
             if (spin_drag) b2Body_SetAngularVelocity(s->body, (float)m->angvel);
         }
     }
 
+    /* How much the hand is allowed to be worth to the REST of the world. The
+     * dragged window itself is kinematic and goes wherever the mirror says
+     * regardless; this bounds only the ceiling its victims are lifted to.
+     *
+     * One tick of substepping can resolve 16 * 32px of travel and no more, so
+     * past that speed the exemption buys nothing — it just makes what is already
+     * an unresolvable shove more violent. (Anything faster still than that is a
+     * teleport and was never counted here at all; see the branch above.) */
+    if (dt > 0.0) {
+        double budget = PHYSICS_MAX_SUBSTEPS * PHYSICS_MAX_STEP_ADVANCE / dt;
+        if (eng->drag_speed > budget) eng->drag_speed = budget;
+    }
+
+    /* Box2D has a speed limit of its own — 400 m/s, which is 40000 px/s at this
+     * scale — and it enforces it silently. A config asking for a faster throw
+     * than that used to get 39550 px/s and no explanation, so the engine's
+     * ceiling is kept above ours rather than left at whatever the default was.
+     *
+     * "Ours" includes the drag exemption, which is why this sits AFTER the push
+     * loop that measures the hand. clamp_world_speed lets a shoved window keep up
+     * with the window shoving it; Box2D's own ceiling did not, and quietly held
+     * every shove to 2 * max_throw_speed — 3600 px/s at the default. A hand moving
+     * faster than that outran the window it was pushing no matter how finely the
+     * tick was cut, because the victim was forbidden to get out of the way. That
+     * is the other half of what breaks at speed, and the half no amount of
+     * substepping fixes.
+     *
+     * Pushed every step because max_throw_speed is a live knob (`fwmctl set`) and
+     * the drag speed changes constantly; it is one float compare inside Box2D
+     * when nothing changed. */
+    {
+        double ceiling = world->max_throw_speed;
+        if (ceiling > 0.0 && eng->drag_speed > ceiling) ceiling = eng->drag_speed;
+
+        float want = (float)px2m(ceiling > 0.0 ? ceiling * 2.0 : 1.0e6);
+        if (want != eng->engine_max_speed) {
+            b2World_SetMaximumLinearSpeed(eng->world, want);
+            eng->engine_max_speed = want;
+        }
+
+        /* And overlap recovery with it, for the reason given where the world was
+         * created: overlap has to be undone at least as fast as anything in this
+         * world moves, and during a drag the hand is that thing. The other two
+         * numbers are Box2D's own defaults, repeated here because the call takes
+         * all three. */
+        float push = (float)px2m(ceiling > 0.0 ? ceiling : 1800.0);
+        if (push != eng->contact_push) {
+            b2World_SetContactTuning(eng->world, 30.0f, 10.0f, push);
+            eng->contact_push = push;
+        }
+    }
+
     // --- Step ---------------------------------------------------------------
-    b2World_Step(eng->world, (float)dt, 4);
+    /* One tick, but not necessarily one solve. Everything the simulation owns is
+     * already bounded to max_throw_speed and so covers at most 30px in a step at
+     * the default — the hand is the one thing in this world with no speed limit,
+     * so it is the hand that decides how finely the tick has to be cut. See
+     * PHYSICS_MAX_STEP_ADVANCE. A drag at ordinary speed asks for one substep and
+     * this is the code that was always here. */
+    int subs = 1;
+    if (eng->kin_advance > PHYSICS_MAX_STEP_ADVANCE) {
+        subs = (int)ceil(eng->kin_advance / PHYSICS_MAX_STEP_ADVANCE);
+        if (subs > PHYSICS_MAX_SUBSTEPS) subs = PHYSICS_MAX_SUBSTEPS;
+    }
+    float sdt = (float)(dt / subs);
 
-    /* Before the impacts are read and before the mirror is pulled, so both see
-     * the speeds the world actually allows. */
-    clamp_world_speed(world, eng);
-
-    // --- Collect impacts ----------------------------------------------------
-    // Refilled from scratch every step; consumers read world->impacts before
-    // the next one. A body's userData carries its window id, and walls have
-    // none, so a wall reads back as id 0.
+    // Refilled from scratch every tick; consumers read world->impacts before the
+    // next one. Accumulated ACROSS the substeps rather than read after the last:
+    // a landing in the first piece of a cut tick is a landing, and reading only
+    // the final piece would silently drop it.
     world->impact_count = 0;
-    b2ContactEvents ev = b2World_GetContactEvents(eng->world);
-    for (int i = 0; i < ev.hitCount && world->impact_count < PHYSICS_MAX_IMPACTS; i++) {
-        const b2ContactHitEvent *h = &ev.hitEvents[i];
-        PhysicsImpact *im = &world->impacts[world->impact_count++];
-        im->id_a = (uint32_t)(uintptr_t)b2Body_GetUserData(b2Shape_GetBody(h->shapeIdA));
-        im->id_b = (uint32_t)(uintptr_t)b2Body_GetUserData(b2Shape_GetBody(h->shapeIdB));
-        im->x = m2px(h->point.x);
-        im->y = m2px(h->point.y);
-        im->nx = h->normal.x;
-        im->ny = h->normal.y;
-        im->speed = m2px(h->approachSpeed);
+
+    for (int k = 0; k < subs; k++) {
+        b2World_Step(eng->world, sdt, 4);
+
+        /* Between the substeps as much as after them: a shove that hands a
+         * neighbour more speed than this world allows must not be allowed to
+         * spend it on the next piece of the same tick. */
+        clamp_world_speed(world, eng);
+
+        // A body's userData carries its window id, and walls have none, so a
+        // wall reads back as id 0.
+        b2ContactEvents ev = b2World_GetContactEvents(eng->world);
+        for (int i = 0; i < ev.hitCount && world->impact_count < PHYSICS_MAX_IMPACTS; i++) {
+            const b2ContactHitEvent *h = &ev.hitEvents[i];
+            PhysicsImpact *im = &world->impacts[world->impact_count++];
+            im->id_a = (uint32_t)(uintptr_t)b2Body_GetUserData(b2Shape_GetBody(h->shapeIdA));
+            im->id_b = (uint32_t)(uintptr_t)b2Body_GetUserData(b2Shape_GetBody(h->shapeIdB));
+            im->x = m2px(h->point.x);
+            im->y = m2px(h->point.y);
+            im->nx = h->normal.x;
+            im->ny = h->normal.y;
+            im->speed = m2px(h->approachSpeed);
+        }
     }
 
     // --- Pull Box2D -> mirror -----------------------------------------------

@@ -115,6 +115,9 @@ frame of that slide, so the window arrives on the new desktop still under the
 cursor — including across the ring's join, which moves the camera nine screens at
 once.
 
+How fast the cursor is allowed to move it, and what happens when you fling it, is
+[speed](#speed) and [substepping](#substepping).
+
 **Spinning** is `spin_window` (`Super+R`) or the `twist` mouse verb; see
 [rotation](#rotation).
 
@@ -137,6 +140,13 @@ One limit rather than several is a deliberate change. What it buys:
 - Box2D's own hidden limit (400 m/s, i.e. 40 000 px/s) no longer silently clips a
   raised `max_throw_speed`: the engine's ceiling is kept above fwm's.
 
+The one exception is the hand. While a window is being dragged the ceiling rises
+to whatever the mouse is doing, for one reason: the window being shoved has to be
+allowed to keep up with the window shoving it, or a hand moving faster than the
+cap simply walks through because its victim physically cannot get out of the way.
+Box2D's own ceiling rises with it. The moment you let go the ordinary limit
+applies again, so nothing stays that fast.
+
 It is invisible in ordinary use. A window falling the full height of a 1080px
 screen under earth gravity arrives at about 1456 px/s, below the default cap, so
 gravity, bounces and throws behave exactly as they always did.
@@ -150,17 +160,42 @@ From `tests/test_physics_speed.c` and the diagnostics behind it:
 | Throw at 12 000 / 48 000 / 96 000 px/s into a wall, with the ceiling lifted | contained, every time, no NaN, no escape |
 | Drag into a window at up to 3000 px/s | clean shove, no visible overlap |
 | Drag through a row of three windows at up to 4000 px/s | all three pushed along |
-| Drag at 6000 px/s and above | the hand outruns what it is pushing — see below |
+| Flick into a window at 6000 – 20 000 px/s | clean shove; worst overlap 6 – 21 px |
+| Flick at 40 000 px/s | still a shove, not a pass-through; worst overlap 132 px |
 | A settled stack hit at the default cap | worst overlap 3 px, nothing leaves the screen |
 
-**The one honest limit.** A dragged window's transform is teleported to wherever
-the cursor is, so at 6000 px/s it enters its neighbour by 100 px in a single step.
-No solver can undo that within the same step, and the neighbour cannot move away
-faster than the hand pushing it: above roughly three times the speed cap, a drag
-passes through. Letting go resolves it — the window becomes dynamic, bounded by
-the same ceiling, and collides normally. Fixing the residue properly means
-sweeping the kinematic body in sub-steps, which is not worth its cost for a case
-you can only reach by flinging the mouse across the screen.
+### Substepping
+
+The hand is the only thing in this world with no speed limit, and a drag is a
+teleport with a velocity attached: at 6000 px/s the window lands 100 px inside its
+neighbour and the solver's first sight of the contact is already too deep to undo.
+That used to run away — 269 px of overlap through a 300 px window, with the dragged
+window coming out the far side — for any flick faster than about 3000 px/s, which
+is a third of a second across one screen.
+
+So the tick is cut. When the mouse has moved a window more than
+`PHYSICS_MAX_STEP_ADVANCE` (32 px) since the last tick, `physics_step` splits its
+1/60 into as many solver steps as it takes to bring each one back under that,
+capped at 16. The dragged body is no longer teleported to the cursor either: it
+starts the tick where it was and is carried the rest of the way by its own
+velocity, so Box2D's kinematic integration *is* the interpolation and each piece
+of the tick moves it a piece of the way. Over a whole tick it lands in exactly the
+same place, so nothing about an ordinary drag changes — and an ordinary drag asks
+for one substep and pays nothing.
+
+A jump of a whole monitor in one tick is not a hand — no arm covers 1920px in
+16ms — so it is left a teleport and swept through nothing. That is what the ring's
+join is, and send-to-desktop, and a session being restored: the window appears at
+the far end rather than travelling there, hands out no momentum when it lands, and
+is not a speed anything else is measured against. Without that line, crossing the
+join mid-drag ploughed a furrow through the desktop you were leaving.
+
+Past 16 substeps (about 30 000 px/s) the pieces grow again and so does the
+overlap, gracefully. That is a hand no display can show you. The drag exemption on
+the speed limit stops rising there too: past the point substepping can resolve a
+shove, lifting the ceiling further only makes the mess faster — and it keeps a
+window whose position is *teleported* mid-drag from being read as a 115 000 px/s
+hand and becoming the speed limit for everything it sweeps past.
 
 ## Rotation
 

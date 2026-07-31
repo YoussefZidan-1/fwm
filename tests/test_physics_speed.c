@@ -22,6 +22,7 @@
 
 #include "test.h"
 #include "physics.h"
+#include "defines.h"
 
 #include <math.h>
 
@@ -49,16 +50,22 @@ static double drag_into_neighbour(double speed, double *victim_speed) {
     physics_sync_body(&w, 1, 400, 400, 400, 300, SW);
     physics_sync_body(&w, 2, 1400, 400, 400, 300, SW);
 
-    double x = 400.0, worst = 0.0;
-    for (int i = 0; i < 120; i++) {
+    double x = 400.0, worst = 0.0, fastest = 0.0;
+    for (int i = 0; i < 400; i++) {
         x += speed * DT;
         physics_sync_body(&w, 1, (int)x, 400, 400, 300, SW);
         physics_step(&w, SW, SH, 0, 0, 1 /* dragged */, DT);
-        double ov = overlap_px(physics_find_body(&w, 1), physics_find_body(&w, 2));
+        PhysicsBody *v = physics_find_body(&w, 2);
+        /* Stop once the victim runs out of room. Past that it is a window held
+         * against the far wall by the hand, and the overlap that produces is
+         * physics working, not physics breaking. */
+        if (v->x + v->width > WORLD - 1500.0) break;
+        double ov = overlap_px(physics_find_body(&w, 1), v);
         if (ov > worst) worst = ov;
+        double vs = hypot(v->vx, v->vy);
+        if (vs > fastest) fastest = vs;
     }
-    PhysicsBody *v = physics_find_body(&w, 2);
-    if (victim_speed) *victim_speed = hypot(v->vx, v->vy);
+    if (victim_speed) *victim_speed = fastest;
     physics_destroy(&w);
     return worst;
 }
@@ -85,6 +92,126 @@ static void test_drag_does_not_pass_through(void) {
          * drag, 98 px/s at 12000). */
         CHECK(victim > speeds[i] * 0.4);
     }
+}
+
+static void test_drag_survives_a_flick(void) {
+    /* Issue #7: the honest velocity above bought collision back only as far as
+     * about 3000 px/s. Beyond that a drag is still a teleport, and one that lands
+     * 100px inside the neighbour gives the solver a contact already too deep to
+     * undo — the overlap ran away to 269px through a 300px window and the hand
+     * walked out the far side. 6000 px/s is a flick across one screen in a third
+     * of a second, which is nothing unusual.
+     *
+     * Two things were wrong and both had to be fixed:
+     *   - the tick was one solve however far the hand moved (PHYSICS_MAX_STEP_ADVANCE)
+     *   - Box2D's own speed ceiling held the shoved window to 2 * max_throw_speed,
+     *     so above 3600 px/s the victim was forbidden to get out of the way
+     *     however finely the tick was cut (physics_step sets it from the drag).
+     *
+     * Measured before: 249 / 269 / 269 / 269 / 76 px of overlap, every one of them
+     * with the dragged window ending up on the far side of its neighbour. */
+    CASE("a flick shoves too, it does not pass through");
+    const double speeds[] = { 6000.0, 9000.0, 12000.0, 20000.0 };
+    for (unsigned i = 0; i < sizeof(speeds) / sizeof(speeds[0]); i++) {
+        double victim = 0.0;
+        double worst = drag_into_neighbour(speeds[i], &victim);
+        /* Scales with how far the hand moves in one substep rather than in one
+         * tick, so it stays a sliver instead of swallowing the window. */
+        CHECK(worst < 30.0);
+        /* And the victim keeps up with the hand: it is what stops the overlap
+         * growing in the first place. */
+        CHECK(victim > speeds[i] * 0.8);
+    }
+
+    /* Past the substep ceiling the pieces grow again and the overlap with them,
+     * so this is a promise about degrading, not about being exact: 40000 px/s is
+     * a hand no display can even show. It must still be a shove and not a
+     * pass-through, and the victim must still be carried along at the fastest
+     * speed one tick of substepping can actually resolve — which is also the
+     * ceiling the exemption is capped at, so a mid-drag teleport cannot make
+     * itself the speed limit for everything it sweeps past. */
+    CASE("and past the substep ceiling it degrades rather than breaks");
+    double budget = PHYSICS_MAX_SUBSTEPS * PHYSICS_MAX_STEP_ADVANCE * PHYSICS_TICK_RATE;
+    double victim = 0.0;
+    double worst = drag_into_neighbour(40000.0, &victim);
+    CHECK(worst < 150.0);              /* half a window, not the whole of it */
+    CHECK(victim > budget * 0.95);
+    CHECK(victim <= budget + 1.0);
+}
+
+static void test_ordinary_drag_lands_on_the_cursor(void) {
+    /* The dragged body no longer teleports to the cursor: it starts where it was
+     * and is carried the rest of the way by its own velocity, which is what lets
+     * a substep move it part of the way. Over a whole tick that has to come out
+     * in exactly the same place, or every drag in the compositor now lags the
+     * mouse by a frame. */
+    CASE("a drag still ends the tick exactly where the mouse put it");
+    PhysicsWorld w;
+    physics_init(&w);
+    w.gravity_scale = 1.0;
+    physics_sync_body(&w, 1, 400, 400, 400, 300, SW);
+
+    double x = 400.0, y = 300.0;
+    for (int i = 0; i < 60; i++) {
+        x += 900.0 * DT;
+        y += 300.0 * DT;
+        physics_sync_body(&w, 1, (int)x, (int)y, 400, 300, SW);
+        physics_step(&w, SW, SH, 0, 0, 1 /* dragged */, DT);
+        PhysicsBody *b = physics_find_body(&w, 1);
+        CHECK(fabs(b->x - (int)x) < 0.001);
+        CHECK(fabs(b->y - (int)y) < 0.001);
+    }
+    physics_destroy(&w);
+}
+
+static void test_a_teleport_is_not_a_drag(void) {
+    /* The dragged body is swept rather than teleported now, and that is right for
+     * a hand and wrong for everything else that can move a held window a long way
+     * in one tick. Crossing the ring's join mid-drag puts the camera — and the
+     * drag's anchor with it — nine screens over in a single tick; a swept body
+     * would plough through every window on all ten desktops on the way.
+     *
+     * A row of windows standing between here and there must be exactly where it
+     * was, and still asleep. */
+    CASE("a window teleported mid-drag ploughs no furrow on the way out");
+    PhysicsWorld w;
+    physics_init(&w);
+    w.gravity_scale = 0.0;
+
+    physics_sync_body(&w, 1, 200, 400, 400, 300, SW);
+    /* A dense row all the way along, so a sweep cannot slip between them. */
+    int n = 0;
+    for (int d = 0; d <= 9; d++)
+        for (int k = 0; k < 5; k++)
+            physics_sync_body(&w, 100 + n++, d * SW + 700 + k * 380, 400, 360, 300, SW);
+
+    /* Settle, so "did not move" means something. */
+    for (int i = 0; i < 60; i++) physics_step(&w, SW, SH, 0, 0, 1, DT);
+
+    double was[50];
+    for (int i = 0; i < n; i++) was[i] = physics_find_body(&w, 100 + i)->x;
+
+    /* The join: nine screens in one tick, exactly as server_goto_desktop's seam
+     * branch moves the camera and server_drag_follow_camera moves the anchor. */
+    physics_sync_body(&w, 1, 9 * SW + 200, 400, 400, 300, SW);
+    physics_step(&w, SW, SH, 0, 0, 1 /* dragged */, DT);
+
+    for (int i = 0; i < n; i++) {
+        PhysicsBody *b = physics_find_body(&w, 100 + i);
+        /* Nudged apart where it LANDED is fine and is what should happen; swept
+         * is not. Measured when the teleport was treated as travel: one window
+         * thrown 837px in the single tick, at 30720 px/s, and 32 impacts —
+         * a furrow through the desktop being left, and a sound for every window
+         * in it. */
+        CHECK(fabs(b->x - was[i]) < 60.0);
+        /* Above all: a teleport hands out no momentum. Nothing may come out of
+         * this tick faster than the world's ordinary limit, because nothing in
+         * it was actually shoved by a hand. */
+        CHECK(hypot(b->vx, b->vy) <= w.max_throw_speed + 1.0);
+    }
+    /* And it arrived. */
+    CHECK(fabs(physics_find_body(&w, 1)->x - (9.0 * SW + 200)) < 1.0);
+    physics_destroy(&w);
 }
 
 static void test_world_speed_ceiling(void) {
@@ -196,6 +323,9 @@ static void test_init_gives_a_closed_world(void) {
 
 int main(void) {
     test_drag_does_not_pass_through();
+    test_drag_survives_a_flick();
+    test_ordinary_drag_lands_on_the_cursor();
+    test_a_teleport_is_not_a_drag();
     test_world_speed_ceiling();
     test_engine_ceiling_follows_config();
     test_walls_hold_absurd_speeds();
