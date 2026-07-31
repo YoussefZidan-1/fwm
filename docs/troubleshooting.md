@@ -157,6 +157,20 @@ started in a way that bypassed its own startup — or the D-Bus bus predates it 
 never got the update. `dbus-update-activation-environment WAYLAND_DISPLAY
 XDG_CURRENT_DESKTOP` repairs it for the session in progress.
 
+**`fwm: no D-Bus session bus` in the log, and no portal anywhere.** There is no
+session bus to publish anything to. A display manager gives you one; starting
+fwm by hand from a bare VT on a system without systemd's user manager usually
+does not. Wrap the session in one:
+
+```sh
+exec dbus-run-session fwm
+```
+
+fwm checks for the bus and skips the publish when there is none, rather than
+letting D-Bus go looking for one on its own — left to itself it asks the X
+server for the address, and the X server it would ask is fwm's own Xwayland,
+which cannot answer a compositor that is still starting up.
+
 **The picker offers windows and only the whole screen works.** xdg-desktop-portal-wlr
 captures outputs, not individual windows; fwm does not implement the
 foreign-toplevel capture path a per-window share would need. Share the screen and

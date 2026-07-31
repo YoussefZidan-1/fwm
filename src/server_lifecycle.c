@@ -47,6 +47,8 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <signal.h>
+#include <limits.h>
 #include <errno.h>
 #include <time.h>
 #include <math.h>
@@ -112,7 +114,36 @@ static int handle_signal(int signal, void *data) {
  *
  * Entirely best-effort. dbus-update-activation-environment need not exist, and
  * a session without a bus is still a working session — just one without
- * portals, so we say so once and carry on. */
+ * portals, so we say so once and carry on.
+ *
+ * Nothing here may block for long, and nothing here may talk to a bus we would
+ * have to start ourselves. This runs inside server_init, before the event loop:
+ * by now libseat has taken the VT, which means graphics mode and the console
+ * keyboard switched off. A compositor stuck here does not look stuck, it looks
+ * like a dead machine — no picture, no keys, not even a VT switch, only the
+ * power button. See the DISPLAY note below for how that used to happen. */
+
+/* Is there a session bus to talk to at all?
+ *
+ * This is the whole reason the exec below is safe. With no address libdbus
+ * falls back to X11 autolaunch: it asks the X server named by DISPLAY for the
+ * bus address — and DISPLAY is our own Xwayland, created lazily, which cannot
+ * answer until the event loop starts it. The event loop is what we are on our
+ * way to. The child blocks on the X handshake, we block on the child, and the
+ * session is gone before it drew a frame. Both checks mirror what libdbus
+ * itself tries before it resorts to autolaunch. */
+static bool session_bus_exists(void) {
+    const char *addr = getenv("DBUS_SESSION_BUS_ADDRESS");
+    if (addr && *addr) return true;
+
+    const char *runtime = getenv("XDG_RUNTIME_DIR");
+    if (!runtime || !*runtime) return false;
+    char path[PATH_MAX];
+    if (snprintf(path, sizeof(path), "%s/bus", runtime) >= (int)sizeof(path)) return false;
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISSOCK(st.st_mode);
+}
+
 static void export_session_environment(void) {
     /* Identifies the desktop to the portal frontend. "wlroots" is the name
      * xdg-desktop-portal-wlr answers to; "fwm" lets a portals.conf single us
@@ -121,6 +152,12 @@ static void export_session_environment(void) {
     /* Display managers that launch us from a VT leave this as "tty". */
     setenv("XDG_SESSION_TYPE", "wayland", 1);
 
+    if (!session_bus_exists()) {
+        wlr_log(WLR_INFO, "no D-Bus session bus: portals such as screen sharing "
+                          "will not work (start fwm under dbus-run-session)");
+        return;
+    }
+
     pid_t pid = fork();
     if (pid < 0) {
         wlr_log(WLR_ERROR, "cannot fork to export the session environment: "
@@ -128,6 +165,9 @@ static void export_session_environment(void) {
         return;
     }
     if (pid == 0) {
+        /* Its own session: whatever the bus tools leave running behind them
+         * is not in our process group and does not share our terminal. */
+        setsid();
         execlp("dbus-update-activation-environment",
                "dbus-update-activation-environment",
                "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE",
@@ -135,11 +175,31 @@ static void export_session_environment(void) {
         _exit(127);
     }
 
-    /* Wait for it: the portal must not be activated with a half-updated
-     * environment, and the process is short-lived by construction. */
-    int status = 0;
-    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
-        // interrupted by a signal; keep waiting
+    /* Wait for it, but never indefinitely: the portal must not be activated
+     * with a half-updated environment, and the process is short-lived by
+     * construction — while a bus that accepts a connection and then answers
+     * nothing is a hang with no timeout of its own. A second is far longer
+     * than the round trip needs and short enough to sit through; past that we
+     * take the session over the portals and kill it. */
+    static const int wait_ms = 1000, step_ms = 5;
+    int status = 0, waited = 0;
+    for (;;) {
+        pid_t r = waitpid(pid, &status, WNOHANG);
+        if (r == pid) break;
+        if (r < 0 && errno != EINTR) return;    /* nothing left to reap */
+        if (r == 0 && waited >= wait_ms) {
+            wlr_log(WLR_ERROR, "dbus-update-activation-environment did not "
+                               "answer in %dms: giving up on it so the session "
+                               "can start; portals may not work", wait_ms);
+            kill(pid, SIGKILL);
+            while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+                // reap the corpse; it cannot escape SIGKILL
+            }
+            return;
+        }
+        struct timespec ts = { 0, step_ms * 1000000L };
+        nanosleep(&ts, NULL);
+        waited += step_ms;
     }
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
         wlr_log(WLR_INFO, "dbus-update-activation-environment did not run "
