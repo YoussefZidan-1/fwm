@@ -160,12 +160,46 @@ void wobble_release(Wobble *wb) {
     grip_clear(wb);
 }
 
+void wobble_set_limit(Wobble *wb, double px) {
+    wb->limit = px > 0.0 ? px : 0.0;
+}
+
+/* Hold every point inside the stretch limit. Radial, so it bounds the shape
+ * without choosing a direction for it, and the outward part of the velocity
+ * goes with it: a point held at the limit by a hand that keeps moving would
+ * otherwise pile up speed it never spent, and let go of it all at once the
+ * moment the drag stopped — a sheet that snapped instead of settling. */
+static void wobble_clamp(Wobble *wb) {
+    if (wb->limit <= 0.0) return;
+    for (int k = 0; k < WOBBLE_POINTS; k++) {
+        int i = k % WOBBLE_GRID, j = k / WOBBLE_GRID;
+        double hx = home_x(wb, i), hy = home_y(wb, j);
+        double dx = wb->px[k] - hx, dy = wb->py[k] - hy;
+        double d = hypot(dx, dy);
+        if (d <= wb->limit || d <= 0.0) continue;
+
+        double s = wb->limit / d;
+        wb->px[k] = hx + dx * s;
+        wb->py[k] = hy + dy * s;
+
+        double nx = dx / d, ny = dy / d;
+        double vn = wb->vx[k] * nx + wb->vy[k] * ny;
+        if (vn > 0.0) {          /* still travelling outward */
+            wb->vx[k] -= vn * nx;
+            wb->vy[k] -= vn * ny;
+        }
+    }
+}
+
 void wobble_translate(Wobble *wb, double dx, double dy) {
     if (dx == 0.0 && dy == 0.0) return;
     for (int k = 0; k < WOBBLE_POINTS; k++) {
         wb->px[k] -= dx;
         wb->py[k] -= dy;
     }
+    /* This is where the sheet is driven, so this is where it can be driven past
+     * what it may hold — one flick of the hand is one call. */
+    wobble_clamp(wb);
 }
 
 /* One integration step. Split out so the sub-stepping above reads as the loop
@@ -221,6 +255,8 @@ static void wobble_substep(Wobble *wb, double dt) {
         wb->vx[wb->anchor] = 0.0;
         wb->vy[wb->anchor] = 0.0;
     }
+
+    wobble_clamp(wb);
 }
 
 void wobble_step(Wobble *wb, double dt) {

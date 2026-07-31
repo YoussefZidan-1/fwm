@@ -48,6 +48,7 @@ typedef struct {
      * hold of that part of the sheet. 1 everywhere when nothing is grabbed. */
     double grip[WOBBLE_POINTS];
     int anchor;                    /* point held exactly on target, -1 for none */
+    double limit;                  /* max px from rest; 0 = unbounded */
 } Wobble;
 
 /* Put the lattice at rest for a `w` x `h` window. */
@@ -68,6 +69,22 @@ void wobble_release(Wobble *wb);
  * were, so the rest positions have run ahead of them by exactly that much —
  * this is the only thing that ever drives the wobble. */
 void wobble_translate(Wobble *wb, double dx, double dy);
+
+/* How far a control point may be pulled from its rest position, in px. 0 lifts
+ * the limit.
+ *
+ * The sheet has no speed limit of its own: the lag under a steady drag is
+ * C*v/K_HOME, about 0.085 px per px/s, and nothing in the springs bounds it. But
+ * the warped picture is drawn into a buffer only so much bigger than the window,
+ * so past a certain hand speed the deformation is not a larger wobble — it is a
+ * mesh outside its own buffer, hard-clipped by the edge and, once the offsets
+ * pass the grid spacing, folded over itself. Shaken hard it reached seven times
+ * the margin.
+ *
+ * Real jelly has a stretch limit too. Give the caller's margin to the sheet and
+ * it saturates instead: the wobble grows with the hand exactly as it did up to
+ * the point it would have torn, and simply stops growing after that. */
+void wobble_set_limit(Wobble *wb, double px);
 
 /* Advance the springs by `dt` seconds, sub-stepping internally so a long frame
  * slows the wobble down instead of blowing it up. */

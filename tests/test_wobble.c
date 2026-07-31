@@ -141,6 +141,88 @@ static void test_shake_stays_sane(void) {
     CHECK(wobble_at_rest(&wb));
 }
 
+/* view_effects.c draws the warped picture into a buffer that is the window plus
+ * jelly_margin on every side: 0.22 of the larger side, clamped to [48, 192]. */
+#define MARGIN 176   /* what jelly_margin_for(800, 600) gives */
+
+static void test_stretch_limit(void) {
+    /* The springs have no speed limit: the lag under a steady drag is C*v/K,
+     * about 0.085px per px/s, and it just keeps growing. The buffer does not.
+     * Past roughly 2000 px/s the mesh was outside the buffer it is drawn into
+     * and clipped by the edge; shaken hard it reached 1319px against a 176px
+     * margin, seven times over, by which point the offsets are well past the
+     * grid spacing and the quads fold through each other. That is what "the
+     * jelly goes mad when you shake it" was. */
+    CASE("the sheet never stretches past the buffer it is drawn into");
+    const double speeds[] = { 2400.0, 4000.0, 8000.0, 16000.0, 60000.0 };
+    for (unsigned s = 0; s < sizeof(speeds) / sizeof(speeds[0]); s++) {
+        /* Steady. */
+        Wobble wb;
+        wobble_reset(&wb, W, H);
+        wobble_set_limit(&wb, MARGIN);
+        wobble_grab(&wb, 0, 0);
+        for (int i = 0; i < 240; i++) {
+            wobble_translate(&wb, speeds[s] * DT, 0.0);
+            wobble_step(&wb, DT);
+            CHECK(wobble_max_offset(&wb) <= MARGIN + 0.001);
+        }
+
+        /* And shaken, at the frequencies a hand actually manages. */
+        const double hz[] = { 1.0, 2.25, 4.0, 8.0 };
+        for (unsigned f = 0; f < sizeof(hz) / sizeof(hz[0]); f++) {
+            Wobble sh;
+            wobble_reset(&sh, W, H);
+            wobble_set_limit(&sh, MARGIN);
+            wobble_grab(&sh, W / 2.0, H / 2.0);
+            double amp = speeds[s] / (2.0 * M_PI * hz[f]), prev = 0.0;
+            for (int i = 0; i < 400; i++) {
+                double now = amp * sin(2.0 * M_PI * hz[f] * (i + 1) * DT);
+                wobble_translate(&sh, now - prev, 0.0);
+                prev = now;
+                wobble_step(&sh, DT);
+                CHECK(wobble_max_offset(&sh) <= MARGIN + 0.001);
+            }
+            /* Held at the limit by a hand that never stopped moving, it must
+             * still come back, and promptly: the outward velocity is dropped as
+             * the point is clamped, so there is no store of speed to be let go
+             * of all at once. (Releasing frees the grip, so the sheet does
+             * redistribute and a point that was pinned under the hand can swing
+             * out — the limit is what bounds that, not a monotonic decay.) */
+            wobble_release(&sh);
+            int frames = 0;
+            while (!wobble_at_rest(&sh) && frames < 900) {
+                wobble_step(&sh, DT);
+                CHECK(wobble_max_offset(&sh) <= MARGIN + 0.001);
+                frames++;
+            }
+            CHECK(wobble_at_rest(&sh));
+            CHECK(frames < 120);          /* two seconds is a snap, not a settle */
+        }
+    }
+}
+
+static void test_limit_leaves_ordinary_drags_alone(void) {
+    /* The limit is a limit, not a change of feel: everything that fitted before
+     * has to be untouched, to the last bit. A brisk 1200 px/s drag lags about
+     * 102px, well inside the margin. */
+    CASE("the limit does not touch a wobble that already fitted");
+    Wobble lim, free_;
+    wobble_reset(&lim, W, H);
+    wobble_reset(&free_, W, H);
+    wobble_set_limit(&lim, MARGIN);
+    wobble_grab(&lim, 0, 0);
+    wobble_grab(&free_, 0, 0);
+
+    for (int i = 0; i < 240; i++) {
+        wobble_translate(&lim, 1200.0 * DT, 0.0);
+        wobble_translate(&free_, 1200.0 * DT, 0.0);
+        wobble_step(&lim, DT);
+        wobble_step(&free_, DT);
+        CHECK(wobble_max_offset(&lim) == wobble_max_offset(&free_));
+    }
+    CHECK(wobble_max_offset(&lim) < MARGIN);
+}
+
 static void test_long_frame(void) {
     CASE("a dropped frame does not detonate it");
     Wobble wb;
@@ -193,6 +275,8 @@ int main(void) {
     test_steady_motion_never_settles();
     test_grab_point_leads();
     test_shake_stays_sane();
+    test_stretch_limit();
+    test_limit_leaves_ordinary_drags_alone();
     test_long_frame();
     test_resize_keeps_shape();
     test_points_out();

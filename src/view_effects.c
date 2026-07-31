@@ -641,6 +641,16 @@ void view_jelly_tick(FwmView *view, double strength, double dt) {
         view_jelly_resnap(view);
     }
 
+    /* What the sheet is allowed to stretch to, this tick. The buffer it is drawn
+     * into is the window plus jelly_margin on every side, and `strength` scales
+     * the offsets on the way out (view_jelly_draw) — so what has to fit in the
+     * margin is the offset TIMES the strength, and a stronger setting saturates
+     * proportionally sooner rather than tearing that much earlier. Re-stated
+     * every tick because both can change under a live config reload. */
+    wobble_set_limit(&view->jelly_wob,
+                     strength > 1.0 ? view->jelly_margin / strength
+                                    : (double)view->jelly_margin);
+
     /* The window's own movement is the only thing that ever drives the sheet:
      * the rest positions go where the window went, the points stay where they
      * were, and the springs take it from there.

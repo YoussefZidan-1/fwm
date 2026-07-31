@@ -235,6 +235,15 @@ live         = 1.0   # live window content under spin/wobble; 0 = still frame
 still frame that costs the machine nothing, which is the better trade on hardware
 where the effect judders.
 
+The wobble has a stretch limit, like real jelly. It lags behind the hand in
+proportion to how fast you are moving — and the warped picture is drawn into a
+buffer only so much bigger than the window, so past roughly 2000 px/s the sheet
+would leave that buffer, be clipped by its edge, and fold through itself. Instead
+it saturates: shake a window as hard as you like and the wobble grows exactly as
+it always did up to the point it would have torn, then simply stops growing. A
+higher `jelly` scales the deformation, so it reaches that ceiling proportionally
+sooner.
+
 ## session
 
 ```toml
