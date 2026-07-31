@@ -20,10 +20,18 @@ jobs:
     container: archlinux:latest
     steps:
       - name: Install dependencies
+        # Keep in step with the pkg_check_modules block at the top of
+        # CMakeLists.txt. ffmpeg is what carries libav* for the video
+        # wallpaper, and it is REQUIRED there — a missing one fails at
+        # configure, before a single file is compiled. libpipewire and
+        # libpulse are optional to the build but installed on purpose: without
+        # them src/cava.c and src/sound.c compile to no-ops and CI would never
+        # see a break in either.
         run: |
           pacman -Syu --noconfirm --needed \
             gcc make cmake pkgconf git \
             wayland wlroots0.20 libxkbcommon cairo pango gdk-pixbuf2 box2d \
+            ffmpeg libpipewire libpulse \
             xorg-xwayland
 
       - uses: actions/checkout@v4
@@ -64,6 +72,7 @@ jobs:
           pacman -Syu --noconfirm --needed \
             gcc clang make cmake pkgconf git \
             wayland wlroots0.20 libxkbcommon cairo pango gdk-pixbuf2 box2d \
+            ffmpeg libpipewire libpulse \
             xorg-xwayland foot
 
       - uses: actions/checkout@v4
