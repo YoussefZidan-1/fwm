@@ -630,6 +630,23 @@ bool server_drag_press(FwmServer *server, uint32_t button, double lx, double ly,
                         server->interactive.swirl_acc = 0.0;
                         server->interactive.swirl_abs = 0.0;
                         server->interactive.swirl_span = 0.0;
+                        /* Unseeded, exactly as server_start_interactive_move
+                         * leaves it — server_drag_follow_camera measures the
+                         * camera against a reference taken when the drag
+                         * began, and a reference left over from the PREVIOUS
+                         * drag is a distance the window never travelled.
+                         *
+                         * Missing here, this was: a drag on desktop 1 seeded
+                         * the reference at camera 0, and the next drag one
+                         * desktop over opened with a delta of a whole screen
+                         * and teleported the window forward by it. Each drag
+                         * then re-seeded one desktop behind the next, so it
+                         * was +1 desktop from the second onward and clean on
+                         * the first — and it vanished whenever two drags
+                         * happened on the same desktop, which is what made it
+                         * look intermittent. */
+                        server->interactive.cam_have = 0;
+                        server->interactive.cam_output = NULL;
 
                         /* Remember WHERE the window was taken hold of, in its
                          * own frame, so a spinning one can hang from that
