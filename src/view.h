@@ -94,6 +94,28 @@ typedef struct FwmView {
      * close-animation snapshot (FwmGhost) after the client buffer is gone. */
     struct wlr_buffer *last_buffer;
 
+    /* Destroyed by a collision ([physics] hp), close already sent. Two things
+     * hang off it: a window crushed between two others must not be sent a
+     * second close in the same frame, and the ghost it leaves behind collapses
+     * to a point instead of fading, so being broken does not look like being
+     * closed.
+     *
+     * This is a polite close, not a kill, so the client may decline it and put
+     * up a "save your work?" dialog instead. `dying_at` is when the request
+     * went out: past the grace period the window can be destroyed again, or a
+     * client that says no once would be immortal for the rest of the session.
+     * Keep being hit and you keep being asked to close, which is the right
+     * answer for a compositor where being hit is the entire idea.
+     *
+     * A client that never handles the request at all is therefore INDESTRUCTIBLE,
+     * and that is the accepted trade. Escalating to wl_client_destroy would take
+     * down every other window the application owns, and no collision is worth
+     * that. It is also not a special case: the same request is what `killclient`
+     * sends, so a window that survives this is one the user could not have
+     * closed by hand either. */
+    int dying;
+    double dying_at;
+
     /* Set on every client commit, cleared when an effect re-photographs the
      * window. The spin and the wobble redraw off THIS rather than off a timer:
      * new content is exactly when a new picture is worth taking, and a window

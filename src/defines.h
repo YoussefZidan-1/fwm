@@ -34,6 +34,12 @@
 /* Approach speed (px/s) a collision must reach before it counts as an impact
  * worth reacting to. Above resting jitter, below a short drop. */
 #define PHYSICS_HIT_MIN_SPEED   120.0
+/* How long a window destroyed by a collision ([physics] hp) is left alone
+ * after the close request goes out. Long enough that the several impacts of
+ * one landing do not each send their own close, short enough that a client
+ * which put up a save-your-work dialog instead of dying is not invulnerable
+ * for the rest of the session. */
+#define HP_CLOSE_GRACE_S        2.0
 /* There used to be a DRAG_PUSH_MAX_SPEED here: a 600 px/s ceiling on the
  * VELOCITY handed to Box2D for a window being dragged, meant to stop a fast
  * shove launching its neighbour onto the next desktop. It did that, and it also

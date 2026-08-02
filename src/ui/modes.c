@@ -150,6 +150,28 @@ static void icon_ring(cairo_t *cr, double x, double y, double s) {
     cairo_set_line_cap(cr, CAIRO_LINE_CAP_BUTT);
 }
 
+/* A window with a crack across it. Not a heart: hit points are a game idea and
+ * a heart would say "lives", but what this mode actually does is break windows,
+ * and the icon should say which of the two.
+ *
+ * The crack is a stroke over the outline rather than a gap cut out of it — a
+ * real split would need the box drawn as two paths, and at 16px the seam
+ * between them closes up and the icon just looks like a plain window again. */
+static void icon_hp(cairo_t *cr, double x, double y, double s) {
+    double lw = fmax(2.0, s * 0.13);
+    cairo_set_line_width(cr, lw);
+    cairo_rectangle(cr, x + lw / 2.0, y + lw / 2.0, s - lw, s - lw);
+    cairo_stroke(cr);
+
+    /* Off-centre and kinked, because a straight line down the middle reads as
+     * a split-pane icon — which is a tiling mode, one row up this same menu. */
+    cairo_move_to(cr, x + s * 0.62, y);
+    cairo_line_to(cr, x + s * 0.40, y + s * 0.44);
+    cairo_line_to(cr, x + s * 0.60, y + s * 0.58);
+    cairo_line_to(cr, x + s * 0.36, y + s);
+    cairo_stroke(cr);
+}
+
 void modes_icon(cairo_t *cr, int icon, double x, double y, double size) {
     cairo_save(cr);
     switch (icon) {
@@ -160,6 +182,7 @@ void modes_icon(cairo_t *cr, int icon, double x, double y, double size) {
     case MODE_ICON_SOUND:    icon_sound(cr, x, y, size);    break;
     case MODE_ICON_CAVA:     icon_cava(cr, x, y, size);     break;
     case MODE_ICON_RING:     icon_ring(cr, x, y, size);     break;
+    case MODE_ICON_HP:       icon_hp(cr, x, y, size);       break;
     default: break;
     }
     cairo_restore(cr);
@@ -259,6 +282,7 @@ static void anim_reset(const ModesState *st) {
     g_anim.sw[MODES_ROW_FLOATING] = st->floating ? 1.0 : 0.0;
     g_anim.sw[MODES_ROW_GRAVITY]  = st->gravity  ? 1.0 : 0.0;
     g_anim.sw[MODES_ROW_SOUND]    = st->sound    ? 1.0 : 0.0;
+    g_anim.sw[MODES_ROW_HP]       = st->hp       ? 1.0 : 0.0;
     g_anim.open   = 0.0;
     g_anim.moving = 1;
     g_anim.live   = 1;
@@ -447,18 +471,18 @@ static void draw_menu(cairo_t *cr, int w, int h, void *user) {
     pango_font_description_free(desc);
 
     static const char *name[MODES_ROW_COUNT] = {
-        "Tiling", "Floating", "Gravity", "Mass", "Sound", "Cava", "Ring",
+        "Tiling", "Floating", "Gravity", "Mass", "Sound", "Cava", "Ring", "Breakable",
     };
     static const int   icon[MODES_ROW_COUNT] = {
         MODE_ICON_TILING, MODE_ICON_FLOATING, MODE_ICON_GRAVITY, MODE_ICON_MASS,
-        MODE_ICON_SOUND, MODE_ICON_CAVA, MODE_ICON_RING,
+        MODE_ICON_SOUND, MODE_ICON_CAVA, MODE_ICON_RING, MODE_ICON_HP,
     };
     /* Lights the icon. Mass is never off, so what lights it is the position
      * that is doing something beyond the default — the same reading the cava
      * row gets from `cava != 0`. */
     const int on[MODES_ROW_COUNT] = {
         st->tiling, st->floating, st->gravity, st->mass == MODES_MASS_RAM,
-        st->sound, st->cava != 0, st->ring,
+        st->sound, st->cava != 0, st->ring, st->hp,
     };
     /* Segment labels, per row; NULL for the rows that carry a switch. */
     static const char *const cava_labels[MODES_CAVA_SEGS] = { "off", "visual", "physical" };
@@ -566,6 +590,7 @@ bool modes_menu_tick(struct wlr_scene_buffer *buf, const ModesState *st, double 
         st->sound ? 1.0 : 0.0,
         0.0, /* cava: segmented, eased below */
         st->ring ? 1.0 : 0.0,
+        st->hp ? 1.0 : 0.0,
     };
 
     /* Clamp the step before easing with it.

@@ -684,6 +684,7 @@ void server_modes_state(FwmServer *server, ModesState *out) {
     out->sound    = server->config.sound.collisions;
     out->cava     = server->config.cava.mode;
     out->ring     = server->config.camera.wrap;
+    out->hp       = server->config.physics.hp;
     out->opacity  = server->config.decor.tray_opacity;
 }
 
@@ -793,6 +794,15 @@ int server_modes_menu_click(FwmServer *server, int row, int seg) {
         break;
     case MODES_ROW_RING:
         server_dispatch_action(server, "toggle_wrap");
+        changed = 1;
+        break;
+    case MODES_ROW_HP:
+        /* Nothing to sync: server_consume_impacts reads the flag straight off
+         * the config every frame, so switching it off mid-flight simply stops
+         * the next collision from being worked out. Windows already asked to
+         * close are not called back — that request is the client's now. */
+        server->config.physics.hp = !server->config.physics.hp;
+        server_state_save_modes(server);
         changed = 1;
         break;
     case MODES_ROW_CAVA: {

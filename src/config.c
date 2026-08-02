@@ -30,6 +30,10 @@ static const PhysicsConfig physics_defaults = {
     .mass_mode              = PHYSICS_MASS_SIZE,
     .mass_ram_ref           = 300.0,
     .mass_ram_max           = 20.0,
+    /* Off, and with the break speed left to follow max_throw_speed: a window
+     * cannot then be destroyed by anything lighter than itself. */
+    .hp                     = 0,
+    .hp_break_speed         = 0.0,
     .throw_speed_multiplier = 0.65,
     .max_throw_speed        = 1800.0,
     .stop_speed_threshold   = 1.0,
@@ -226,6 +230,10 @@ static void load_physics(toml_table_t *root, FwmConfig *cfg) {
     LOAD_DOUBLE(tbl, "tick_rate",              p->tick_rate);
     LOAD_DOUBLE(tbl, "mass_ram_ref",           p->mass_ram_ref);
     LOAD_DOUBLE(tbl, "mass_ram_max",           p->mass_ram_max);
+    LOAD_DOUBLE(tbl, "hp_break_speed",         p->hp_break_speed);
+    /* There is deliberately no "hp" key to go with it: breakable windows are
+     * session state, turned on from the modes menu and never restored from
+     * anywhere. See PhysicsConfig.hp. */
 
     toml_datum_t mm = toml_string_in(tbl, "mass");
     if (mm.ok) {
@@ -243,6 +251,15 @@ static void load_physics(toml_table_t *root, FwmConfig *cfg) {
     if (p->mass_ram_ref < 1.0)  p->mass_ram_ref = 1.0;
     if (p->mass_ram_max < 1.0)  p->mass_ram_max = 1.0;
     if (p->mass_ram_max > 200.0) p->mass_ram_max = 200.0;
+
+    /* A break speed near zero divides by nothing and makes the gentlest touch
+     * lethal, which is not a configuration anybody wants to arrive at by
+     * typo. Zero and below keep their meaning ("use max_throw_speed"). */
+    if (p->hp_break_speed > 0.0 && p->hp_break_speed < 50.0) {
+        config_report_error(cfg, "[physics] hp_break_speed: %.0f is too low to survive — "
+                                 "raised to 50", p->hp_break_speed);
+        p->hp_break_speed = 50.0;
+    }
 
     toml_array_t *steps = toml_array_in(tbl, "gravity_steps");
     if (steps) {
@@ -1067,9 +1084,14 @@ static void load_rules(toml_table_t *root, FwmConfig *cfg) {
         r->gravity  = rule_number(cfg, tbl, "gravity",  i, -100.0, 100.0);
         r->bounce   = rule_number(cfg, tbl, "bounce",   i, 0.0, 1.0);
         r->friction = rule_number(cfg, tbl, "friction", i, 0.0, 1.0);
+        /* Toughness may be 0 — a window made of glass, destroyed by any hit at
+         * all — so the floor is 0 and not the 0.001 mass needs. */
+        r->toughness = rule_number(cfg, tbl, "toughness", i, 0.0, 1000.0);
+        r->hardness  = rule_number(cfg, tbl, "hardness",  i, 0.0, 1000.0);
 
         if (r->nocollide < 0 && r->pin < 0 && r->desktop < 0 &&
-            isnan(r->mass) && isnan(r->gravity) && isnan(r->bounce) && isnan(r->friction))
+            isnan(r->mass) && isnan(r->gravity) && isnan(r->bounce) &&
+            isnan(r->friction) && isnan(r->toughness) && isnan(r->hardness))
             config_report_error(cfg, "[[rule]] #%d: matches but sets nothing", i + 1);
 
         idx++;
@@ -1083,6 +1105,7 @@ int config_match_rules(const FwmConfig *cfg, const char *app_id, const char *tit
     out->pin       = -1;
     out->desktop   = -1;
     out->mass = out->gravity = out->bounce = out->friction = NAN;
+    out->toughness = out->hardness = NAN;
 
     int matched = 0;
     for (int i = 0; i < cfg->rule_count; i++) {
@@ -1105,6 +1128,8 @@ int config_match_rules(const FwmConfig *cfg, const char *app_id, const char *tit
         if (!isnan(r->gravity))  out->gravity  = r->gravity;
         if (!isnan(r->bounce))   out->bounce   = r->bounce;
         if (!isnan(r->friction)) out->friction = r->friction;
+        if (!isnan(r->toughness)) out->toughness = r->toughness;
+        if (!isnan(r->hardness))  out->hardness  = r->hardness;
         matched = 1;
     }
     return matched;

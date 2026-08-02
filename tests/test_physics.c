@@ -158,11 +158,75 @@ static void test_mass_scale_is_felt(void) {
     CHECK_DBL(shove_speed(1.0), even, 1e-9);
 }
 
+/* ── hit points ──────────────────────────────────────────────────────── */
+
+/* Toughness scales the mass, and a rule that says nothing must leave it alone —
+ * the same tri-state every other material property uses, and the one that is
+ * easy to get wrong because NAN compares false against everything. */
+static void test_hp_follows_mass_and_toughness(void) {
+    CASE("hp_toughness");
+    PhysicsWorld w;
+    physics_init(&w);
+    w.gravity_scale = 0.0;
+
+    PhysicsBody *b = spawn(&w, 400, 400);
+    run(&w, 1);                       /* physics_step is what writes ->mass */
+    double plain = physics_body_hp(b);
+    CHECK(plain > 0.0);
+    CHECK_DBL(plain, b->mass, 1e-9);  /* no rule: hit points ARE the mass */
+
+    b->rule_toughness = 3.0;
+    CHECK_DBL(physics_body_hp(b), b->mass * 3.0, 1e-9);
+
+    /* Glass: destroyed by anything at all, and 0 has to survive the round trip
+     * because it is a value a rule may legitimately set. */
+    b->rule_toughness = 0.0;
+    CHECK_DBL(physics_body_hp(b), 0.0, 1e-9);
+
+    b->rule_toughness = NAN;
+    CHECK_DBL(physics_body_hp(b), plain, 1e-9);
+    CHECK_DBL(physics_body_hardness(b), 1.0, 1e-9);
+
+    physics_destroy(&w);
+}
+
+/* The freeze exists so that mass = "ram" cannot quietly move a window's hit
+ * points while it is resampled. Pinning has to survive a change of mass, and
+ * releasing has to hand them back. */
+static void test_hp_freeze_pins_and_releases(void) {
+    CASE("hp_freeze");
+    PhysicsWorld w;
+    physics_init(&w);
+    w.gravity_scale = 0.0;
+
+    PhysicsBody *b = spawn(&w, 400, 400);
+    run(&w, 1);
+    double before = b->mass;
+
+    physics_freeze_hp(&w, 1);
+    b->mass_scale = 8.0;              /* the window "grew" to eight times */
+    run(&w, 1);
+    CHECK(b->mass > before * 4.0);    /* ... its mass really did move */
+    CHECK_DBL(physics_body_hp(b), before, 1e-9);   /* ... and its hp did not */
+
+    /* Freezing again must not re-pin something already pinned: that is what
+     * lets the tick call it on every sample so late windows get a value. */
+    physics_freeze_hp(&w, 1);
+    CHECK_DBL(physics_body_hp(b), before, 1e-9);
+
+    physics_freeze_hp(&w, 0);
+    CHECK_DBL(physics_body_hp(b), b->mass, 1e-9);
+
+    physics_destroy(&w);
+}
+
 int main(void) {
     test_wall_holds_a_line();
     test_ring_carries_a_throw_round();
     test_ring_carries_a_throw_the_other_way();
     test_ring_crosses_only_when_clear();
     test_mass_scale_is_felt();
+    test_hp_follows_mass_and_toughness();
+    test_hp_freeze_pins_and_releases();
     return t_report("physics");
 }

@@ -373,8 +373,11 @@ PhysicsBody *physics_sync_body(PhysicsWorld *world, uint32_t id, int x, int y, i
      * one matched), so every material property defers to the desktop. */
     body->rule_mass = body->rule_gravity = NAN;
     body->rule_bounce = body->rule_friction = NAN;
+    body->rule_toughness = body->rule_hardness = NAN;
     /* Weighs exactly what its area says until a sampler says otherwise. */
     body->mass_scale = 1.0;
+    /* Nothing frozen: hit points follow the live mass until mass = "ram". */
+    body->hp_frozen = 0.0;
     update_body_geometry(body, x, y, width, height, world->mass_density);
 
     int d = (int)((body->x + body->width / 2.0) / screen_width);
@@ -500,6 +503,40 @@ void physics_push_overlapping(PhysicsWorld *world, uint32_t pusher, double speed
         b->vx = (dx / len) * speed;
         b->vy = (dy / len) * speed;
         b->flying = 1;
+    }
+}
+
+/* ── hit points ──────────────────────────────────────────────────────── */
+
+double physics_body_hp(const PhysicsBody *b) {
+    if (!b) return 0.0;
+    double base = (b->hp_frozen > 0.0) ? b->hp_frozen : b->mass;
+    double tough = isnan(b->rule_toughness) ? 1.0 : b->rule_toughness;
+    double hp = base * tough;
+    return hp > 0.0 ? hp : 0.0;
+}
+
+double physics_body_hardness(const PhysicsBody *b) {
+    if (!b) return 0.0;
+    return isnan(b->rule_hardness) ? 1.0 : b->rule_hardness;
+}
+
+void physics_freeze_hp(PhysicsWorld *world, int freeze) {
+    for (int i = 0; i < world->body_count; i++) {
+        PhysicsBody *b = &world->bodies[i];
+        if (!b->active) continue;
+        if (!freeze) { b->hp_frozen = 0.0; continue; }
+        /* Only bodies that have not been pinned yet, so this is safe to call on
+         * every sample: windows opened after the mode was switched on get their
+         * hit points at the next one, and windows already holding a value keep
+         * it — which is the entire point of freezing.
+         *
+         * Mass is written by physics_step from the resolved material, so a body
+         * that has not been stepped yet has none to freeze. Leaving it at 0
+         * means it keeps following the live mass and is retried next time,
+         * which is the safe way round: a window with no recorded weight is not
+         * accidentally immortal. */
+        if (b->hp_frozen <= 0.0 && b->mass > 0.0) b->hp_frozen = b->mass;
     }
 }
 

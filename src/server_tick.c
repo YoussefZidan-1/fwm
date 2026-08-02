@@ -155,10 +155,63 @@ static void server_sound_from_impact(FwmServer *server, const PhysicsImpact *im)
     sound_play(server->sound, gain, pitch);
 }
 
+/* ── hit points ──────────────────────────────────────────────────────── */
+
+static double server_now_s(void);
+
+/* One side of a collision, worked out against the other. See [physics] hp in
+ * config.h for the formula and why it is shaped that way; in short, damage is
+ * the attacker's mass scaled by the square of how far past the break speed the
+ * blow landed, and it is compared against the defender's mass ONCE. Nothing is
+ * accumulated, so surviving a hit leaves a window in perfect health.
+ *
+ * `attacker` NULL means a wall hit: walls are scenery and deal no damage at
+ * all, or a window dropped from the top of the screen would shatter on the
+ * floor every time it was thrown. */
+static void server_damage_one(FwmServer *server, const PhysicsBody *attacker,
+                              const PhysicsBody *victim, double speed) {
+    if (!attacker || !victim) return;
+
+    const PhysicsConfig *pc = &server->config.physics;
+    double v_break = pc->hp_break_speed > 0.0 ? pc->hp_break_speed : pc->max_throw_speed;
+    if (v_break <= 0.0) return;
+
+    double r = speed / v_break;
+    double damage = attacker->mass * r * r * physics_body_hardness(attacker);
+    double hp = physics_body_hp(victim);
+    if (damage <= hp) return;
+
+    FwmView *v = server_find_view(server, victim->id);
+    if (!v) return;
+    /* Once is enough: a window caught between two others takes both blows in
+     * the same frame, and the second must not queue a second close. Past the
+     * grace period the client has visibly declined, and the next hard enough
+     * hit asks again — see FwmView.dying_at. */
+    double now = server_now_s();
+    if (v->dying && now - v->dying_at < HP_CLOSE_GRACE_S) return;
+    v->dying = 1;
+    v->dying_at = now;
+
+    wlr_log(WLR_DEBUG, "window %u destroyed: %.1f damage vs %.1f hp at %.0f px/s",
+            victim->id, damage, hp, speed);
+    view_send_close(v);
+}
+
+static void server_damage_from_impact(FwmServer *server, const PhysicsImpact *im) {
+    PhysicsBody *a = im->id_a ? physics_find_body(&server->physics, im->id_a) : NULL;
+    PhysicsBody *b = im->id_b ? physics_find_body(&server->physics, im->id_b) : NULL;
+    /* Both directions from the one approach speed: two equal windows meeting
+     * fast enough destroy each other, which is the honest reading of a
+     * collision and the one the asymmetry of mass already softens. */
+    server_damage_one(server, a, b, im->speed);
+    server_damage_one(server, b, a, im->speed);
+}
+
 static void server_consume_impacts(FwmServer *server) {
     double shake = server->config.effects.camera_shake;
     double squash = server->config.effects.squash;
-    if (shake <= 0.0 && squash <= 0.0 && !server->sound) {
+    int hp = server->config.physics.hp;
+    if (shake <= 0.0 && squash <= 0.0 && !server->sound && !hp) {
         server->physics.impact_count = 0;
         return;
     }
@@ -177,6 +230,13 @@ static void server_consume_impacts(FwmServer *server) {
         int impact_d = (int)(im->x / server->screen_width);
         if (impact_d < 0) impact_d = 0;
         if (impact_d > 9) impact_d = 9;
+
+        /* Before the "is anyone watching" test below, and deliberately: the
+         * shake and the knock are presentation and there is no point spending
+         * them on a desktop nobody can see, but a window crushed on desktop 7
+         * is crushed whether or not you were there to watch it happen. */
+        if (hp) server_damage_from_impact(server, im);
+
         FwmOutput *out = server_output_showing(server, impact_d);
         if (!out) continue;   /* nobody is watching that desktop */
 
@@ -492,6 +552,11 @@ void server_mass_sync(FwmServer *server) {
         if (server->mass_applied != mode) {
             server_mass_clear(server);
             server->mass_applied = mode;
+            /* Back on the area rule, where mass only changes when the window
+             * is resized: hit points can follow it again. Releasing needs no
+             * deferral, unlike the freeze below. */
+            physics_freeze_hp(&server->physics, 0);
+            server->hp_freeze_pending = 0;
         }
         return;
     }
@@ -500,6 +565,12 @@ void server_mass_sync(FwmServer *server) {
     /* A mode that has only just been switched on samples immediately; after
      * that it is on the timer. */
     if (server->mass_applied == mode && now < server->mass_sample_at) return;
+    /* First sample of this mode: the weights below are the ones hit points are
+     * pinned to, once physics_step has turned them into masses. */
+    /* Every sample, not just the first: physics_freeze_hp only fills in bodies
+     * that have none, so this is what gives a window opened halfway through the
+     * mode its hit points. */
+    server->hp_freeze_pending = 1;
     server->mass_applied = mode;
     server->mass_sample_at = now + MASS_SAMPLE_S;
 
@@ -1136,6 +1207,12 @@ static int physics_tick_cb(void *data) {
 
         physics_step(&server->physics, server->screen_width, server->screen_height,
                      drag_win, resize_win, dragged_win, dt);
+        /* The step that just ran is the first to carry mass = "ram" weights, so
+         * this is the earliest the freeze can read a real mass. */
+        if (server->hp_freeze_pending) {
+            physics_freeze_hp(&server->physics, 1);
+            server->hp_freeze_pending = 0;
+        }
         /* Impacts are only valid until the NEXT step, so they have to be drained
          * inside the loop — collecting them after two steps would lose the
          * first step's landings entirely. */

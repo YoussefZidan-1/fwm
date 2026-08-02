@@ -292,8 +292,40 @@ static void server_animate(FwmServer *server) {
             // opening rather than a different effect.
             double gt = g->t;
             double o = 1.0 - gt * gt * (3.0 - 2.0 * gt);
+            double gx = g->x, gy = g->y;
+
+            if (g->kind == GHOST_IMPLODE && g->w > 0 && g->h > 0) {
+                // Cubic rather than the smoothstep above: a collapse should
+                // leave quickly and finish slowly, so the eye catches which
+                // window went. Smoothstep eases INTO the motion, which on a
+                // shrink reads as a pause before anything happens.
+                double k = 1.0 - gt;
+                double s = k * k * k;
+                int w = (int)(g->w * s);
+                int h = (int)(g->h * s);
+                // A zero-sized dest_size is not a scene buffer wlroots will
+                // draw sensibly, and the last frame of the collapse is a point
+                // nobody can see anyway.
+                if (w < 1 || h < 1) {
+                    wlr_scene_node_set_enabled(&g->scene_buffer->node, false);
+                } else {
+                    wlr_scene_buffer_set_dest_size(g->scene_buffer, w, h);
+                    // Shrink about the centre: dest_size grows from the
+                    // top-left, so the origin has to walk inward by half of
+                    // what was lost or the window slides up-left as it dies.
+                    g->draw_dx = (g->w - w) / 2.0;
+                    g->draw_dy = (g->h - h) / 2.0;
+                    gx += g->draw_dx;
+                    gy += g->draw_dy;
+                }
+                // Held opaque until the very end. Fading a collapse as well
+                // makes it vanish before it has visibly shrunk, and then the
+                // two deaths look the same again.
+                o = 1.0 - gt * gt * gt * gt;
+            }
+
             wlr_scene_buffer_set_opacity(g->scene_buffer, (float)o);
-            server_place_node(server, &g->scene_buffer->node, g->x, g->y);
+            server_place_node(server, &g->scene_buffer->node, gx, gy);
         }
     }
 
@@ -574,7 +606,9 @@ void server_views_place(FwmServer *server) {
     }
     FwmGhost *g;
     wl_list_for_each(g, &server->ghosts, link) {
-        if (g->scene_buffer) server_place_node(server, &g->scene_buffer->node, g->x, g->y);
+        if (g->scene_buffer)
+            server_place_node(server, &g->scene_buffer->node,
+                              g->x + g->draw_dx, g->y + g->draw_dy);
     }
 }
 

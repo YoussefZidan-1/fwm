@@ -41,6 +41,7 @@ enum {
     MODE_ICON_SOUND,
     MODE_ICON_CAVA,
     MODE_ICON_RING,
+    MODE_ICON_HP,
     MODE_ICON_COUNT,
 };
 
@@ -59,6 +60,7 @@ typedef struct ModesState {
     int sound;     /* sound.collisions: windows knock when they hit something */
     int cava;      /* CAVA_MODE_* */
     int ring;      /* camera.wrap: the desktops are a ring */
+    int hp;        /* physics.hp: a hard enough hit destroys a window */
     double opacity;
 } ModesState;
 
@@ -85,6 +87,9 @@ enum {
     MODES_ROW_SOUND,
     MODES_ROW_CAVA,
     MODES_ROW_RING,
+    /* Last on purpose: it is the only row that can destroy someone's unsaved
+     * work, so it is not the one the hand lands on by accident. */
+    MODES_ROW_HP,
     MODES_ROW_COUNT,
 };
 

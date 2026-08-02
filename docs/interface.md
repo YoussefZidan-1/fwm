@@ -39,7 +39,7 @@ wallpaper with `[decor] color_source = "wallpaper"`.
 
 ## The modes menu
 
-Click the modes pill (or bind `modes_menu`). Seven rows:
+Click the modes pill (or bind `modes_menu`). Eight rows:
 
 | Row | Control | What it is |
 |---|---|---|
@@ -50,19 +50,26 @@ Click the modes pill (or bind `modes_menu`). Seven rows:
 | Sound | switch | the collision knock |
 | Cava | `off` / `visual` / `physical` | the audio visualiser |
 | Ring | switch | close the desktop strip into a ring (`[camera] wrap`) |
+| Breakable | switch | a hard enough collision destroys a window ([`[physics] hp`](configuration.md#breakable-windows)) |
 
 Two rows are segmented controls rather than switches because they are not on-off
 things. The config's fourth cava mode (`both`, bars that are drawn *and* push) is
 what the `physical` segment actually selects; a mode you can only discover in the
 file is better than one you can land on by clicking past it.
 
+Breakable sits last on purpose: it is the only row that can destroy someone's
+unsaved work, so it is not the one the hand lands on by accident. For the same
+reason it is the one row that is **never remembered** — every session starts with
+windows unbreakable, and no config key can start one otherwise.
+
 **The Mass and Sound choices are remembered** across restarts, in
 `~/.local/state/fwm/modes`. They are written the moment you click and applied over
 the config on every load, so your `config.toml` is never rewritten to record a
 click. Delete that file to go back to whatever the config says.
 
-Layout, gravity and the ring are *not* remembered: they are per-session state
-that a keybind changes just as often as the menu does.
+Layout, gravity and the ring are *not* remembered either: they are per-session
+state that a keybind changes just as often as the menu does. Breakable is not
+remembered for a different reason — see above.
 
 ## The launcher
 

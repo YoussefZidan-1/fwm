@@ -66,6 +66,17 @@ typedef struct {
     double rule_gravity;   /* multiplies the profile's gravity; -1 floats up */
     double rule_bounce;    /* restitution 0..1, absolute */
     double rule_friction;  /* per-tick velocity retention, absolute */
+    double rule_toughness; /* multiplies hit points; 0 = glass */
+    double rule_hardness;  /* multiplies damage dealt; 0 = harmless */
+
+    /* Hit points, while [physics] hp is on. Normally just the live mass, so a
+     * window resized larger is genuinely sturdier — but under mass = "ram" the
+     * mass is resampled every few seconds from a number the window does not
+     * control, and hit points that drifted with it would mean a window grew
+     * unkillable while you were not looking. So the value is FROZEN at the
+     * moment that mode takes hold and left alone until it is switched off.
+     * <= 0 means "nothing frozen, use the live mass". */
+    double hp_frozen;
 
     /* What the compositor last decided this window weighs relative to a plain
      * area * mass_density one, when something other than its size is deciding —
@@ -155,6 +166,23 @@ void physics_unspin_body(PhysicsWorld *world, uint32_t id);
 
 void physics_push_away(PhysicsWorld *world, uint32_t pushed, uint32_t pusher, double speed);
 void physics_push_overlapping(PhysicsWorld *world, uint32_t pusher, double speed);
+
+/* ── hit points ──────────────────────────────────────────────────────── */
+
+/* What this window can absorb before a single blow destroys it: its mass —
+ * frozen if a freeze is in force — times whatever its rule says it is made of.
+ * Never negative. Meaningless unless [physics] hp is on; nothing here reads
+ * that flag, because the callers already have the config in hand. */
+double physics_body_hp(const PhysicsBody *b);
+
+/* What this window's blows are worth, as a multiple of the plain mass-and-speed
+ * result. 1.0 unless a rule said otherwise. */
+double physics_body_hardness(const PhysicsBody *b);
+
+/* Pin every body's hit points to the mass it has right now, or release them
+ * back to the live mass. Called when mass = "ram" takes hold or lets go: see
+ * PhysicsBody.hp_frozen for why that mode in particular needs it. */
+void physics_freeze_hp(PhysicsWorld *world, int freeze);
 
 /* ── audio visualiser bars ───────────────────────────────────────────── */
 

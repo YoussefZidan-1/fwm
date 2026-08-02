@@ -30,6 +30,31 @@ tick_rate             = 60.0
 # The default is the built-in trio — weightless, a lick of it, earth.
 #gravity_steps        = [0.0, 0.15, 1.0]
 
+# Breakable windows. A single hard enough collision destroys a window; damage
+# is never accumulated, so anything that survives a hit is unharmed by it.
+#
+#   damage(A -> B) = mass(A) * (speed / hp_break_speed)^2 * hardness(A)
+#   hp(B)          = mass(B) * toughness(B)
+#
+# Both sides are worked out the same way, so two equal windows meeting fast
+# enough destroy each other. Walls never deal damage — otherwise every window
+# dropped from the top of the screen would shatter on the floor.
+#
+# hp_break_speed reads as "how fast a window must hit another OF ITS OWN MASS
+# to destroy it". Left at 0 it follows max_throw_speed, and because nothing may
+# travel faster than that limit, a window is then incapable of breaking
+# anything heavier than itself. Lower it and a fast light window punches above
+# its weight.
+#
+# There is deliberately NO key to switch this on. It is the one mode that can
+# lose unsaved work, so it lives in the modes menu ("Breakable"), applies to the
+# session you turned it on in, and is never written to disk or restored: every
+# session starts with windows unbreakable. Windows are ASKED to close, so a
+# client with something to save can still put up its own dialog.
+#
+# The speed below only says HOW breaking works if you ever turn it on.
+#hp_break_speed       = 0.0     # 0 = follow max_throw_speed
+
 # Physics per desktop. A [physics.<name>] table is a DIFF against the block
 # above: it writes friction / mass_density / restitution / gravity, inherits
 # everything it does not mention, and names the desktops it applies to. A

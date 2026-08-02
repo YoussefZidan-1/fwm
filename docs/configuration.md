@@ -43,6 +43,7 @@ restitution            = 0.3     # bounciness, 0 = dead stop, 1 = superball
 gravity                = 981.0   # px/s^2; 981 = earth at 100 px/m
 tick_rate              = 60.0    # simulation steps per second
 gravity_steps          = [0.0, 0.15, 1.0]   # what Super+G cycles
+hp_break_speed         = 0.0     # 0 = follow max_throw_speed
 ```
 
 | Key | Meaning |
@@ -59,6 +60,72 @@ gravity_steps          = [0.0, 0.15, 1.0]   # what Super+G cycles
 | `gravity` | Downward acceleration in px/s², before the `Super+G` multiplier. fwm starts in zero-g whatever this says. |
 | `tick_rate` | Simulation steps per second. Read once at startup; a change needs a restart, not a reload. |
 | `gravity_steps` | The multipliers `cycle_gravity` (`Super+G`) walks, in order. Up to 8. |
+| `hp_break_speed` | How fast a window must hit another **of its own mass** to destroy it, px/s. 0 (the default) means "use `max_throw_speed`". Only tunes the mode; it cannot switch it on. |
+
+### breakable windows
+
+**There is no `hp` key, and turning this on is not a setting you can save.** It is
+switched from the **Breakable** row of the modes menu, it applies to that session
+only, and every session starts with windows unbreakable — nothing in
+`config.toml` or `~/.local/state/fwm/` can change that. A mode that destroys
+unsaved work should never be something you are living under because of a choice
+you made last week and have forgotten.
+
+`hp_break_speed` is a config key because it only says *how* breaking works if you
+ever turn it on, which is a preference; whether windows break at all is not.
+
+With `hp` on, every collision is worth
+
+```
+damage(A → B) = mass(A) × (speed / hp_break_speed)² × hardness(A)
+hp(B)         = mass(B) × toughness(B)
+```
+
+and **B is destroyed if a single hit is worth more than all of its hit points.**
+
+Damage is never accumulated. A window that survives a blow is in perfect health
+afterwards, so a stack that settles overnight is not a slow execution, and there
+is no hidden state to wonder about.
+
+Both sides of a collision are worked out the same way, so two equal windows
+meeting fast enough destroy each other. Walls deal no damage at all — otherwise
+a window dropped from the top of the screen would shatter on the floor every
+time it was thrown.
+
+Speed is squared because breaking things is about energy, and because it is what
+keeps this survivable: at half the break speed a hit is worth a quarter, so
+nudges are safe and only real slams are lethal.
+
+Left at the default, `hp_break_speed` follows `max_throw_speed` — and since
+nothing in the world may travel faster than that limit, damage can never exceed
+the attacker's own mass. **A window is then physically incapable of breaking
+anything heavier than itself.** Set it lower and a fast light window can punch
+above its weight.
+
+Under `mass = "ram"` a window's hit points are frozen at the moment that mode
+takes hold, rather than drifting with its memory use — a window should not
+become unkillable while you are not looking at it.
+
+`toughness` and `hardness` in `[[rule]]` do persist, because they only describe
+what a window is made of. They do nothing at all until the mode is on.
+
+Windows are asked to close, not killed, so a client with unsaved work can still
+put up its own dialog. If it declines, the next hard enough hit asks again.
+
+**Some windows therefore cannot be destroyed at all.** A client that never
+handles the close request — Firefox's "Firefox is already running" dialog is the
+one everybody meets — simply ignores every blow it is dealt and survives on a
+desktop where everything else breaks. This is deliberate and not a bug you have
+found: the alternative is killing the client outright, and a compositor may not
+take an application down because one of its windows was hit too hard. If a
+window will not close when you press your `killclient` bind, it will not close
+when a window falls on it either; those are the same request.
+
+One consequence to know about: reloading the config turns Breakable back off,
+because the mode lives in the physics config and a reload replaces that
+wholesale with the file plus its defaults. It fails toward windows being safe,
+which is the right direction for it to fail in, but it does mean an edit-and-
+reload puts the mode back where every session starts.
 
 ## per-desktop physics
 
@@ -113,6 +180,11 @@ app_id    = "^Alacritty$"
 gravity   = -0.2       # a balloon: drifts up in a room where things fall
 bounce    = 0.9
 friction  = 0.999      # glides for a long time
+
+[[rule]]
+app_id    = "^org.gnome.Calculator$"
+toughness = 0.2        # made of glass, if [physics] hp is on
+hardness  = 3.0        # ... but hits like a brick
 ```
 
 | Key | Meaning |
@@ -122,6 +194,8 @@ friction  = 0.999      # glides for a long time
 | `gravity` | Multiplies the desktop's gravity. 0 = weightless, negative = floats up. |
 | `bounce` | Restitution, absolute 0..1 — it replaces the desktop's, not multiplies it. |
 | `friction` | Per-tick velocity retention, absolute 0..1. |
+| `toughness` | Multiplies this window's hit points. 0 = glass, broken by any hit at all; 10 = a safe. Only means anything while `[physics] hp` is on. |
+| `hardness` | Multiplies the damage this window **deals**. Separate from `toughness` so a heavy soft thing does not have to be a hammer. |
 | `nocollide` | Other windows pass through it; it still cannot leave the play area. |
 | `pin` | Immovable: physics never moves it. |
 | `desktop` | 0..9, where the window opens. |

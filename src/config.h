@@ -81,6 +81,43 @@ typedef struct {
      * light body through the floor. */
     double mass_ram_ref;   /* MB that counts as normal weight */
     double mass_ram_max;   /* clamp, in multiples of normal */
+
+    /* Windows can be destroyed by a hard enough collision (issue #9). Off by
+     * default and switched from the modes menu, because it is the one physics
+     * setting that can lose unsaved work.
+     *
+     * Damage is not accumulated: a window dies only if a SINGLE hit is worth
+     * more than all of its hit points. There is no wearing something down, so
+     * a stack that settles overnight is not a slow execution.
+     *
+     *   damage(A->B) = mass_A * (v / hp_break_speed)^2 * hardness_A
+     *   hp(B)        = mass_B * toughness_B
+     *
+     * Both sides of a collision are worked out the same way, so two equal
+     * windows meeting fast enough destroy each other.
+     *
+     * Squared because breaking things is about energy, and because it is the
+     * shape that keeps this survivable: at half the break speed a hit is worth
+     * a quarter, so nudges are safe and only real slams are lethal.
+     *
+     * hp_break_speed reads as "how fast a window must hit another of its own
+     * mass to destroy it". Left at max_throw_speed it gives the system a
+     * property worth having: since nothing may travel faster than that clamp
+     * (see physics.c), damage can never exceed the attacker's own mass, so a
+     * window is physically incapable of breaking anything heavier than itself.
+     * Set it lower and a fast light window can punch above its weight. */
+
+    /* SESSION STATE, not a setting. There is no [physics] hp key and nothing
+     * writes it to ~/.local/state/fwm/modes: every session starts with windows
+     * unbreakable, and the only way to turn it on is the modes menu, this
+     * session, on purpose.
+     *
+     * That is the whole design. A mode which destroys unsaved work must never
+     * be something you are living under because of a choice you made last week
+     * and have forgotten, and a config file you wrote once is exactly that. */
+    int    hp;               /* 0 = windows are indestructible */
+    double hp_break_speed;   /* px/s; <= 0 means "use max_throw_speed" */
+
     double throw_speed_multiplier;
     double max_throw_speed;
     double stop_speed_threshold;
@@ -628,11 +665,22 @@ typedef struct {
      *            where everything else falls, -0.2 = a balloon.
      *   bounce   restitution, absolute 0..1.
      *   friction per-tick velocity retention, absolute 0..1, like
-     *            [physics] friction. */
+     *            [physics] friction.
+     *
+     * The last two only mean anything while [physics] hp is on:
+     *
+     *   toughness multiplies the window's hit points, which are otherwise
+     *             simply its mass. 0 = made of glass, 10 = a safe.
+     *   hardness  multiplies the damage this window DEALS. A window can be
+     *             tough without being dangerous, and the two are separate so
+     *             a heavy soft thing (a browser full of tabs) does not have to
+     *             be a hammer. */
     double mass;
     double gravity;
     double bounce;
     double friction;
+    double toughness;
+    double hardness;
 } ConfigRule;
 
 /* ── runtime-settable options ────────────────────────────────────────── */

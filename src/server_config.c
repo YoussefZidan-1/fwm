@@ -160,6 +160,10 @@ void server_state_save_modes(FwmServer *server) {
     fprintf(f, "mass = %s\n",
             server->config.physics.mass_mode == PHYSICS_MASS_RAM ? "ram" : "size");
     fprintf(f, "sound = %s\n", server->config.sound.collisions ? "on" : "off");
+    /* hp is deliberately NOT written. It is the one mode that can destroy
+     * unsaved work, and a setting that survives a restart is one you can be
+     * living under without having chosen it today. Every session starts with
+     * windows unbreakable; turning it on is always a deliberate act. */
     fclose(f);
 }
 
@@ -197,6 +201,8 @@ void server_state_apply_modes(FwmServer *server) {
             if      (strcmp(val, "on")  == 0) server->config.sound.collisions = 1;
             else if (strcmp(val, "off") == 0) server->config.sound.collisions = 0;
         }
+        /* No "hp" key: see server_state_save_modes. A file left over from a
+         * build that did write one is simply skipped, like any unknown key. */
     }
     fclose(f);
 }

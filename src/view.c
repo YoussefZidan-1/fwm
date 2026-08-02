@@ -569,10 +569,12 @@ void view_map(FwmView *view) {
             if (rule.pin       >= 0) body->pinned     = rule.pin;
             /* Material: copied across as-is, NANs included, because NAN is
              * exactly what the body wants for "defer to the desktop". */
-            body->rule_mass     = rule.mass;
-            body->rule_gravity  = rule.gravity;
-            body->rule_bounce   = rule.bounce;
-            body->rule_friction = rule.friction;
+            body->rule_mass      = rule.mass;
+            body->rule_gravity   = rule.gravity;
+            body->rule_bounce    = rule.bounce;
+            body->rule_friction  = rule.friction;
+            body->rule_toughness = rule.toughness;
+            body->rule_hardness  = rule.hardness;
         }
     }
     
@@ -670,6 +672,11 @@ void view_unmap(FwmView *view) {
             view->last_buffer = NULL;
             ghost->x = view->x - geo.x;
             ghost->y = view->y - geo.y;
+            /* A window broken by a collision collapses; one merely closed
+             * fades, as it always has. */
+            ghost->kind = view->dying ? GHOST_IMPLODE : GHOST_FADE;
+            ghost->w = ghost->buffer ? ghost->buffer->width  : view->width;
+            ghost->h = ghost->buffer ? ghost->buffer->height : view->height;
             wlr_scene_node_set_position(&ghost->scene_buffer->node,
                                         (int)ghost->x, (int)ghost->y);
             wlr_scene_node_raise_to_top(&ghost->scene_buffer->node);

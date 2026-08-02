@@ -217,13 +217,35 @@ typedef struct {
     double cur_x, cur_y;
 } FwmInteractiveState;
 
-/* Snapshot of a closed window's last frame, fading out (close animation).
- * Owns one lock on `buffer`; released when the fade ends. */
+/* How a ghost leaves. An ordinary close mirrors the map fade; a window
+ * destroyed by a collision ([physics] hp) collapses to a point instead, so the
+ * two read as different events rather than as the same one twice.
+ *
+ * An enum rather than a flag because this is the obvious place to hang the
+ * rest: shattering into pieces, cracking first, whatever else a death is worth.
+ * Everything below GHOST_FADE animates over the same clock, so a new kind is a
+ * case in the tick and nothing else. */
+enum {
+    GHOST_FADE = 0,   /* closed: opacity 1 -> 0, what it has always done */
+    GHOST_IMPLODE,    /* destroyed: shrinks to nothing about its own centre */
+};
+
+/* Snapshot of a closed window's last frame, animating out (close animation).
+ * Owns one lock on `buffer`; released when the animation ends. */
 typedef struct FwmGhost {
     struct wlr_scene_buffer *scene_buffer;
     struct wlr_buffer *buffer;
     double x, y; /* world coordinates (camera-independent) */
-    double t;    /* fade progress 0 -> 1 */
+    int w, h;    /* size at full scale: an implode has to shrink from something */
+    int kind;    /* GHOST_* */
+    double t;    /* progress 0 -> 1 */
+    /* Where the animation has walked the ghost away from (x, y) this frame — an
+     * implode shrinks about its centre, so the origin moves inward. Kept here
+     * rather than folded into x/y because it is recomputed from t every frame,
+     * and because server_views_place has to be able to reproduce it: a desktop
+     * switch mid-collapse otherwise snaps the ghost back to its full-size
+     * corner for one frame. */
+    double draw_dx, draw_dy;
     struct wl_list link;
 } FwmGhost;
 
@@ -273,6 +295,12 @@ typedef struct FwmServer {
      * asked for this never reads /proc at all. */
     int mass_applied;
     double mass_sample_at;
+
+    /* Hit points have to be frozen against the mass that mode produces, and
+     * server_mass_sync only sets the SCALE — the mass itself is not written
+     * until physics_step resolves the material. So the freeze is deferred by
+     * one step rather than reading a figure that is about to change. */
+    int hp_freeze_pending;
 
     struct wlr_output_layout *output_layout;
     struct wlr_scene_output_layout *scene_layout;
