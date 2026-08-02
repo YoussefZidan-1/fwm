@@ -195,12 +195,16 @@ static void constraint_set_active(FwmServer *server,
 
     if (server->active_constraint) {
         struct wlr_pointer_constraint_v1 *old = server->active_constraint;
-        wlr_pointer_constraint_v1_send_deactivated(old);
+        /* Unhooked before the signal: a ONESHOT constraint is destroyed inside
+         * send_deactivated, handle_constraint_destroy then removes this very
+         * link, and a second remove down here would corrupt the list. */
         wl_list_remove(&server->constraint_destroy.link);
         server->active_constraint = NULL;
         /* Cleared first: the hint moves the cursor, and nothing that runs off
-         * that warp may still find a constraint holding the pointer. */
+         * that warp may still find a constraint holding the pointer. Read
+         * ahead of the signal as well, since that is what frees `old`. */
         pointer_apply_constraint_hint(server, old);
+        wlr_pointer_constraint_v1_send_deactivated(old);
     }
     if (constraint) {
         server->active_constraint = constraint;
