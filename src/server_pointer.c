@@ -120,9 +120,21 @@ struct FwmView *view_at(FwmServer *server, double lx, double ly,
 static FwmOutput *tray_under_pointer(FwmServer *server,
                                      double *tx, double *ty) {
     FwmOutput *o = server_output_at(server, server->cursor->x, server->cursor->y);
-    if (!o || !o->tray_buffer || !o->tray_buffer->node.enabled) return NULL;
-    if (tx) *tx = server->cursor->x - o->tray_buffer->node.x;
-    if (ty) *ty = server->cursor->y - o->tray_buffer->node.y;
+    if (!o || !o->tray_buffer) return NULL;
+    /* A strip that is not on screen is not under the pointer either. It still
+     * EXISTS while hidden — the buffer and its islands are kept, only the node
+     * is disabled — so without this every pill, desktop marker and island went
+     * on answering clicks from behind a fullscreen game: an invisible bar along
+     * the bottom of the screen that swallowed shots and switched desktops.
+     *
+     * Asked of the scene rather than a flag, which covers both ways the strip
+     * goes away (the user hiding it, a fullscreen window covering it) and, by
+     * returning layout coordinates, is also the right origin to measure the
+     * cursor against — node.x is relative to the node's parent. */
+    int lx, ly;
+    if (!wlr_scene_node_coords(&o->tray_buffer->node, &lx, &ly)) return NULL;
+    if (tx) *tx = server->cursor->x - lx;
+    if (ty) *ty = server->cursor->y - ly;
     return o;
 }
 
