@@ -335,7 +335,7 @@ PhysicsBody *physics_sync_body(PhysicsWorld *world, uint32_t id, int x, int y, i
             update_body_geometry(&world->bodies[i], x, y, width, height, world->mass_density);
             int d = (int)((world->bodies[i].x + world->bodies[i].width / 2.0) / screen_width);
             if (d < 0) d = 0;
-            if (d >= 10) d = 9;
+            if (d >= FWM_DESKTOPS) d = FWM_DESKTOPS - 1;
             world->bodies[i].desktop_id = d;
             return &world->bodies[i];
         }
@@ -382,7 +382,7 @@ PhysicsBody *physics_sync_body(PhysicsWorld *world, uint32_t id, int x, int y, i
 
     int d = (int)((body->x + body->width / 2.0) / screen_width);
     if (d < 0) d = 0;
-    if (d >= 10) d = 9;
+    if (d >= FWM_DESKTOPS) d = FWM_DESKTOPS - 1;
     body->desktop_id = d;
 
     return body;
@@ -1217,7 +1217,7 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
 
         int d = (int)((m->x + m->width / 2.0) / screen_width);
         if (d < 0) d = 0;
-        if (d >= 10) d = 9;
+        if (d >= FWM_DESKTOPS) d = FWM_DESKTOPS - 1;
         m->desktop_id = d;
     }
 }
