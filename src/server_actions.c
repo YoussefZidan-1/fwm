@@ -84,6 +84,7 @@ static BspNode *tile_neighbor(FwmServer *server, int desktop, BspNode *from, cha
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <math.h>
 #include <wayland-server.h>
@@ -145,10 +146,23 @@ bool server_can_spin(const PhysicsBody *b) {
  * quoting, arguments and $VARIABLES — `spawn:$BROWSER --new-window` works for
  * exactly the reason it looks like it should. */
 static void server_spawn(const char *cmd) {
-    if (fork() == 0) {
-        setsid();
-        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
-        exit(1);
+    pid_t pid = fork();
+
+    if (pid == 0) {
+        /* Child: double-fork to orphan the grandchild process */
+        if (fork() == 0) {
+            setsid();
+            /* Prepend 'exec ' so /bin/sh replaces itself directly with the app,
+             * avoiding a lingering intermediate shell process. */
+            char exec_cmd[2048];
+            snprintf(exec_cmd, sizeof(exec_cmd), "exec %s", cmd);
+            execl("/bin/sh", "sh", "-c", exec_cmd, (char *)NULL);
+            _exit(1);
+        }
+        _exit(0); /* _exit prevents running Wayland/EGL cleanup hooks */
+    } else if (pid > 0) {
+        /* Parent: instantly wait on the middle child */
+        waitpid(pid, NULL, 0);
     }
 }
 

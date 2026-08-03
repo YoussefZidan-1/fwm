@@ -23,6 +23,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <wayland-server-core.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/xwayland.h>
@@ -236,10 +237,17 @@ static void spawn_argv_key(const char *key) {
     argv[argc] = NULL;
     if (argc == 0) return;
 
-    if (fork() == 0) {
-        setsid();
-        execvp(argv[0], argv);
-        _exit(1);
+    /* Double-fork to prevent zombies on session restore */
+    pid_t pid = fork();
+    if (pid == 0) {
+        if (fork() == 0) {
+            setsid();
+            execvp(argv[0], argv);
+            _exit(1);
+        }
+        _exit(0);
+    } else if (pid > 0) {
+        waitpid(pid, NULL, 0);
     }
 }
 
