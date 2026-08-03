@@ -709,6 +709,12 @@ void view_unmap(FwmView *view) {
     if (view->server->interactive.view == view) {
         view->server->interactive.view = NULL;
     }
+    /* The window the pointer was last measured against (implicit grab). */
+    if (view->server->ptr_view == view) {
+        view->server->ptr_view = NULL;
+        view->server->ptr_surface = NULL;
+        view->server->ptr_node_have = 0;
+    }
     
     // Close animation: leave a snapshot of the last frame fading out (the
     // mirror of the map fade-in). The ghost takes over the buffer lock; the
