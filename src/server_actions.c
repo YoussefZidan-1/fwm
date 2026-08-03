@@ -716,7 +716,12 @@ void server_toggle_modes_menu(FwmServer *server) {
          * the strip the pointer is at, and the one the modes it shows belong
          * to. */
         FwmOutput *out = server_active_output(server);
-        if (!out || !out->tray_buffer || server->tray_hidden) return;
+        /* Ask the strip's node, not tray_hidden: the node is where BOTH reasons
+         * a strip is off screen have already met — the global toggle and a real
+         * fullscreen window, which is decided per monitor. The flag alone let
+         * the keybind hang a menu off a pill that fullscreen had hidden, until
+         * the next tick took it away again. */
+        if (!out || !out->tray_buffer || !out->tray_buffer->node.enabled) return;
         /* The pill is dropped on a screen too narrow to hold it, and then there
          * is nothing to hang the menu off. The keybind lands here too, so this
          * is also what stops it opening a menu pointing at nothing. */
