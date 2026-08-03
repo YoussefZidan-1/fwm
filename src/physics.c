@@ -17,6 +17,7 @@
 
 #include <box2d/box2d.h>
 
+#include <assert.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -195,7 +196,6 @@ static struct Material material_for(const PhysicsWorld *world, const PhysicsBody
  * window-through-window tunnelling stops being reachable at all. */
 static void clamp_world_speed(PhysicsWorld *world, struct Engine *eng) {
     double cap = world->max_throw_speed;
-    if (cap <= 0.0) return;   /* 0 means "no limit", for anyone who wants chaos */
 
     /* While a window is being dragged, the ceiling rises to whatever the hand is
      * doing. Nothing else is capable of that speed in the same step, so this is
@@ -204,8 +204,11 @@ static void clamp_world_speed(PhysicsWorld *world, struct Engine *eng) {
      * hand moving faster than the cap simply walks through, because the victim
      * physically cannot get out of the way in time. The moment the drag ends the
      * ordinary ceiling applies again, so free flight is still bounded by what a
-     * throw can do. */
-    if (eng->drag_speed > cap) cap = eng->drag_speed;
+     * throw can do.
+     *
+     * Zero (chaos / no limit mode) must survive the exemption so free bodies
+     * remain unclamped during a drag. */
+    if (cap > 0.0 && eng->drag_speed > cap) cap = eng->drag_speed;
 
     for (int i = 0; i < world->body_count; i++) {
         struct BodySlot *s = &eng->slots[i];
@@ -214,6 +217,8 @@ static void clamp_world_speed(PhysicsWorld *world, struct Engine *eng) {
 
         b2Vec2 v = b2Body_GetLinearVelocity(s->body);
         double vx = m2px(v.x), vy = m2px(v.y);
+        assert(isfinite(vx) && isfinite(vy));
+        if (cap <= 0.0) continue;   /* 0 means "no limit", for anyone who wants chaos */
         double speed = hypot(vx, vy);
         if (speed <= cap || speed <= 0.0) continue;
         double k = cap / speed;
@@ -222,10 +227,16 @@ static void clamp_world_speed(PhysicsWorld *world, struct Engine *eng) {
 }
 
 static void clamp_velocity(double *vx, double *vy, double max_speed) {
+    assert(isfinite(*vx) && isfinite(*vy));
+    /* Same reading of zero as clamp_world_speed: no limit, not a limit of zero.
+     * Without this a throw in chaos mode scaled by 0/speed and landed dead,
+     * while a window shoved by a drag — bounded post-solve, where the check
+     * above does exist — kept moving. The one setting documented as "removes
+     * the limit" was the one setting that stopped a throw entirely. */
+    if (max_speed <= 0.0) return;
+
     double speed = hypot(*vx, *vy);
-    if (speed <= max_speed || speed <= 0.0) {
-        return;
-    }
+    if (speed <= max_speed || speed <= 0.0) return;
     double scale = max_speed / speed;
     *vx *= scale;
     *vy *= scale;
