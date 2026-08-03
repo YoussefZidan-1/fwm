@@ -74,10 +74,10 @@ static void handle_commit(struct wl_listener *listener, void *data) {
     {
         int cw, ch;
         view_committed_size(view, &cw, &ch);
+        PhysicsBody *pb = physics_find_body(&view->server->physics, view->id);
         if (cw != view->aligned_w || ch != view->aligned_h) {
             view->aligned_w = cw;
             view->aligned_h = ch;
-            PhysicsBody *pb = physics_find_body(&view->server->physics, view->id);
             if (pb && pb->tiled) server_align_tiles(view->server, pb->desktop_id);
         }
 
@@ -93,8 +93,14 @@ static void handle_commit(struct wl_listener *listener, void *data) {
          *
          * Only our bookkeeping changes; the client is not configured back at
          * its own size, which is how this stays a single exchange and not a
-         * loop. */
-        if (cw > 0 && ch > 0 && (cw != view->width || ch != view->height)) {
+         * loop.
+         *
+         * Not while fullscreen: there the geometry is the screen's, not the
+         * client's to answer with. A game whose buffer is smaller than the
+         * screen (its own resolution, scaled up for us) would otherwise shrink
+         * the window it is filling, one commit at a time. */
+        bool ours = pb && pb->fullscreen;
+        if (!ours && cw > 0 && ch > 0 && (cw != view->width || ch != view->height)) {
             view->width = cw;
             view->height = ch;
             physics_sync_body(&view->server->physics, view->id, view->x, view->y,
@@ -326,7 +332,37 @@ static void xwl_handle_request_configure(struct wl_listener *listener, void *dat
         wlr_xwayland_surface_configure(view->xwl_surface, ev->x, ev->y, ev->width, ev->height);
         return;
     }
-    // Mapped: the compositor owns the position, honor only the size.
+    /* Mapped: the compositor owns the position — and where it also owns the
+     * SIZE, the answer to a client asking for a different one is no, said the
+     * only way X has of saying it: a configure carrying the geometry the window
+     * actually has (ICCCM 4.1.5), so the client learns nothing moved.
+     *
+     * Fullscreen is where this matters. A game changing its resolution asks for
+     * the new mode's size; Xwayland scales that buffer up to the screen for us
+     * and needs the window to STAY screen-sized for the emulation to hold.
+     * Resizing it instead left the window a fraction of the screen while it was
+     * still flagged fullscreen — borderless, tray hidden, geometry nobody
+     * agreed on — and the game, drawing at a size the window no longer had,
+     * came apart (CS2 segfaults there).
+     *
+     * Only fullscreen. A tile that insists on its own size is let have it — the
+     * alignment pass is built to absorb exactly that (a terminal rounding to
+     * character cells), and refusing there means answering a client that will
+     * ask again, which is a configure loop at socket speed rather than a
+     * layout. A free-floating window is ordinary: physics carries the new box.
+     *
+     * The refusal is said once per size asked for. A client that repeats itself
+     * has already been told; answering again is the same loop. */
+    PhysicsBody *b = physics_find_body(&view->server->physics, view->id);
+    if (b && b->fullscreen) {
+        if (ev->width != view->cfg_denied_w || ev->height != view->cfg_denied_h) {
+            view->cfg_denied_w = ev->width;
+            view->cfg_denied_h = ev->height;
+            view_sync_position(view);
+        }
+        return;
+    }
+    view->cfg_denied_w = view->cfg_denied_h = 0;
     view->width = ev->width;
     view->height = ev->height;
     physics_sync_body(&view->server->physics, view->id, view->x, view->y,
@@ -594,6 +630,28 @@ void view_map(FwmView *view) {
         if (body) body->floating = 1;
     } else {
         physics_push_overlapping(&view->server->physics, view->id, 300.0);
+    }
+
+    /* A window may already be asking to open fullscreen, and until now nobody
+     * was listening. The request arrives before the window exists to grant it
+     * to: an X client sets _NET_WM_STATE_FULLSCREEN on the window while it is
+     * still unmapped (EWMH's way of asking for an initial state), an xdg client
+     * calls set_fullscreen before its first commit — and both land in a
+     * request_fullscreen handler that finds no physics body yet and drops the
+     * request on the floor. The window then opened as an ordinary one, its
+     * default size, while the client believed it had the whole screen.
+     *
+     * That is how a game came apart on a resolution change: applying one makes
+     * it build a fresh fullscreen window at the new mode, which is exactly this
+     * path — it drew for a screen it had not been given, and Xwayland had no
+     * screen-sized window to scale its mode into. Asked here, after the body,
+     * the desktop and the tile are settled, so fullscreen geometry is the last
+     * word on all three. */
+    bool wants_fullscreen = view->type == FWM_VIEW_XDG
+        ? view->xdg_toplevel->requested.fullscreen
+        : view->xwl_surface->fullscreen;
+    if (wants_fullscreen) {
+        server_set_fullscreen(view->server, view, true, true);
     }
 
     /* Focus, tiling and sizing above may have re-enabled or repositioned

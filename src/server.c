@@ -240,7 +240,13 @@ void server_set_fullscreen(FwmServer *server, struct FwmView *view, bool fullscr
         }
         b->fullscreen = 1;
         b->flying = 0; b->vx = 0; b->vy = 0;
-        
+        /* A tile glide still in the air would carry the window off the screen
+         * it is being handed: the animation moves it every tick toward a slot
+         * that stopped applying the moment it went fullscreen. Windows that
+         * open fullscreen on a tiling desktop are laid out and then immediately
+         * fullscreened, so this is not a corner case, it is the normal path. */
+        view->tile_anim = 0;
+
         /* Real fullscreen covers the whole output; fake fullscreen fills the
          * work area — below our tray and clear of any layer-shell bar that
          * reserved space — so the tray stays visible.
