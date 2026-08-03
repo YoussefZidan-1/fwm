@@ -120,7 +120,7 @@ struct FwmView *view_at(FwmServer *server, double lx, double ly,
 static FwmOutput *tray_under_pointer(FwmServer *server,
                                      double *tx, double *ty) {
     FwmOutput *o = server_output_at(server, server->cursor->x, server->cursor->y);
-    if (!o || !o->tray_buffer) return NULL;
+    if (!o || !o->tray_buffer || !o->tray_buffer->node.enabled) return NULL;
     if (tx) *tx = server->cursor->x - o->tray_buffer->node.x;
     if (ty) *ty = server->cursor->y - o->tray_buffer->node.y;
     return o;
