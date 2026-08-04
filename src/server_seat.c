@@ -213,6 +213,21 @@ void constraints_follow_focus(FwmServer *server, struct wlr_surface *surface) {
     constraint_set_active(server, found);
 }
 
+/* Focus has gone somewhere else. A lock is the one constraint that stops the
+ * cursor from moving at all, so the window holding it is also the only thing
+ * that can hand it back — and a game that locked the pointer and was then left
+ * behind (desktop switched, window alt-tabbed away from) never gets the chance:
+ * the pointer stays frozen over the whole session, in every window, with only
+ * the keyboard left to escape with.
+ *
+ * Deactivating only, never activating: a constraint takes hold when the pointer
+ * enters its surface (constraints_follow_focus), not because focus arrived. */
+void constraints_drop_unless(FwmServer *server, struct wlr_surface *surface) {
+    if (server->active_constraint && server->active_constraint->surface != surface) {
+        constraint_set_active(server, NULL);
+    }
+}
+
 static void handle_new_pointer_constraint(struct wl_listener *listener, void *data) {
     FwmServer *server = wl_container_of(listener, server, new_pointer_constraint);
     struct wlr_pointer_constraint_v1 *constraint = data;

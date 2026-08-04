@@ -167,6 +167,7 @@ void server_seat_register(FwmServer *server);
 void drag_icon_update_position(FwmServer *server);
 FwmView *view_from_surface(FwmServer *server, struct wlr_surface *surface);
 void constraints_follow_focus(FwmServer *server, struct wlr_surface *surface);
+void constraints_drop_unless(FwmServer *server, struct wlr_surface *surface);
 
 /* ── server_drag.c ────────────────────────────────────────────────────────
  * What a held mouse button MEANS: moving, resizing, turning, swapping. All of

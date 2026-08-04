@@ -115,9 +115,14 @@ void server_refocus(FwmServer *server, int desktop, struct FwmView *skip) {
     }
 
     /* Genuinely empty desktop: drop the keyboard rather than leave it pointed
-     * at a window the user can no longer see. */
-    server->focused_view = NULL;
-    wlr_seat_keyboard_notify_clear_focus(server->seat);
+     * at a window the user can no longer see. Through server_focus_view, not by
+     * clearing the seat here — the window being left has to be told it lost the
+     * focus (deactivated, unhighlighted, and for an X client an actual
+     * FocusOut), and only that path does it. Setting focused_view straight to
+     * NULL left the old window believing it was still in front: a game kept its
+     * grab of the pointer instead of pausing to its menu, and the cursor stayed
+     * frozen for the whole session. */
+    server_focus_view(server, NULL);
 }
 
 
@@ -137,7 +142,11 @@ void server_focus_view(FwmServer *server, struct FwmView *view) {
     
     struct FwmView *prev_focus = server->focused_view;
     server->focused_view = view;
-    
+
+    /* Before anything else: whatever was holding the pointer is not what the
+     * user is on any more, and a held lock would freeze the cursor everywhere. */
+    constraints_drop_unless(server, view ? view_surface(view) : NULL);
+
     if (view) {
         if (view->scene_tree) wlr_scene_node_raise_to_top(&view->scene_tree->node);
         
