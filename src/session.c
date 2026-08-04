@@ -22,7 +22,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <wayland-server-core.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/xwayland.h>
@@ -236,10 +238,21 @@ static void spawn_argv_key(const char *key) {
     argv[argc] = NULL;
     if (argc == 0) return;
 
-    if (fork() == 0) {
-        setsid();
-        execvp(argv[0], argv);
-        _exit(1);
+    pid_t pid = fork();
+    if (pid == 0) {
+        /* Child: double-fork to orphan the grandchild process */
+        if (fork() == 0) {
+            setsid();
+            execvp(argv[0], argv);
+            _exit(1);
+        }
+        _exit(0);
+    } else if (pid > 0) {
+        /* Bounded wait: the middle child calls _exit(0) immediately,
+         * so this waitpid never blocks the event loop. */
+        while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
+    } else {
+        wlr_log(WLR_ERROR, "fwm: failed to fork process for session restore: %s", argv[0]);
     }
 }
 
