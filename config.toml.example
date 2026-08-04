@@ -227,6 +227,13 @@ jelly        = 1.0
 # (Stirring the mouse while dragging a spinning window is not scaled by this —
 # there the window simply turns at the rate your hand does.)
 spin         = 1.0
+# The region screenshot peeling off the screen: a frozen copy of what was just
+# photographed lifts off, shrinks, tilts and flies down into the message that
+# says it was copied, while the live screen carries on underneath. (The tilt
+# needs the GLES2 renderer; elsewhere it flies upright.) Scales duration and
+# distance together: 0.5 is a flick, 2.0 a slow drift, 0 turns it off. Only
+# screenshot_region has it — Print stays instant.
+shot_fly     = 1.0
 # Live content while a window spins or wobbles: the client keeps drawing while
 # the effect hides it, instead of the effect showing a still frame. A window
 # that is a single surface is drawn straight from the client's texture for
@@ -335,6 +342,7 @@ tap = true
 #                 spin_window, spin_all,
 #                 show_hints, show_errors, modes_menu, reload_config,
 #                 wallpaper_picker, launcher, expo, toggle_wrap, EXIT
+# screenshots:    screenshot, screenshot_region
 # monitors:       output_off, toggle_internal_output, outputs_on
 # tiling:         toggle_split, tile_focus:l|r|u|d, tile_move:l|r|u|d
 # tab-stacks:     group_toggle, group_next, group_prev, group_add
@@ -421,6 +429,11 @@ tap = true
 "super+shift+slash"  = "show_hints"
 "super+shift+r"      = "reload_config"
 "super+shift+p"      = "wallpaper_picker"
+# Screenshots. Both put a PNG straight on the clipboard — nothing is written to
+# disk, so paste it where you want it — and the region one dims the screen and
+# waits for a drag (Escape cancels).
+"Print"              = "screenshot"
+"super+shift+s"      = "screenshot_region"
 # Monitors. `super+o` puts out the screen the pointer is on; `super+shift+o`
 # brings every one of them back, and is deliberately bindable to something you
 # can hit blind — it is what you reach for after turning off the screen you
@@ -491,7 +504,7 @@ tap = true
 #"n"   = "toggle_nocollide_all"
 #
 #[mode.resize]
-#enter  = "super+shift+s"
+#enter  = "super+shift+e"
 #sticky = true              # stays open: resizing is never one keypress
 #"Left"  = "tile_move:l"
 #"Right" = "tile_move:r"

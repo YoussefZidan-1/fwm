@@ -115,6 +115,8 @@ static const char *action_label(const char *a, char *buf, size_t cap) {
         { "show_hints",       "this help" },
         { "reload_config",    "reload config" },
         { "wallpaper_picker", "wallpaper picker" },
+        { "screenshot",       "screenshot" },
+        { "screenshot_region", "screenshot: region" },
         { "show_errors",      "config problems" },
         { "EXIT",             "exit fwm" },
     };

@@ -101,6 +101,30 @@ in `~/.local/state/fwm/wallpaper` and re-applied after every config load, so a
 reload keeps it. `[wallpaper_picker] fps` caps the frame rate of videos chosen
 this way.
 
+## Screenshots
+
+`Print` photographs the monitor the pointer is on; `Super+Shift+S` dims the screen
+and waits for you to drag a rectangle out — Escape, or a click with no drag in
+it, cancels. Either way the PNG goes on the **clipboard**, ready to paste into
+anything that takes an image; nothing is written to disk, and there is nothing
+to configure. A line at the bottom of the screen confirms the size copied.
+
+The region shot has one flourish: the moment it is taken, a frozen copy of the
+rectangle lifts off the screen, shrinks, tilts and flies down into the message
+that says it was copied — the live screen carrying on underneath it the whole time.
+It is worth more than decoration, since it shows exactly which pixels were
+caught after the selector's dimming has already gone. `[effects] shot_fly`
+scales it, and `0` turns it off.
+
+fwm serves the bytes itself — it owns the seat's selection — so no `wl-copy`
+and no clipboard manager has to be running. The picture stays pasteable until
+the next thing you copy replaces it.
+
+The picture is the frame the monitor actually drew, so the tray, the bars and
+any panel that was up are all in it — a screenshot of fwm, not of the windows
+it happens to be holding. An external `grim` still works too: fwm implements
+`wlr-screencopy-v1`.
+
 ## Key hints
 
 `Super+Shift+?` draws the live bind list — read from your config, not from a

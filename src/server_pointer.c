@@ -30,6 +30,7 @@
 #include "ui/modes.h"
 #include "ui/hints.h"
 #include "ui/errors.h"
+#include "screenshot.h"
 #include "ui/welcome.h"
 #include "ui/launcher.h"
 #include "ui/cairo_overlay.h"
@@ -282,6 +283,14 @@ static void handle_cursor_motion(struct wl_listener *listener, void *data) {
     if (lock_is_active(server)) return; /* nothing under the lock may be reached */
     drag_icon_update_position(server);
 
+    /* The region selector is aiming, not pointing: it owns every motion and
+     * no client hears about any of them. First, because it sits over
+     * everything else that could claim one. */
+    if (screenshot_handle_motion(server, lx, ly)) {
+        wlr_seat_pointer_clear_focus(server->seat);
+        return;
+    }
+
     /* Same rule as the launcher below, for the same reason: while the desktop
      * strip is up the pointer is aiming at snapshots, not at the windows they
      * are pictures of, and no client may be told the cursor is over it. */
@@ -322,6 +331,10 @@ static void handle_cursor_motion_absolute(struct wl_listener *listener, void *da
     server_notify_activity(server);
     if (lock_is_active(server)) return; /* nothing under the lock may be reached */
     drag_icon_update_position(server);
+    if (screenshot_handle_motion(server, server->cursor->x, server->cursor->y)) {
+        wlr_seat_pointer_clear_focus(server->seat);
+        return;
+    }
     if (launcher_is_open(server->launcher)) {
         launcher_handle_motion(server->launcher, server->cursor->x, server->cursor->y);
         wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
@@ -348,6 +361,11 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
 
     server_notify_activity(server);
     if (lock_is_active(server)) return; /* no clicks reach anything under the lock */
+
+    /* The selector's own drag. Ahead of everything: the press that starts it
+     * and the release that takes the picture must reach nothing else. */
+    if (screenshot_handle_button(server, event->state == WL_POINTER_BUTTON_STATE_PRESSED))
+        return;
 
     bool l_was_open = launcher_is_open(server->launcher);
     if (launcher_handle_button(server->launcher, server->cursor->x, server->cursor->y,

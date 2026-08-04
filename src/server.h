@@ -60,6 +60,7 @@ typedef enum {
 
 struct FwmView;
 struct Launcher;
+struct FwmShotPicker;
 struct FwmServer;
 
 /* One monitor.
@@ -544,6 +545,9 @@ typedef struct FwmServer {
     /* The desktop strip (expo). NULL when closed — that NULL is the mode flag
      * every input path tests, so there is no second copy of "is it open". */
     struct FwmExpo *expo;
+    /* The screenshot region selector, on the same terms: NULL when it is not
+     * up, and that NULL is what the input paths test (see src/screenshot.h). */
+    struct FwmShotPicker *shot_picker;
     
     int running;
 } FwmServer;

@@ -30,6 +30,7 @@
 #include "ui/hints.h"
 #include "ui/errors.h"
 #include "ui/modes.h"
+#include "screenshot.h"
 #include "ui/welcome.h"
 #include "ui/launcher.h"
 #include "ui/cairo_overlay.h"
@@ -306,7 +307,12 @@ void server_dispatch_action(FwmServer *server, const char *action) {
             if (d >= 0) expo_goto_desktop(server, d);
             return;
         }
-        if (strcmp(action, "expo") != 0 && strcmp(action, "toggle_wrap") != 0) return;
+        /* `screenshot` too: it photographs the frame the strip is drawing,
+         * which is the one thing here that is ABOUT what is on screen. The
+         * region selector is not on the list — its pointer grab and the
+         * strip's would be aiming at the same events. */
+        if (strcmp(action, "expo") != 0 && strcmp(action, "toggle_wrap") != 0 &&
+            strcmp(action, "screenshot") != 0) return;
     }
 
     if (strcmp(action, "killclient") == 0) {
@@ -350,6 +356,10 @@ void server_dispatch_action(FwmServer *server, const char *action) {
             server->hints_buffer = hints_show(server->layer_overlay, server->screen_width, server->screen_height, &server->config);
             server_panel_to_active_output(server, server->hints_buffer);
         }
+    } else if (strcmp(action, "screenshot") == 0) {
+        screenshot_full(server);
+    } else if (strcmp(action, "screenshot_region") == 0) {
+        screenshot_region(server);
     } else if (strcmp(action, "wallpaper_picker") == 0) {
         bool was_open = launcher_is_open(server->launcher);
         launcher_toggle_wallpapers(server->launcher);

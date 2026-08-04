@@ -60,6 +60,11 @@ static const struct { const char *bind; const char *action; } default_binds[] = 
     { "super+shift+9",        "move_to:8"        },
     { "super+shift+0",        "move_to:9"        },
     { "super+a",              "expo"             },
+    /* Print for the screen, where every other desktop puts it. The region one
+     * is on super+shift+s instead of shift+Print: a laptop without a Print key
+     * would otherwise have no way to reach it. */
+    { "Print",                "screenshot"        },
+    { "super+shift+s",        "screenshot_region" },
     { "super+shift+c",        "calm_all"         },
     { "super+shift+r",        "reload_config"    },
     { "super+shift+p",        "wallpaper_picker" },

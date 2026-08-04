@@ -259,6 +259,12 @@ typedef struct {
      * a still frame that costs the machine nothing, which is the better trade
      * on hardware where the effect judders under a slow hand. */
     double live;
+    /* The region screenshot peeling off the screen and flying away toward the
+     * line that says it was copied. Strength doubles as duration: 0 disables,
+     * 1 = default, 2 makes it twice as slow and twice as far. Only the region
+     * shot has it — a whole screen taking off is a lot of motion for something
+     * you may be doing every minute. */
+    double shot_fly;
 } EffectsConfig;
 
 /* ── session ─────────────────────────────────────────────────────────── */
