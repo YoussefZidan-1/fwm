@@ -27,6 +27,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <wayland-server-core.h>
@@ -617,7 +619,37 @@ static void ipc_handle_command(struct IpcClient *client, const char *line, struc
     #define IS(name) (cmdlen == strlen(name) && strncmp(line, name, cmdlen) == 0)
 
     if (IS("version")) {
-        buf_puts(out, "{\"ok\":true,\"version\":\"fwm ipc 1\"}\n");
+        /* Which binary is answering, and when it was built.
+         *
+         * Read off the running executable itself rather than stamped in at
+         * compile time, because the question this exists to settle is exactly
+         * the one a compile-time stamp cannot: a compositor is started from a
+         * TTY and outlives the shell that started it, there is normally an
+         * installed fwm on PATH as well as whatever is in build/, and every
+         * "it does not work" begins with finding out which of them is running.
+         * /proc/self/exe and its mtime cannot disagree with reality. */
+        char exe[256];
+        ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+        if (n < 0) n = 0;
+        exe[n] = '\0';
+
+        char built[64] = "?";
+        struct stat st;
+        if (n > 0 && stat(exe, &st) == 0) {
+            struct tm tm;
+            localtime_r(&st.st_mtime, &tm);
+            strftime(built, sizeof(built), "%Y-%m-%d %H:%M:%S", &tm);
+        }
+
+        buf_puts(out, "{\"ok\":true,\"version\":\"fwm ipc 1\",\"binary\":");
+        buf_json_string(out, n > 0 ? exe : "?");
+        buf_puts(out, ",\"built\":");
+        buf_json_string(out, built);
+        buf_puts(out, ",\"pid\":");
+        char pid[32];
+        snprintf(pid, sizeof(pid), "%d", (int)getpid());
+        buf_puts(out, pid);
+        buf_puts(out, "}\n");
         return;
     }
     if (IS("state"))   { cmd_state(server, out);   return; }
