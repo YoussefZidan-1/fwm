@@ -222,6 +222,13 @@ static void clamp_world_speed(PhysicsWorld *world, struct Engine *eng) {
 }
 
 static void clamp_velocity(double *vx, double *vy, double max_speed) {
+    /* Same reading of zero as clamp_world_speed: no limit, not a limit of zero.
+     * Without this a throw in chaos mode scaled by 0/speed and landed dead,
+     * while a window shoved by a drag — bounded post-solve, where the check
+     * above does exist — kept moving. The one setting documented as "removes
+     * the limit" was the one setting that stopped a throw entirely. */
+    if (max_speed <= 0.0) return;
+
     double speed = hypot(*vx, *vy);
     if (speed <= max_speed || speed <= 0.0) {
         return;
