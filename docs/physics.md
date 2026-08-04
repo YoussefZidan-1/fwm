@@ -8,7 +8,8 @@ is deliberately bounded.
 Contents: [the world](#the-world) · [units](#units) · [what a window is made
 of](#what-a-window-is-made-of) · [mass](#mass) · [gravity](#gravity) ·
 [throwing and dragging](#throwing-and-dragging) · [speed](#speed) ·
-[rotation](#rotation) · [what physics does not own](#what-physics-does-not-own)
+[rotation](#rotation) · [what physics does not own](#what-physics-does-not-own) ·
+[soft windows](#soft-windows-and-why-there-are-none)
 
 ## The world
 
@@ -225,3 +226,40 @@ round.
   time you dropped one.
 - **`no_collide` windows** pass through other windows but never through a wall:
   the play area is not optional.
+
+## Soft windows, and why there are none
+
+A window in fwm is a rigid box, and it is going to stay one. Windows do not sag
+under their own weight, do not squash where another window lands on them, and do
+not stretch as they spin. The drag wobble (`[effects] jelly`) is the whole of the
+softness there is: a picture of the window bent through a spring lattice while
+your hand is on it, and rigid again the moment you let go.
+
+This is a deliberate stopping point rather than a gap waiting to be filled, so
+here is what it would take, for anyone tempted.
+
+The cheap half is deceptive. The lattice already exists (`src/wobble.c`), the
+mesh already draws (`warp_blit` in `src/rotate.c`), and stepping a 9x9 sheet of
+springs for every window costs a few hundred thousand floating-point operations
+a frame — nothing. Gravity, contacts and volume preservation are each a few
+dozen lines on top of that, and they work: an afternoon gets you windows that
+flatten against the floor and bulge at the sides.
+
+What it does not get you is a compositor. Every part of fwm outside the
+simulation assumes a window is an upright rectangle — the focus border is a
+scene rectangle and cannot bend, so a permanently soft window is a permanently
+borderless one; the hit test is a box, and a corner hanging 60px from where the
+box says it is has to be clickable; the client's texture is a fixed grid of
+pixels, so a stretched window is a blurred one. None of those are hard problems
+individually. Together they are a rewrite of the plumbing in service of an
+effect.
+
+And the effect is the part that cannot be engineered. Softness is judged
+entirely by eye, in motion, on the screen it runs on: no measurement stands in
+for it. Numbers say a landing dents the surface 68px and the sheet crosses its
+rest shape five times; whether that reads as jelly or as a bug is a question
+only looking at it answers, and every wrong answer costs another round of
+building, restarting the compositor and looking again. That loop is what closed
+this, not the arithmetic.
+
+If it is ever reopened, reopen it with a way to see the result first.
