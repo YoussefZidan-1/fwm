@@ -85,6 +85,7 @@ static BspNode *tile_neighbor(FwmServer *server, int desktop, BspNode *from, cha
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <errno.h>
 #include <time.h>
 #include <math.h>
 #include <wayland-server.h>
@@ -149,20 +150,20 @@ static void server_spawn(const char *cmd) {
     pid_t pid = fork();
 
     if (pid == 0) {
-        /* Child: double-fork to orphan the grandchild process */
+        /* Child: double-fork to orphan the grandchild process.
+         * Only async-signal-safe functions (setsid, execl, _exit) may be called here. */
         if (fork() == 0) {
             setsid();
-            /* Prepend 'exec ' so /bin/sh replaces itself directly with the app,
-             * avoiding a lingering intermediate shell process. */
-            char exec_cmd[2048];
-            snprintf(exec_cmd, sizeof(exec_cmd), "exec %s", cmd);
-            execl("/bin/sh", "sh", "-c", exec_cmd, (char *)NULL);
+            execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
             _exit(1);
         }
-        _exit(0); /* _exit prevents running Wayland/EGL cleanup hooks */
+        _exit(0);
     } else if (pid > 0) {
-        /* Parent: instantly wait on the middle child */
-        waitpid(pid, NULL, 0);
+        /* Bounded wait: the middle child calls _exit(0) immediately,
+         * so this waitpid never blocks the event loop. */
+        while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
+    } else {
+        wlr_log(WLR_ERROR, "fwm: failed to fork process for command: %s", cmd);
     }
 }
 
