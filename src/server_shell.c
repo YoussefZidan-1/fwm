@@ -51,6 +51,8 @@
 #include <wlr/types/wlr_output_power_management_v1.h>
 #include <wlr/types/wlr_gamma_control_v1.h>
 #include <wlr/types/wlr_cursor_shape_v1.h>
+#include <wlr/types/wlr_xcursor_manager.h>
+#include <wlr/xcursor.h>
 #include <wlr/render/color.h>
 #include <wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlr/types/wlr_relative_pointer_v1.h>
@@ -217,9 +219,27 @@ static void xwl_unmanaged_create(FwmServer *server, struct wlr_xwayland_surface 
 static void handle_xwl_ready(struct wl_listener *listener, void *data) {
     FwmServer *server = wl_container_of(listener, server, xwl_ready);
     wlr_xwayland_set_seat(server->xwayland, server->seat);
+
+    /* The root window's cursor. We do draw the pointer ourselves, but an X
+     * client that never defines a cursor of its own (GLFW calls
+     * XUndefineCursor whenever no custom cursor is set — Minecraft's whole
+     * menu is like that) inherits the root's, and Xwayland then asks us for a
+     * cursor with no surface at all: the pointer simply vanishes over the
+     * window. Defining the root cursor gives those clients an arrow to
+     * inherit. Clients that do set their own are unaffected. */
+    struct wlr_xcursor *xcursor =
+        wlr_xcursor_manager_get_xcursor(server->cursor_mgr, "default", 1);
+    if (xcursor && xcursor->image_count > 0) {
+        struct wlr_xcursor_image *image = xcursor->images[0];
+        struct wlr_buffer *buffer = wlr_xcursor_image_get_buffer(image);
+        if (buffer) {
+            wlr_xwayland_set_cursor(server->xwayland, buffer,
+                                    (int32_t)image->hotspot_x,
+                                    (int32_t)image->hotspot_y);
+        }
+    }
+
     // Spawned children inherit DISPLAY, so binds can launch X11 apps.
-    // (No wlr_xwayland_set_cursor: the compositor draws the pointer itself,
-    // the X-side cursor image is never shown.)
     setenv("DISPLAY", server->xwayland->display_name, true);
 }
 

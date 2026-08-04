@@ -172,7 +172,8 @@ static void export_session_environment(void) {
         execlp("dbus-update-activation-environment",
                "dbus-update-activation-environment",
                "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE",
-               "XDG_RUNTIME_DIR", "DISPLAY", (char *)NULL);
+               "XDG_RUNTIME_DIR", "DISPLAY",
+               "XCURSOR_THEME", "XCURSOR_SIZE", (char *)NULL);
         _exit(127);
     }
 
@@ -207,6 +208,65 @@ static void export_session_environment(void) {
                           "(is dbus installed?): portals such as screen "
                           "sharing may not work");
     }
+}
+
+/* The cursor theme, which is worth choosing rather than leaving to chance.
+ *
+ * Asked for no theme by name, wlroots looks for one called "default" and, when
+ * there is none installed (there usually is not — the convention is a
+ * ~/.icons/default symlink that nothing creates on its own), quietly falls back
+ * to a built-in set of four: default, left_ptr, text and pointer. Everything a
+ * client asks for beyond those — the resize arrows over a splitter or a panel
+ * edge, the grab hand, the crosshair — resolves to nothing, and
+ * wlr_cursor_set_xcursor leaves the cursor as it was. The pointer stops
+ * changing shape at all, which looks like the compositor ignoring the client
+ * when in fact it is asking for a picture nobody has.
+ *
+ * XCURSOR_THEME/XCURSOR_SIZE are what every toolkit reads and what a user sets
+ * to choose a cursor, so a theme named there is taken as named — even a bad
+ * one, because overriding a choice someone made explicitly is worse than
+ * honouring it badly. Only with nothing asked for do we go looking, and then
+ * a candidate has to prove itself by having a cursor the built-in set has not. */
+static struct wlr_xcursor_manager *cursor_theme_load(void) {
+    int size = 24;
+    const char *env_size = getenv("XCURSOR_SIZE");
+    if (env_size) {
+        int v = atoi(env_size);
+        if (v >= 8 && v <= 256) size = v;
+    }
+
+    const char *env_theme = getenv("XCURSOR_THEME");
+    if (env_theme && *env_theme) {
+        struct wlr_xcursor_manager *mgr = wlr_xcursor_manager_create(env_theme, size);
+        if (mgr) {
+            wlr_xcursor_manager_load(mgr, 1);
+            /* Said and done — but say so when the theme predates the CSS names
+             * clients ask by (an old X theme has sb_h_double_arrow and no
+             * ew-resize), because the symptom is a cursor that never changes
+             * shape and nothing else would explain it. */
+            if (!wlr_xcursor_manager_get_xcursor(mgr, "ew-resize", 1)) {
+                wlr_log(WLR_INFO, "cursor theme %s has no ew-resize: clients "
+                                  "asking for modern cursor names will get no "
+                                  "cursor change at all", env_theme);
+            }
+            return mgr;
+        }
+    }
+
+    /* Adwaita ships with the GTK icon theme, so it is on practically every
+     * desktop; NULL is "whatever wlroots would have done", the last resort. */
+    const char *tries[] = { "Adwaita", NULL };
+    for (size_t i = 0; i < sizeof(tries) / sizeof(*tries); i++) {
+        bool last = (tries[i] == NULL);
+        struct wlr_xcursor_manager *mgr = wlr_xcursor_manager_create(tries[i], size);
+        if (!mgr) continue;
+        wlr_xcursor_manager_load(mgr, 1);
+        if (last || wlr_xcursor_manager_get_xcursor(mgr, "ew-resize", 1)) {
+            return mgr;
+        }
+        wlr_xcursor_manager_destroy(mgr);
+    }
+    return NULL;
 }
 
 bool server_init(FwmServer *server) {
@@ -320,12 +380,38 @@ bool server_init(FwmServer *server) {
     foreign_init(server);
 
     server->cursor = wlr_cursor_create();
-    server->cursor_mgr = wlr_xcursor_manager_create(NULL, 24);
+    server->cursor_mgr = cursor_theme_load();
+    if (!server->cursor_mgr) {
+        wlr_log(WLR_ERROR, "cannot create a cursor theme");
+        return false;
+    }
+    /* Name the theme to the clients as well. Plenty of them never ask us for a
+     * cursor picture at all — GTK loads the theme itself and hands us a
+     * finished surface, Xwayland's Xcursor does the same for X clients — and
+     * they find it by reading XCURSOR_THEME/XCURSOR_SIZE out of their
+     * environment. Left unset, each one picks whatever it likes and the
+     * pointer changes not just shape but style as it crosses between windows.
+     *
+     * Overwriting rather than deferring to what is already there: the value we
+     * settled on may be a REPLACEMENT for the environment's, and a client
+     * pointed at the theme we rejected is exactly the mismatch this avoids.
+     * The whole environment is exported to D-Bus below, so activated services
+     * get it too. Nothing is set when wlroots chose for us (no name to give). */
+    wlr_log(WLR_INFO, "cursor theme: %s, size %u",
+            server->cursor_mgr->name ? server->cursor_mgr->name : "(wlroots' own)",
+            server->cursor_mgr->size);
+    if (server->cursor_mgr->name) {
+        setenv("XCURSOR_THEME", server->cursor_mgr->name, 1);
+    }
+    char cursor_size[16];
+    snprintf(cursor_size, sizeof(cursor_size), "%u", server->cursor_mgr->size);
+    setenv("XCURSOR_SIZE", cursor_size, 1);
     wlr_cursor_attach_output_layout(server->cursor, server->output_layout);
-    // Load the theme and show a default cursor image immediately. Without this
-    // the pointer has no image until a client sets one, so it looks "gone" for
-    // the first few seconds after startup (and over the empty background).
-    wlr_xcursor_manager_load(server->cursor_mgr, 1);
+    // Show a default cursor image immediately. Without this the pointer has no
+    // image until a client sets one, so it looks "gone" for the first few
+    // seconds after startup (and over the empty background). (The theme itself
+    // is already loaded, by cursor_theme_load, which has to read it to know
+    // whether it is the one to use.)
     wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
 
     server->seat = wlr_seat_create(server->wl_display, "seat0");
