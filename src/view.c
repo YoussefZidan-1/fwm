@@ -163,10 +163,22 @@ void view_set_size(FwmView *view, int width, int height) {
     if (view->type == FWM_VIEW_XDG) {
         wlr_xdg_toplevel_set_size(view->xdg_toplevel, width, height);
     } else {
-        // X11 configure carries position too; send screen coords (X clients
-        // use them as global root coordinates for e.g. popup placement).
+        /* X11 configure carries position too, and X clients read it as global
+         * root coordinates — which are our SCREEN coordinates, not the world
+         * ones view->x lives in. Sending the world position put every window
+         * from the second desktop on thousands of pixels off the X screen (the
+         * root is only as big as the monitors), and clients that steer by root
+         * coords — GLFW warps the pointer to the window centre for mouse-look —
+         * then aimed at nowhere and stopped responding to the mouse.
+         *
+         * With the window's desktop off every monitor there is no screen
+         * position to map to. Leave the X one where it is; server_camera_settled
+         * resyncs every view once the camera stops, so it is corrected the
+         * moment the window can be seen again. */
+        double sx = view->xwl_surface->x, sy = view->xwl_surface->y;
+        server_world_to_screen(view->server, view->x, view->y, &sx, &sy);
         wlr_xwayland_surface_configure(view->xwl_surface,
-            (int16_t)view->x, (int16_t)view->y,
+            (int16_t)lround(sx), (int16_t)lround(sy),
             (uint16_t)width, (uint16_t)height);
     }
 }
