@@ -23,7 +23,7 @@ BUILD="$REPO/build-asan"
 KEEP=0
 LIST=0
 
-SCENARIOS="bare clients churn tiling groups desktops overlays physics reload ipc outputs xwayland kill"
+SCENARIOS="bare clients churn tiling groups desktops overlays physics reload ipc outputs xwayland threads kill"
 
 # A scenario whose compositor has to be started differently says so here, in a
 # variable named after it. `outputs` needs a second monitor, and the headless
@@ -69,6 +69,31 @@ KIDS=""
 FAILED=""
 PASSED=""
 
+# Everything else here runs the compositor on defaults, which means single
+# threaded: the video wallpaper, the cava capture and the collision sound each
+# start a thread, and each is off unless a config asks for it. So the `threads`
+# scenario gets a config of its own, in a HOME of its own — the developer's own
+# ~/.config/fwm is never read and never written.
+#
+# The video is one of the repo's own demo clips, so there is nothing to fetch
+# and nothing to generate. FWM_TEST_CAVA=1 feeds the bars a synthetic spectrum:
+# fwm never starts a sound server, and a runner has none, so without it the
+# capture thread would decline to start and take the point of this scenario
+# with it.
+CFGHOME="$LOGDIR/home"
+mkdir -p "$CFGHOME/.config/fwm"
+cat > "$CFGHOME/.config/fwm/config.toml" <<TOML
+[[wallpaper]]
+path = "$REPO/assets/demo/launcher-wallpaper-picker.mp4"
+fit  = "video"
+fps  = 15
+
+[cava]
+mode = "both"
+bars = 24
+TOML
+threads_env="HOME=$CFGHOME FWM_TEST_CAVA=1"
+
 cleanup() {
     # Only ever what this script started, always by recorded pid: a pkill by
     # name here would reach into the session the developer is sitting in.
@@ -87,8 +112,13 @@ start() {
     # detect_leaks stays off: wlroots and the GL stack leak on exit by design,
     # and the noise would bury a real report. Use-after-free and overflow are
     # what this harness is for.
+    #
+    # TSAN_OPTIONS is here for the build-tsan variant of this same harness.
+    # halt_on_error=0 for the same reason as the others: one report must not
+    # end the scenario, because the interesting second one usually comes later.
     ASAN_OPTIONS=detect_leaks=0:abort_on_error=0:print_stacktrace=1 \
     UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=0 \
+    TSAN_OPTIONS="halt_on_error=0:second_deadlock_stack=1:suppressions=$REPO/tests/tsan.supp" \
     WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
     env "$@" "$FWM" >"$log" 2>&1 &
     FWM_PID=$!
@@ -153,11 +183,12 @@ verdict() {
     grep -q "ERROR: AddressSanitizer" "$log" 2>/dev/null && bad="$bad AddressSanitizer"
     grep -q "ERROR: LeakSanitizer"    "$log" 2>/dev/null && bad="$bad LeakSanitizer"
     grep -q "runtime error:"          "$log" 2>/dev/null && bad="$bad UBSan"
+    grep -q "WARNING: ThreadSanitizer" "$log" 2>/dev/null && bad="$bad ThreadSanitizer"
     grep -qE "Segmentation fault|Assertion .* failed" "$log" 2>/dev/null && bad="$bad crash"
 
     if [ -n "$bad" ]; then
         echo "  FAIL$bad"
-        sed -n '/ERROR: \|runtime error:/,+12p' "$log" | head -30 | sed 's/^/    /'
+        sed -n '/ERROR: \|runtime error:\|WARNING: ThreadSanitizer/,+12p' "$log" | head -30 | sed 's/^/    /'
         FAILED="$FAILED $name"
         KEEP=1   # a failing run's log is worth more than a tidy temp dir
     else
@@ -338,6 +369,29 @@ sc_outputs() {
     act reload_config 0.6
     act expo 0.5
     act expo 0.5
+}
+
+# The threaded half of the compositor, which every other scenario leaves
+# switched off. A video wallpaper decodes on its own thread and hands frames
+# over; the cava row captures and runs its FFT on another and hands over bar
+# heights that become bodies in the physics world. Both are producers the main
+# loop consumes from every frame, which is the shape races come in.
+#
+# So the point is not the acts themselves but doing them WHILE those threads
+# run: switching desktops pauses and resumes the decoder, fullscreen stops it
+# outright, and reload rebuilds the wallpaper and the row underneath both.
+# Teardown last, with the threads still going, since that is where a producer
+# outliving the thing it writes into shows up.
+sc_threads() {
+    sleep 2                      # let the decoder and the capture get going
+    client 20
+    for d in 1 2 3 1; do act "desktop:$d" 0.6; done
+    act real_fullscreen 0.8      # pauses the decoder
+    act real_fullscreen 0.8      # and resumes it
+    act throw_random 0.4
+    act reload_config 1.0        # rebuilds wallpaper + row under a live window
+    for d in 2 1; do act "desktop:$d" 0.5; done
+    sleep 1
 }
 
 # Clients killed outright rather than exiting: the compositor sees the socket

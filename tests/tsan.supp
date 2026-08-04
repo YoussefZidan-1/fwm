@@ -1,0 +1,38 @@
+# ThreadSanitizer suppressions for the dynamic harness.
+#
+# TSan only understands synchronisation it can see. A library built without
+# -fsanitize=thread hides its own locks from it, so any object shared inside
+# that library reads as a race even when it is correctly locked. Everything
+# below is that: threads fwm does not create, racing on memory fwm does not
+# own, inside libraries fwm only calls into.
+#
+# The rule for adding a line here: BOTH stacks must be entirely inside the
+# library, with fwm appearing only as the caller that got there. A report with
+# fwm's own code on either side of the race does not belong in this file — it
+# belongs in a bug.
+
+# Pango starts a '[pango] fontcon' thread of its own the first time text is
+# laid out, and it shares the fontconfig pattern cache with whoever asked.
+# Reached from cairo_overlay_update() and nothing else; fwm never touches a
+# pango or fontconfig object from a thread of its own.
+called_from_lib:libpango-1.0.so
+called_from_lib:libpangocairo-1.0.so
+called_from_lib:libpangoft2-1.0.so
+called_from_lib:libfontconfig.so
+called_from_lib:libglib-2.0.so
+called_from_lib:libgobject-2.0.so
+
+# gdk-pixbuf takes its loader-registry lock through g_once machinery TSan cannot
+# follow, so the matching unlock looks like an unlock of a mutex nobody holds.
+# One report per compositor start, always from the wallpaper image load.
+called_from_lib:libgdk_pixbuf-2.0.so
+mutex:libgdk_pixbuf-2.0.so
+
+# libavcodec runs frame-threaded H.264 decode ('av:h264:df0'), so its own
+# threads hand buffers to each other through synchronisation TSan cannot see.
+# src/video.c decodes on one thread and publishes finished frames under its own
+# lock; a race BETWEEN video.c and the main loop would not be covered here.
+called_from_lib:libavcodec.so
+called_from_lib:libavutil.so
+called_from_lib:libavformat.so
+called_from_lib:libswscale.so

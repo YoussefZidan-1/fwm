@@ -94,3 +94,49 @@ jobs:
         run: |
           mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
           ./tests/dynamic.sh
+
+  # The same compositor under ThreadSanitizer. Its own job because TSan cannot
+  # be combined with ASan — they claim the same shadow memory — so this is a
+  # second build, not a second flag.
+  #
+  # What it is for: fwm decodes the video wallpaper, captures audio for the cava
+  # row and mixes the collision sound each on its own thread, and the main loop
+  # reads what all three produce. ASan cannot see a data race at all; it shows
+  # up as a torn frame once an hour, a hang at exit, or a pointer that was fine
+  # a moment ago. This is the only tool that names the two stacks.
+  #
+  # Kept non-blocking for now (continue-on-error): the report has to be read
+  # before it can be trusted to gate merges, and the first pre-existing race it
+  # finds should not stop unrelated work. Remove that line once it is clean.
+  thread:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    continue-on-error: true
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            gcc clang make cmake pkgconf git \
+            wayland wlroots0.20 libxkbcommon cairo pango gdk-pixbuf2 box2d \
+            ffmpeg libpipewire libpulse \
+            xorg-xwayland foot
+
+      - uses: actions/checkout@v4
+
+      - name: Build with ThreadSanitizer
+        run: |
+          cmake -S . -B build-tsan -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_FLAGS="-fsanitize=thread -fno-omit-frame-pointer -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
+          cmake --build build-tsan -j$(nproc)
+
+      - name: Threaded scenarios
+        env:
+          XDG_RUNTIME_DIR: /tmp/xdg
+          WLR_RENDERER: pixman
+        # `threads` is the scenario that switches the producer threads on at
+        # all; the rest are here because a race does not need the feature that
+        # owns the thread to be the one that trips it.
+        run: |
+          mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+          ./tests/dynamic.sh -b build-tsan threads physics clients kill
