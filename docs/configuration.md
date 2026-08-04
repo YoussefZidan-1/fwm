@@ -303,7 +303,17 @@ squash       = 1.0   # squash & stretch on impact; 0 disables
 jelly        = 1.0   # wobble while dragging; 0 disables
 spin         = 1.0   # strength of the spin_window kick (experimental)
 live         = 1.0   # live window content under spin/wobble; 0 = still frame
+shot_fly     = 1.0   # region screenshot peels off and flies away; 0 disables
 ```
+
+`shot_fly` is the one effect that is not about windows: when `screenshot_region`
+takes its picture, a frozen copy of the region lifts off the screen, shrinks,
+tilts and flies down into the line that says it was copied, with the live screen
+carrying on underneath. The value scales duration and distance together — `0.5` is a
+quick flick, `2.0` a slow drift, `0` nothing at all. Only the region shot has
+it; `Print` stays instant. The tilt needs the GLES2 renderer — anywhere
+arbitrary rotation is unavailable the copy flies upright instead, which is a
+smaller loss than dropping the effect.
 
 `live = 0` puts every window under an effect back on a periodic snapshot — a
 still frame that costs the machine nothing, which is the better trade on hardware
@@ -366,7 +376,7 @@ enter    = "super+o"
 "r"      = "spin_all"
 
 [mode.resize]
-enter    = "super+shift+s"
+enter    = "super+shift+e"
 sticky   = true
 "h"      = "tile_move:l"
 "l"      = "tile_move:r"

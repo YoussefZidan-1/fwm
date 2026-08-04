@@ -60,6 +60,7 @@ typedef enum {
 
 struct FwmView;
 struct Launcher;
+struct FwmShotPicker;
 struct FwmServer;
 
 /* One monitor.
@@ -381,6 +382,21 @@ typedef struct FwmServer {
     struct wlr_pointer_constraint_v1 *active_constraint; /* NULL when free */
     struct wl_listener constraint_destroy;
 
+    /* The implicit pointer grab: while a button is down the events keep going
+     * to the surface it was pressed on, wherever the cursor wanders. Recorded
+     * on every motion that is NOT holding a button, so a press always finds
+     * the surface under it already measured.
+     *
+     * ptr_surface is only ever COMPARED against the seat's focused surface,
+     * never dereferenced: when the client goes away wlroots clears the seat's
+     * side and the comparison simply stops matching. */
+    struct wlr_surface *ptr_surface;      /* what the pointer was last over */
+    struct FwmView *ptr_view;             /* its window, NULL for unmanaged X */
+    double ptr_ox, ptr_oy;                /* that surface's origin, in layout */
+    int ptr_node_have;                    /* was the window's node placed? */
+    int ptr_node_x, ptr_node_y;           /* and where, so a window that moves
+                                           * under the grab carries it along */
+
     /* Display power (swayidle turning the screen off), gamma (wlsunset night
      * light) and client-requested cursor shapes. */
     struct wlr_output_power_manager_v1 *output_power;
@@ -529,6 +545,9 @@ typedef struct FwmServer {
     /* The desktop strip (expo). NULL when closed — that NULL is the mode flag
      * every input path tests, so there is no second copy of "is it open". */
     struct FwmExpo *expo;
+    /* The screenshot region selector, on the same terms: NULL when it is not
+     * up, and that NULL is what the input paths test (see src/screenshot.h). */
+    struct FwmShotPicker *shot_picker;
     
     int running;
 } FwmServer;

@@ -30,6 +30,7 @@
 #include "ui/hints.h"
 #include "ui/errors.h"
 #include "ui/modes.h"
+#include "screenshot.h"
 #include "ui/welcome.h"
 #include "ui/launcher.h"
 #include "ui/cairo_overlay.h"
@@ -84,6 +85,8 @@ static BspNode *tile_neighbor(FwmServer *server, int desktop, BspNode *from, cha
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <errno.h>
 #include <time.h>
 #include <math.h>
 #include <wayland-server.h>
@@ -145,10 +148,23 @@ bool server_can_spin(const PhysicsBody *b) {
  * quoting, arguments and $VARIABLES — `spawn:$BROWSER --new-window` works for
  * exactly the reason it looks like it should. */
 static void server_spawn(const char *cmd) {
-    if (fork() == 0) {
-        setsid();
-        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
-        exit(1);
+    pid_t pid = fork();
+
+    if (pid == 0) {
+        /* Child: double-fork to orphan the grandchild process.
+         * Only async-signal-safe functions (setsid, execl, _exit) may be called here. */
+        if (fork() == 0) {
+            setsid();
+            execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+            _exit(1);
+        }
+        _exit(0);
+    } else if (pid > 0) {
+        /* Bounded wait: the middle child calls _exit(0) immediately,
+         * so this waitpid never blocks the event loop. */
+        while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
+    } else {
+        wlr_log(WLR_ERROR, "fwm: failed to fork process for command: %s", cmd);
     }
 }
 
@@ -306,7 +322,12 @@ void server_dispatch_action(FwmServer *server, const char *action) {
             if (d >= 0) expo_goto_desktop(server, d);
             return;
         }
-        if (strcmp(action, "expo") != 0 && strcmp(action, "toggle_wrap") != 0) return;
+        /* `screenshot` too: it photographs the frame the strip is drawing,
+         * which is the one thing here that is ABOUT what is on screen. The
+         * region selector is not on the list — its pointer grab and the
+         * strip's would be aiming at the same events. */
+        if (strcmp(action, "expo") != 0 && strcmp(action, "toggle_wrap") != 0 &&
+            strcmp(action, "screenshot") != 0) return;
     }
 
     if (strcmp(action, "killclient") == 0) {
@@ -350,6 +371,10 @@ void server_dispatch_action(FwmServer *server, const char *action) {
             server->hints_buffer = hints_show(server->layer_overlay, server->screen_width, server->screen_height, &server->config);
             server_panel_to_active_output(server, server->hints_buffer);
         }
+    } else if (strcmp(action, "screenshot") == 0) {
+        screenshot_full(server);
+    } else if (strcmp(action, "screenshot_region") == 0) {
+        screenshot_region(server);
     } else if (strcmp(action, "wallpaper_picker") == 0) {
         bool was_open = launcher_is_open(server->launcher);
         launcher_toggle_wallpapers(server->launcher);
@@ -716,7 +741,12 @@ void server_toggle_modes_menu(FwmServer *server) {
          * the strip the pointer is at, and the one the modes it shows belong
          * to. */
         FwmOutput *out = server_active_output(server);
-        if (!out || !out->tray_buffer || server->tray_hidden) return;
+        /* Ask the strip's node, not tray_hidden: the node is where BOTH reasons
+         * a strip is off screen have already met — the global toggle and a real
+         * fullscreen window, which is decided per monitor. The flag alone let
+         * the keybind hang a menu off a pill that fullscreen had hidden, until
+         * the next tick took it away again. */
+        if (!out || !out->tray_buffer || !out->tray_buffer->node.enabled) return;
         /* The pill is dropped on a screen too narrow to hold it, and then there
          * is nothing to hang the menu off. The keybind lands here too, so this
          * is also what stops it opening a menu pointing at nothing. */

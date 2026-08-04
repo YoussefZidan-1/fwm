@@ -30,6 +30,7 @@
 #include "ui/modes.h"
 #include "ui/hints.h"
 #include "ui/errors.h"
+#include "screenshot.h"
 #include "ui/welcome.h"
 #include "ui/launcher.h"
 #include "ui/cairo_overlay.h"
@@ -121,9 +122,112 @@ static FwmOutput *tray_under_pointer(FwmServer *server,
                                      double *tx, double *ty) {
     FwmOutput *o = server_output_at(server, server->cursor->x, server->cursor->y);
     if (!o || !o->tray_buffer) return NULL;
-    if (tx) *tx = server->cursor->x - o->tray_buffer->node.x;
-    if (ty) *ty = server->cursor->y - o->tray_buffer->node.y;
+    /* A strip that is not on screen is not under the pointer either. It still
+     * EXISTS while hidden — the buffer and its islands are kept, only the node
+     * is disabled — so without this every pill, desktop marker and island went
+     * on answering clicks from behind a fullscreen game: an invisible bar along
+     * the bottom of the screen that swallowed shots and switched desktops.
+     *
+     * Asked of the scene rather than a flag, which covers both ways the strip
+     * goes away (the user hiding it, a fullscreen window covering it) and, by
+     * returning layout coordinates, is also the right origin to measure the
+     * cursor against — node.x is relative to the node's parent. */
+    int lx, ly;
+    if (!wlr_scene_node_coords(&o->tray_buffer->node, &lx, &ly)) return NULL;
+    if (tx) *tx = server->cursor->x - lx;
+    if (ty) *ty = server->cursor->y - ly;
     return o;
+}
+
+/* Remember where the surface under the pointer sits, so that a button pressed
+ * on it can go on being steered after the cursor has left it (see
+ * pointer_grab_deliver). Called for every motion that is not already inside a
+ * grab, which is exactly the state a press starts from. */
+static void pointer_note_surface(FwmServer *server, struct wlr_surface *surface,
+                                 FwmView *view, double lx, double ly,
+                                 double sx, double sy) {
+    server->ptr_surface = surface;
+    server->ptr_view = surface ? view : NULL;
+    server->ptr_ox = lx - sx;
+    server->ptr_oy = ly - sy;
+    server->ptr_node_have = 0;
+    if (server->ptr_view && server->ptr_view->scene_tree) {
+        int nx, ny;
+        if (wlr_scene_node_coords(&server->ptr_view->scene_tree->node, &nx, &ny)) {
+            server->ptr_node_x = nx;
+            server->ptr_node_y = ny;
+            server->ptr_node_have = 1;
+        }
+    }
+}
+
+/* A button is down: the surface it was pressed on owns the pointer until it
+ * comes back up, and it owns it OUTSIDE its own edges too.
+ *
+ * This is the implicit grab the pointer protocol is built on, and without it
+ * every drag a client does for itself comes apart the moment the cursor
+ * strays: the compositor hands the pointer to whatever is now underneath, the
+ * dragging surface is sent a leave, and it stops the drag it was doing.
+ * Dragging a splitter or a panel edge is exactly that kind of drag — the hand
+ * runs past the divider it is pushing, and by then the pointer is over a
+ * different subsurface, a neighbouring window, or nothing — so panels could
+ * not be resized in any application at all.
+ *
+ * The coordinates handed over stay measured from the grabbed surface even when
+ * they fall outside it (negative, or past its width): that is what tells the
+ * client how far the hand has pushed, and clients clamp it themselves.
+ *
+ * Returns false when there is nothing being grabbed, and the caller should
+ * carry on with the ordinary "what is under the cursor" path. */
+static bool pointer_grab_deliver(FwmServer *server, double lx, double ly,
+                                 uint32_t time_msec) {
+    if (server->seat->pointer_state.button_count == 0) return false;
+    if (!server->ptr_surface ||
+        server->ptr_surface != server->seat->pointer_state.focused_surface) {
+        return false;
+    }
+
+    double ox = server->ptr_ox, oy = server->ptr_oy;
+    /* Follow the window if it has moved since the press — the camera sliding
+     * under the hand moves it just as a physics nudge does, and either way the
+     * surface-local origin has to move with it or the drag drifts. */
+    if (server->ptr_node_have && server->ptr_view && server->ptr_view->scene_tree) {
+        int nx, ny;
+        if (wlr_scene_node_coords(&server->ptr_view->scene_tree->node, &nx, &ny)) {
+            ox += nx - server->ptr_node_x;
+            oy += ny - server->ptr_node_y;
+        }
+    }
+
+    wlr_seat_pointer_notify_motion(server->seat, time_msec, lx - ox, ly - oy);
+    return true;
+}
+
+/* What the cursor is over, told to the client that owns it. Shared by motion
+ * and by the release that ends a grab: letting go over a different window has
+ * to put the pointer where it actually is, and there is no motion event to do
+ * it with. */
+static void pointer_update_focus(FwmServer *server, double lx, double ly,
+                                 uint32_t time_msec) {
+    struct wlr_surface *surface = NULL;
+    double sx = 0, sy = 0;
+    FwmView *view = view_at(server, lx, ly, &surface, &sx, &sy);
+    pointer_note_surface(server, surface, view, lx, ly, sx, sy);
+    if (surface) {
+        // view == NULL happens over unmanaged X11 surfaces (menus,
+        // tooltips): they still get pointer events, just no focus change.
+        if (view) server_focus_view(server, view);
+        wlr_seat_pointer_notify_enter(server->seat, surface, sx, sy);
+        wlr_seat_pointer_notify_motion(server->seat, time_msec, sx, sy);
+        constraints_follow_focus(server, surface);
+    } else {
+        // Over the empty background: no client owns the cursor, so restore
+        // our default image (otherwise it keeps the last client's cursor or
+        // none at all).
+        wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
+        wlr_seat_pointer_clear_focus(server->seat);
+        constraints_follow_focus(server, NULL);
+    }
 }
 
 static void handle_cursor_motion(struct wl_listener *listener, void *data) {
@@ -179,6 +283,14 @@ static void handle_cursor_motion(struct wl_listener *listener, void *data) {
     if (lock_is_active(server)) return; /* nothing under the lock may be reached */
     drag_icon_update_position(server);
 
+    /* The region selector is aiming, not pointing: it owns every motion and
+     * no client hears about any of them. First, because it sits over
+     * everything else that could claim one. */
+    if (screenshot_handle_motion(server, lx, ly)) {
+        wlr_seat_pointer_clear_focus(server->seat);
+        return;
+    }
+
     /* Same rule as the launcher below, for the same reason: while the desktop
      * strip is up the pointer is aiming at snapshots, not at the windows they
      * are pictures of, and no client may be told the cursor is over it. */
@@ -203,27 +315,13 @@ static void handle_cursor_motion(struct wl_listener *listener, void *data) {
      * mean "what is under me". */
     if (server_drag_motion(server, lx, ly, &now)) return;
 
+    /* A drag the CLIENT is doing: the pointer is spoken for, and neither the
+     * focus nor the surface under the cursor may change until the button is
+     * let go. */
+    if (pointer_grab_deliver(server, lx, ly, event->time_msec)) return;
+
     // Focus follows pointer
-    {
-        struct wlr_surface *surface = NULL;
-        double sx, sy;
-        FwmView *view = view_at(server, lx, ly, &surface, &sx, &sy);
-        if (surface) {
-            // view == NULL happens over unmanaged X11 surfaces (menus,
-            // tooltips): they still get pointer events, just no focus change.
-            if (view) server_focus_view(server, view);
-            wlr_seat_pointer_notify_enter(server->seat, surface, sx, sy);
-            wlr_seat_pointer_notify_motion(server->seat, event->time_msec, sx, sy);
-            constraints_follow_focus(server, surface);
-        } else {
-            // Over the empty background: no client owns the cursor, so restore
-            // our default image (otherwise it keeps the last client's cursor or
-            // none at all).
-            wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
-            wlr_seat_pointer_clear_focus(server->seat);
-            constraints_follow_focus(server, NULL);
-        }
-    }
+    pointer_update_focus(server, lx, ly, event->time_msec);
 }
 
 static void handle_cursor_motion_absolute(struct wl_listener *listener, void *data) {
@@ -233,6 +331,10 @@ static void handle_cursor_motion_absolute(struct wl_listener *listener, void *da
     server_notify_activity(server);
     if (lock_is_active(server)) return; /* nothing under the lock may be reached */
     drag_icon_update_position(server);
+    if (screenshot_handle_motion(server, server->cursor->x, server->cursor->y)) {
+        wlr_seat_pointer_clear_focus(server->seat);
+        return;
+    }
     if (launcher_is_open(server->launcher)) {
         launcher_handle_motion(server->launcher, server->cursor->x, server->cursor->y);
         wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
@@ -259,6 +361,11 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
 
     server_notify_activity(server);
     if (lock_is_active(server)) return; /* no clicks reach anything under the lock */
+
+    /* The selector's own drag. Ahead of everything: the press that starts it
+     * and the release that takes the picture must reach nothing else. */
+    if (screenshot_handle_button(server, event->state == WL_POINTER_BUTTON_STATE_PRESSED))
+        return;
 
     bool l_was_open = launcher_is_open(server->launcher);
     if (launcher_handle_button(server->launcher, server->cursor->x, server->cursor->y,
@@ -391,6 +498,13 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
         if (server_drag_press(server, event->button, lx, ly, &now)) return;
     } else {
         server_drag_release(server, lx, ly);
+        /* The grab is over. Whatever is under the cursor now owns the pointer
+         * again, and there is no motion event coming to say so — a hand that
+         * lets go without moving would otherwise leave the pointer with the
+         * window it was dragging in until it twitched. */
+        if (server->seat->pointer_state.button_count == 0) {
+            pointer_update_focus(server, lx, ly, event->time_msec);
+        }
     }
 }
 

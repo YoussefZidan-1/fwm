@@ -32,6 +32,7 @@
 #include "ui/tray.h"
 #include "ui/hints.h"
 #include "ui/errors.h"
+#include "screenshot.h"
 #include "ui/welcome.h"
 #include "ui/launcher.h"
 #include "expo.h"
@@ -477,6 +478,7 @@ void server_destroy(FwmServer *server) {
      * a blocking write, and this is the teardown path. */
     if (server->sound) sound_destroy(server->sound);
     server->sound = NULL;
+    screenshot_cleanup(server);
     launcher_destroy(server->launcher);
     server->launcher = NULL;
     expo_destroy(server);

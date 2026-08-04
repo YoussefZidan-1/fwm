@@ -246,6 +246,21 @@ static void test_world_speed_ceiling(void) {
     physics_step(&w, SW, SH, 0, 0, 0, DT);
     CHECK(hypot(physics_find_body(&w, 1)->vx, physics_find_body(&w, 1)->vy) > 20000.0);
     physics_destroy(&w);
+
+    /* And it has to mean that on the way in as well. The case above goes through
+     * physics_set_velocity; a thrown window goes through physics_throw_body,
+     * which clamps before the body ever reaches the solver — and read zero as a
+     * ceiling of zero, so chaos mode was the one setting that made a throw land
+     * dead while a shove still flew. */
+    CASE("max_throw_speed = 0 does not kill a throw");
+    physics_init(&w);
+    w.gravity_scale = 0.0;
+    w.throw_speed_multiplier = 1.0;
+    w.max_throw_speed = 0.0;
+    physics_sync_body(&w, 1, 900, 400, 400, 300, SW);
+    physics_throw_body(&w, 1, 3000.0, 0.0);
+    CHECK(hypot(physics_find_body(&w, 1)->vx, physics_find_body(&w, 1)->vy) > 2999.0);
+    physics_destroy(&w);
 }
 
 static void test_engine_ceiling_follows_config(void) {

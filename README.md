@@ -164,6 +164,7 @@ rate your hand was turning it.
 ### Built-in overlays
 - **App launcher** (`Super+Space`) — fuzzy search over desktop entries with icons, no external `rofi` needed. Launched windows drop into the world with physics.
 - **Wallpaper picker** (`Super+Shift+P`) — browse a folder and apply an image instantly; the choice is remembered without ever rewriting your config.
+- **Screenshots** (`Print`, `Super+Shift+S` for a region) — built in, no `grim`/`slurp` to install. The PNG goes straight to the clipboard, ready to paste; nothing is written to disk. The region shot peels off the screen, tilts and flies away as it is taken, so you can see exactly which pixels were caught.
 - **Keybind cheat-sheet** (`Super+Shift+/`) — generated from your actual binds and gestures, not a static list.
 - **Config never costs you the session** — a broken file falls back to built-in binds and reports the problem in a tray pill; fix it and press `Super+Shift+R` to reload live.
 - **Window rules** — `[[rule]]` matches `app_id` / `title` with regexes and decides where a window opens and whether physics touches it.
@@ -622,6 +623,7 @@ camera_shake = 0.0   # jolt the view on hard impacts; off by default, 1.0 to ena
 squash       = 1.0   # windows deform on impact, scaled by speed; 0 disables
 jelly        = 1.0   # how far a dragged window bends (wobbly windows); 0 disables
 spin         = 1.0   # strength of the spin_window kick (experimental); 0 disables
+shot_fly     = 1.0   # region screenshot peels off and flies away; 0 disables
 
 [focus]
 # When an app asks to be raised (xdg-activation): "never" ignores it,
@@ -720,6 +722,8 @@ fit  = "pan"
 "super+shift+slash"  = "show_hints"
 "super+shift+r"      = "reload_config"
 "super+shift+p"      = "wallpaper_picker"
+"Print"              = "screenshot"
+"super+shift+s"      = "screenshot_region"
 "super+shift+l"      = "spawn:hyprlock"
 "super+shift+Escape" = "EXIT"
 "super+Left"         = "tile_focus:l"    # Right/Up/Down likewise
@@ -759,6 +763,8 @@ fit  = "pan"
 | `show_hints` | keybind cheat-sheet overlay |
 | `reload_config` | re-read the config file and apply it without restarting |
 | `wallpaper_picker` | built-in wallpaper browser; Enter applies the image at once |
+| `screenshot` | the whole monitor the pointer is on, as a PNG on the clipboard |
+| `screenshot_region` | drag a rectangle out with the mouse and copy that; Escape (or a click with no drag in it) cancels |
 | `show_errors` | open the config-problem panel (same as clicking the tray's ⚠ pill) |
 | `modes_menu` | open the modes menu (same as clicking the tray's modes pill) |
 | `output_off` | turn off the monitor the pointer is on — it leaves the layout, hands its desktop back and the pointer moves to a screen that is still lit. The last lit screen is never turned off |

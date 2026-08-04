@@ -81,6 +81,7 @@ int action_is_known(const char *a) {
         "calm_all", "fake_fullscreen", "real_fullscreen",
         "launcher", "toggle_tray", "spin_window", "spin_all", "terminal",
         "expo", "toggle_wrap", "modes_menu",
+        "screenshot", "screenshot_region",
         "output_off", "toggle_internal_output", "outputs_on", NULL
     };
     static const char *prefixes[] = {
@@ -532,6 +533,7 @@ static void load_effects(toml_table_t *root, EffectsConfig *e) {
     e->jelly = 1.0;
     e->spin = 1.0;
     e->live = 1.0;
+    e->shot_fly = 1.0;
     if (!root) return;
     toml_table_t *tbl = toml_table_in(root, "effects");
     if (!tbl) return;
@@ -550,6 +552,9 @@ static void load_effects(toml_table_t *root, EffectsConfig *e) {
     LOAD_DOUBLE(tbl, "spin", e->spin);
     if (e->spin < 0.0) e->spin = 0.0;
     if (e->spin > 4.0) e->spin = 4.0;
+    LOAD_DOUBLE(tbl, "shot_fly", e->shot_fly);
+    if (e->shot_fly < 0.0) e->shot_fly = 0.0;
+    if (e->shot_fly > 3.0) e->shot_fly = 3.0;
 }
 
 /* ── cava section ────────────────────────────────────────────────────── */

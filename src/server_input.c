@@ -28,6 +28,7 @@
 #include "ui/tray.h"
 #include "ui/hints.h"
 #include "ui/errors.h"
+#include "screenshot.h"
 #include "ui/welcome.h"
 #include "ui/launcher.h"
 #include "ui/cairo_overlay.h"
@@ -298,6 +299,19 @@ static void handle_keyboard_key(struct wl_listener *listener, void *data) {
         }
     }
     
+    /* The region selector owns the keyboard while it is up — Escape cancels
+     * and everything else is swallowed, releases included, so a client never
+     * sees half of a key the selector ate. Ahead of the binds on purpose:
+     * Super+A must not open the desktop strip under a selection in progress. */
+    if (screenshot_selecting(server)) {
+        if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+            uint32_t kc = event->keycode + 8;
+            xkb_keysym_t sym = xkb_state_key_get_one_sym(keyboard->wlr_keyboard->xkb_state, kc);
+            screenshot_handle_key(server, sym);
+        }
+        return;
+    }
+
     // While the launcher is open it owns the keyboard entirely: feed it
     // presses (keysym + the text they produce) and swallow releases too, so
     // clients never see stray events from launcher typing.

@@ -57,6 +57,8 @@ unusable, so they work on a machine with no config at all.
 | `Super+Shift+C` | `calm_all` | stop every window dead |
 | `Super+J` | `toggle_tray` | hide/show the status strip |
 | `Super+Shift+P` | `wallpaper_picker` | pick a wallpaper |
+| `Print` | `screenshot` | copy the monitor under the pointer |
+| `Super+Shift+S` | `screenshot_region` | drag a rectangle out and copy that |
 | `Super+Shift+R` | `reload_config` | reload the config file |
 | `Super+Shift+?` | `show_hints` | the key hints overlay |
 | `Super+Shift+Escape` | `EXIT` | leave the session |
@@ -117,6 +119,8 @@ action is reported when the config loads rather than doing nothing when pressed.
 | `show_hints` | the key hints overlay |
 | `show_errors` | the config-problem panel (same as clicking the ⚠ pill) |
 | `wallpaper_picker` | the wallpaper picker |
+| `screenshot` | the whole monitor under the pointer, as a PNG on the clipboard |
+| `screenshot_region` | dim the screen, drag a rectangle out, copy that; Escape cancels |
 | `reload_config` | reload `config.toml`, discarding every `fwmctl set` |
 
 ### Monitors

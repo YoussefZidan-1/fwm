@@ -67,6 +67,13 @@ typedef struct FwmView {
      * commit, cursor blink included. */
     int aligned_w, aligned_h;
 
+    /* Last size an X client asked for and was refused (fullscreen owns its
+     * geometry). Refusing means answering with the geometry it already has, and
+     * a client that asks again for the same thing must be met with silence
+     * instead: it has been told once, and answering every repeat turns two
+     * stubborn parties into a configure loop as fast as the socket allows. */
+    int cfg_denied_w, cfg_denied_h;
+
     /* Focus border: 4 rects (top, bottom, left, right) parented to scene_tree,
      * so they move with the window for free. NULL when borders are disabled. */
     struct wlr_scene_rect *border[4];

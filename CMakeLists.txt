@@ -107,6 +107,7 @@ set(SOURCES
     src/view_effects.c
     src/rotate.c
     src/snapshot.c
+    src/screenshot.c
     src/expo.c
     src/expo_geom.c
     src/expo_cards.c

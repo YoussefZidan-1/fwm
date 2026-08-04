@@ -26,11 +26,13 @@
 #include <string.h>
 #include <ctype.h>
 #include <math.h>
+#include <errno.h>
 #include <stdint.h>
 #include <unistd.h>
 #include <wlr/util/log.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 
 /* Search-bar launcher in the tray's "sharp islands" style: a chevron-ended
  * bar in the upper third; result tiles are Box2D bodies, each pulled to its
@@ -914,10 +916,22 @@ static void launch_selected(Launcher *l) {
     } else {
         snprintf(cmd, sizeof(cmd), "%s", app->exec);
     }
-    if (fork() == 0) {
-        setsid();
-        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
-        exit(1);
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        /* Child: double-fork to orphan the grandchild process */
+        if (fork() == 0) {
+            setsid();
+            execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+            _exit(1);
+        }
+        _exit(0);
+    } else if (pid > 0) {
+        /* Bounded wait: the middle child calls _exit(0) immediately,
+         * so this waitpid never blocks the event loop. */
+        while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
+    } else {
+        wlr_log(WLR_ERROR, "fwm: failed to fork process for launcher: %s", cmd);
     }
 }
 
