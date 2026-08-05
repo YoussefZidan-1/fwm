@@ -20,6 +20,7 @@ at it explicitly or you will be talking to the outer session.
 | `fwmctl state` | compositor state: desktop, camera, per-monitor desktops, gravity, per-desktop modes, focused title |
 | `fwmctl windows` | every window: id, title, app_id, geometry, desktop, focus, pinned, nocollide, xwayland |
 | `fwmctl outputs` | monitors, their current mode and every mode they offer |
+| `fwmctl memory` | fwm's own memory, split into heap, mapped libraries and client buffers |
 | `fwmctl output <name> k=v …` | change one monitor |
 | `fwmctl config` | every settable option with its value, range and one-line help |
 | `fwmctl get <name>` | read one option |
@@ -44,6 +45,29 @@ $ fwmctl state
 `state` is the only place that answers "which desktop am I on" for every monitor
 at once — with independent screens the question has more than one answer — and the
 only place that reports each desktop's mode.
+
+## What fwm itself is using
+
+```console
+$ fwmctl memory
+{"ok":true,"rss_mb":141.5,"anon_mb":31.6,"file_mb":83.9,"shmem_mb":22.7}
+```
+
+`top` shows fwm as one number — RES, well past a hundred megabytes — and it reads
+like a compositor with a leak. The split says otherwise, and it is the reason this
+command exists:
+
+- **`anon_mb`** is fwm's own heap and stacks. This is the compositor's real
+  footprint, and the only figure a bug here can inflate.
+- **`file_mb`** is mapped executables and libraries — mesa, ffmpeg, pango, cairo.
+  Those pages are shared with every other process that maps them, so the same
+  memory is counted again inside every one of their totals.
+- **`shmem_mb`** is client buffers mapped for compositing. Charged to fwm *and* to
+  the client that owns them; it tracks how many windows are open and how big they
+  are, not anything fwm holds onto.
+
+Only `rss_mb` is the sum, and it is the one number that answers no question on its
+own. Watch `anon_mb` across a session — that is where a leak in fwm would show.
 
 ## Changing settings live
 

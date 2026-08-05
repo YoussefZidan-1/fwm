@@ -63,6 +63,7 @@ int main(int argc, char **argv) {
             "  windows            open windows as JSON\n"
             "  outputs            monitors, their modes and every mode they offer\n"
             "  output <name> k=v  change one monitor (see below)\n"
+            "  memory             fwm's own memory, split into heap/libraries/buffers\n"
             "  config             every settable option, with values and ranges\n"
             "  get <name>         read one option, e.g. physics.gravity\n"
             "  set <name> <val>   change one option for this session only\n"

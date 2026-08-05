@@ -279,6 +279,48 @@ static void cmd_state(FwmServer *server, struct Buf *b) {
     buf_puts(b, "}\n");
 }
 
+/* The compositor's own memory, split into the parts that mean different things.
+ *
+ * `top` shows one number for fwm — RES, well over a hundred megabytes — and it
+ * reads as a compositor with a leak. Almost none of it is fwm's. The split is
+ * the whole answer, so this reports the parts rather than the total:
+ *
+ *   anon   the heap and stacks: what fwm actually allocated and the only figure
+ *          that can grow because of a bug here.
+ *   file   mapped executables and libraries — mesa, ffmpeg, pango, cairo. Shared
+ *          with every other process that maps them, so it is counted again in
+ *          each of their totals; freeing it is not something a compositor can do.
+ *   shmem  client buffers the compositor has mapped to composite them. Charged
+ *          to fwm as well as to the client that owns them, and it grows with the
+ *          number and size of open windows, not with anything fwm keeps.
+ *
+ * Straight out of /proc/self/status, which already maintains this breakdown —
+ * walking smaps for a PSS figure would cost far more and answer a question
+ * nobody asked. A kernel that omits a field leaves it at zero rather than
+ * failing the command. */
+static void cmd_memory(struct Buf *b) {
+    long rss = 0, anon = 0, file = 0, shmem = 0;
+
+    FILE *f = fopen("/proc/self/status", "r");
+    if (!f) { reply_error(b, "cannot read /proc/self/status"); return; }
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        long v;
+        if      (sscanf(line, "VmRSS: %ld kB", &v)    == 1) rss   = v;
+        else if (sscanf(line, "RssAnon: %ld kB", &v)  == 1) anon  = v;
+        else if (sscanf(line, "RssFile: %ld kB", &v)  == 1) file  = v;
+        else if (sscanf(line, "RssShmem: %ld kB", &v) == 1) shmem = v;
+    }
+    fclose(f);
+
+    buf_puts(b, "{\"ok\":true");
+    buf_printf(b, ",\"rss_mb\":%.1f",   rss   / 1024.0);
+    buf_printf(b, ",\"anon_mb\":%.1f",  anon  / 1024.0);
+    buf_printf(b, ",\"file_mb\":%.1f",  file  / 1024.0);
+    buf_printf(b, ",\"shmem_mb\":%.1f", shmem / 1024.0);
+    buf_puts(b, "}\n");
+}
+
 /* Every runtime-settable option with its current value, so `fwmctl config`
  * documents itself rather than needing the list kept in sync by hand. */
 static void cmd_config(FwmServer *server, struct Buf *b) {
@@ -656,6 +698,7 @@ static void ipc_handle_command(struct IpcClient *client, const char *line, struc
     if (IS("windows")) { cmd_windows(server, out); return; }
     if (IS("config"))  { cmd_config(server, out);  return; }
     if (IS("outputs")) { cmd_outputs(server, out); return; }
+    if (IS("memory"))  { cmd_memory(out);          return; }
     if (IS("get")) {
         if (!arg) { reply_error(out, "get needs an option name"); return; }
         cmd_get(server, arg, out);
