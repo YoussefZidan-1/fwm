@@ -230,6 +230,79 @@ static void pointer_update_focus(FwmServer *server, double lx, double ly,
     }
 }
 
+/* Where a surface's top-left corner sits in layout coordinates.
+ *
+ * The pointer bookkeeping already holds it exactly, measured from the scene
+ * itself, for the surface the pointer is over — and a constraint only ever
+ * holds the pointer over the surface it belongs to. The fallback is the
+ * window's own position, which is a world coordinate and needs mapping to the
+ * screen; it is wrong by the xdg geometry offset, but it is only reached when
+ * the pointer is not on the surface at all. */
+static bool pointer_surface_origin(FwmServer *server, struct wlr_surface *surface,
+                                   double *ox, double *oy) {
+    if (surface && surface == server->ptr_surface) {
+        *ox = server->ptr_ox;
+        *oy = server->ptr_oy;
+        return true;
+    }
+    FwmView *view = view_from_surface(server, surface);
+    if (!view) return false;
+    return server_world_to_screen(server, view->x, view->y, ox, oy);
+}
+
+/* A locked pointer may say, before it lets go, where the cursor should be
+ * found afterwards — zwp_locked_pointer_v1.set_cursor_position_hint.
+ *
+ * This is not a nicety. It is the ONLY way a client can move the cursor on
+ * Wayland, and it is what both SDL's warp and Xwayland's XWarpPointer are
+ * built on: they take a momentary lock, name the place they want the pointer,
+ * and drop it again. Ignoring the hint leaves our cursor wherever the hand
+ * happened to leave it while the game steered by deltas, so the moment the
+ * game hands the pointer back — a menu, a cutscene, alt-tab — the cursor
+ * appears somewhere unrelated to where the game had been drawing its own.
+ * That is the "the cursor jumps somewhere random" bug, and it is why games
+ * behaved on compositors that honour the hint and not here. */
+void pointer_apply_constraint_hint(FwmServer *server,
+                                   struct wlr_pointer_constraint_v1 *constraint) {
+    if (!constraint || constraint->type != WLR_POINTER_CONSTRAINT_V1_LOCKED) return;
+    if (!(constraint->current.committed & WLR_POINTER_CONSTRAINT_V1_STATE_CURSOR_HINT))
+        return;
+
+    double ox, oy;
+    if (!pointer_surface_origin(server, constraint->surface, &ox, &oy)) return;
+
+    double sx = constraint->current.cursor_hint.x;
+    double sy = constraint->current.cursor_hint.y;
+    wlr_cursor_warp(server->cursor, NULL, ox + sx, oy + sy);
+
+    /* Say it to the client too, if it is still the one holding the pointer:
+     * the cursor moved without any input device moving, so there is no motion
+     * event coming behind this to carry the new position. Only a motion, never
+     * a re-enter — pointer_update_focus would run the whole focus path,
+     * constraints included, and we are inside a constraint changing state. */
+    if (server->seat->pointer_state.focused_surface == constraint->surface) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        uint32_t msec = (uint32_t)(now.tv_sec * 1000 + now.tv_nsec / 1000000);
+        wlr_seat_pointer_notify_motion(server->seat, msec, sx, sy);
+    }
+}
+
+/* True when a confining constraint would let the cursor stand at (nx, ny). */
+static bool constraint_allows_at(FwmServer *server, double nx, double ny) {
+    struct wlr_pointer_constraint_v1 *c = server->active_constraint;
+    if (!c || c->type != WLR_POINTER_CONSTRAINT_V1_CONFINED) return true;
+
+    double ox, oy;
+    /* Only testable while the surface has a place on a screen. With its desktop
+     * off every monitor there is nothing to measure the region against, and
+     * confining the pointer to a rectangle read out of nowhere would strand the
+     * cursor; let the move through instead. */
+    if (!pointer_surface_origin(server, c->surface, &ox, &oy)) return true;
+    return pixman_region32_contains_point(&c->region, (int)(nx - ox), (int)(ny - oy),
+                                          NULL);
+}
+
 static void handle_cursor_motion(struct wl_listener *listener, void *data) {
     FwmServer *server = wl_container_of(listener, server, cursor_motion);
     struct wlr_pointer_motion_event *event = data;
@@ -251,25 +324,10 @@ static void handle_cursor_motion(struct wl_listener *listener, void *data) {
             return;
         }
         /* Confined: allow the move only while it stays inside the region. */
-        FwmView *cv = view_from_surface(server, server->active_constraint->surface);
-        if (cv) {
-            double nx = server->cursor->x + event->delta_x;
-            double ny = server->cursor->y + event->delta_y;
-            double vsx, vsy;
-            /* Only testable while the window has a place on a screen. With its
-             * desktop off every monitor there is nothing to measure the region
-             * against, and confining the pointer to a rectangle read out of
-             * uninitialised memory would strand the cursor; let the move
-             * through instead. */
-            if (server_world_to_screen(server, cv->x, cv->y, &vsx, &vsy)) {
-                double sx = nx - vsx;
-                double sy = ny - vsy;
-                if (!pixman_region32_contains_point(&server->active_constraint->region,
-                                                    (int)sx, (int)sy, NULL)) {
-                    server_notify_activity(server);
-                    return;
-                }
-            }
+        if (!constraint_allows_at(server, server->cursor->x + event->delta_x,
+                                  server->cursor->y + event->delta_y)) {
+            server_notify_activity(server);
+            return;
         }
     }
 
@@ -327,6 +385,31 @@ static void handle_cursor_motion(struct wl_listener *listener, void *data) {
 static void handle_cursor_motion_absolute(struct wl_listener *listener, void *data) {
     FwmServer *server = wl_container_of(listener, server, cursor_motion_absolute);
     struct wlr_pointer_motion_absolute_event *event = data;
+
+    /* A device that reports where it IS rather than how far it moved — a
+     * tablet, a touchscreen, a virtual machine's pointer. The constraint has
+     * to be honoured here too, or a game holding the pointer for mouse-look
+     * sees the cursor jump straight to the far corner the moment one of these
+     * speaks: an absolute event carries a position, and obeying it is a
+     * teleport. Turn it into the delta the client expects instead. */
+    double nx, ny;
+    wlr_cursor_absolute_to_layout_coords(server->cursor, &event->pointer->base,
+                                         event->x, event->y, &nx, &ny);
+    double dx = nx - server->cursor->x, dy = ny - server->cursor->y;
+
+    if (server->relative_pointer) {
+        wlr_relative_pointer_manager_v1_send_relative_motion(
+            server->relative_pointer, server->seat,
+            (uint64_t)event->time_msec * 1000, dx, dy, dx, dy);
+    }
+    if (server->active_constraint && !lock_is_active(server)) {
+        if (server->active_constraint->type == WLR_POINTER_CONSTRAINT_V1_LOCKED ||
+            !constraint_allows_at(server, nx, ny)) {
+            server_notify_activity(server);
+            return;
+        }
+    }
+
     wlr_cursor_warp_absolute(server->cursor, &event->pointer->base, event->x, event->y);
     server_notify_activity(server);
     if (lock_is_active(server)) return; /* nothing under the lock may be reached */

@@ -28,6 +28,8 @@
 
 #include "server.h"
 
+struct wlr_pointer_constraint_v1;
+
 /* Pointers are tracked only so a config reload can reach the touchpads that
  * are already plugged in — wlr_cursor keeps its device list private, and the
  * libinput settings are per device. */
@@ -156,6 +158,9 @@ void server_pointer_register(FwmServer *server);
 struct FwmView *view_at(FwmServer *server, double lx, double ly,
                         struct wlr_surface **surface, double *sx, double *sy);
 void idle_inhibit_refresh(FwmServer *server);
+/* Put the cursor where a lock that is letting go asked for it to be found. */
+void pointer_apply_constraint_hint(FwmServer *server,
+                                   struct wlr_pointer_constraint_v1 *constraint);
 
 /* ── server_shell.c ───────────────────────────────────────────────────── */
 void server_shell_register(FwmServer *server);

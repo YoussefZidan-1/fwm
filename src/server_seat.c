@@ -179,6 +179,10 @@ void idle_inhibit_refresh(FwmServer *server) {
 static void handle_constraint_destroy(struct wl_listener *listener, void *data) {
     FwmServer *server = wl_container_of(listener, server, constraint_destroy);
     (void)data;
+    /* A lock that is being torn down still gets to say where it left the
+     * cursor — a client warp is exactly a lock created, hinted and destroyed
+     * within one frame, and this is the only moment we hear the hint. */
+    pointer_apply_constraint_hint(server, server->active_constraint);
     server->active_constraint = NULL;
     wl_list_remove(&server->constraint_destroy.link);
 }
@@ -190,9 +194,13 @@ static void constraint_set_active(FwmServer *server,
     if (server->active_constraint == constraint) return;
 
     if (server->active_constraint) {
-        wlr_pointer_constraint_v1_send_deactivated(server->active_constraint);
+        struct wlr_pointer_constraint_v1 *old = server->active_constraint;
+        wlr_pointer_constraint_v1_send_deactivated(old);
         wl_list_remove(&server->constraint_destroy.link);
         server->active_constraint = NULL;
+        /* Cleared first: the hint moves the cursor, and nothing that runs off
+         * that warp may still find a constraint holding the pointer. */
+        pointer_apply_constraint_hint(server, old);
     }
     if (constraint) {
         server->active_constraint = constraint;
