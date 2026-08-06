@@ -507,8 +507,12 @@ bool server_drag_press(FwmServer *server, uint32_t button, double lx, double ly,
     /* The press in world coordinates: everything below that talks to a body or
      * a layout works in the world, and the monitor under the cursor is what
      * says which desktop's world that is. */
+    /* No monitor under the cursor — unplugged with the hand still moving, or a
+     * gap in the layout — leaves nothing to convert against. The reads below
+     * would then be of whatever the stack held, and a border grab or a jelly
+     * hold measured against that lands the window anywhere at all. */
     double wx, wy;
-    server_screen_to_world(server, lx, ly, &wx, &wy);
+    if (!server_screen_to_world(server, lx, ly, &wx, &wy)) return false;
 
     struct timespec now = *nowp;
     (void)now;
@@ -679,7 +683,7 @@ bool server_drag_press(FwmServer *server, uint32_t button, double lx, double ly,
                         if (!tiling) {
                             view_jelly_begin(view, server->config.effects.jelly,
                                              wx - view->x,
-                                             ly - view->y);
+                                             wy - view->y);
                         }
                     }
                 }
