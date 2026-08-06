@@ -370,6 +370,11 @@ static void handle_output_destroy(struct wl_listener *listener, void *data) {
     FwmOutput *output = wl_container_of(listener, output, destroy);
     /* Bars on this monitor go with it; they hold a pointer to it. */
     layer_output_gone(output->server, output->wlr_output);
+    /* So does the desktop strip, for the same reason: it is drawn on one
+     * monitor and reads that monitor's camera and box every tick. Only a
+     * change of SIZE tore it down before, so unplugging a second screen of
+     * the same size as the first left it reading freed memory. */
+    expo_output_gone(output->server, output);
     /* So do the things that were built for its size. The desktop it was showing
      * is simply free again: its windows park off-layout until some monitor
      * takes that desktop. */

@@ -21,6 +21,7 @@
 
 struct FwmServer;
 struct FwmView;
+struct FwmOutput;
 
 typedef struct FwmExpo FwmExpo;
 
@@ -97,5 +98,9 @@ void expo_forget_view(struct FwmServer *server, struct FwmView *view);
 /* Tear the strip down without animating, at shutdown or when the outputs
  * change under it. */
 void expo_destroy(struct FwmServer *server);
+
+/* A monitor is being freed. The strip holds a pointer to the one it opened on,
+ * so it must go before that memory does. No-op for any other monitor. */
+void expo_output_gone(struct FwmServer *server, struct FwmOutput *out);
 
 #endif /* FWM_EXPO_H */

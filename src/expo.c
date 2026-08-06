@@ -330,6 +330,18 @@ void expo_destroy(FwmServer *server) {
     expo_teardown(server);
 }
 
+/* The monitor the strip is drawn on is going away, and `e->out` points into the
+ * FwmOutput that is about to be freed — the camera, the box and the wallpaper
+ * are read out of it on every tick, every motion and every draw. There is no
+ * strip without a screen to put it on, so it closes with the screen.
+ *
+ * Closing rather than moving it to another monitor: the strip is a photograph
+ * of one screen's desktops, taken at that screen's size, and its home desktop
+ * has just been handed to whichever monitor takes it next. */
+void expo_output_gone(FwmServer *server, FwmOutput *out) {
+    if (server->expo && server->expo->out == out) expo_teardown(server);
+}
+
 /* Re-photograph a desktop after something rearranged it under the strip.
  *
  * Two things have to happen and neither is optional. The layout's glide is
