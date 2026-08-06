@@ -527,6 +527,50 @@ typedef struct {
     double max_speed;   /* px/s: full volume at and above this */
 } SoundConfig;
 
+/* ── stats pill ──────────────────────────────────────────────────────── */
+
+/*
+ * What the machine is doing, in the tray:
+ *
+ *   [stats]
+ *   items    = ["cpu", "ram", "gpu", "vol"]
+ *   interval = 2.0
+ *   vol = "pactl get-sink-volume @DEFAULT_SINK@ | grep -o '[0-9]*%' | head -1"
+ *
+ * `items` is both the selection and the order. Three names are built in — cpu,
+ * ram, gpu — and ANY OTHER KEY in the table defines a sensor of that name whose
+ * value is what its command prints on the first line.
+ *
+ * One line per sensor is the whole point of the shape. The alternative,
+ * [[stats]] with name/label/exec/interval fields, is what the rest of this file
+ * does for wallpapers and outputs — but those have four things to say about
+ * each entry and this has one, and four lines of ceremony to put the volume in
+ * the tray is how a feature ends up unused.
+ *
+ * A name in `items` that is neither built in nor defined is a config error, not
+ * a silent omission: a typo in a sensor name is otherwise indistinguishable
+ * from a sensor that has nothing to report yet.
+ */
+#define STATS_MAX_ITEMS   12
+#define STATS_NAME_MAX    16
+#define STATS_CMD_MAX    512
+
+typedef struct {
+    char name[STATS_NAME_MAX];
+    char cmd[STATS_CMD_MAX];
+} StatsCustom;
+
+typedef struct {
+    /* Names in draw order, as written. Held as text rather than resolved here
+     * because config.c cannot know which sensors the machine can actually
+     * answer — that is stats.c's business, and it needs the name to say so. */
+    char        items[STATS_MAX_ITEMS][STATS_NAME_MAX];
+    int         item_count;
+    double      interval;   /* seconds between runs of the custom commands */
+    StatsCustom custom[STATS_MAX_ITEMS];
+    int         custom_count;
+} StatsConfig;
+
 /* ── wallpaper / parallax ────────────────────────────────────────────── */
 
 /*
@@ -746,6 +790,7 @@ typedef struct {
     GesturesConfig  gestures;
     CavaConfig      cava;
     SoundConfig     sound;
+    StatsConfig     stats;
     KeyBind        *keys;
     int             key_count;
     ConfigMode      modes[CONFIG_MAX_MODES];

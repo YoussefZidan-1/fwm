@@ -53,6 +53,14 @@ typedef struct {
     int modes_cava;      /* CAVA_MODE_* */
     int modes_ring;      /* camera.wrap */
     int modes_open;      /* menu is showing — the pill renders as pressed */
+    /* Stats pill (see src/stats.h). Already formatted — the tray draws text and
+     * knows nothing about where a number came from, which is what lets a user's
+     * own sensor sit in the same island as the built-in ones. "" draws the
+     * pill's placeholder rather than nothing: an island that disappears when
+     * every readout is switched off takes with it the only way to switch one
+     * back on. */
+    const char *stats_text;
+    int stats_open;      /* its menu is showing — the pill renders as pressed */
 } TrayData;
 
 /* Everything the strip drew, in tray-buffer-local coordinates: where the
@@ -75,11 +83,14 @@ typedef struct {
     char sig_kbd[8];
     int  sig_errors, sig_err_expanded;
     int  sig_m_tiling, sig_m_floating, sig_m_gravity, sig_m_cava, sig_m_open;
+    char sig_stats[160];
+    int  sig_stats_open;
     unsigned sig_theme_gen;
     int  have_sig;
 
     TrayRect err;    /* config-error pill */
     TrayRect modes;  /* modes pill */
+    TrayRect stats;  /* stats pill */
     TrayRect desk;   /* desktop-indicator island */
     double desk_first_cx;  /* centre of indicator 0 */
     double desk_spacing;
@@ -110,5 +121,12 @@ int tray_modes_pill_hit(const TrayStrip *strip, double x, double y);
 /* Where the pill starts, in tray-buffer-local x, so the menu can line up with
  * it. Valid only while tray_modes_pill_hit can succeed. */
 double tray_modes_pill_x(const TrayStrip *strip);
+
+/* Stats pill, in the same tray-buffer-local coordinates. UNLIKE the modes pill
+ * it is ellipsized rather than dropped when the strip is narrow — it is the
+ * only way into its own menu — and returns 0 only in the last resort, where
+ * there is no room for even an ellipsis. */
+int tray_stats_pill_hit(const TrayStrip *strip, double x, double y);
+double tray_stats_pill_x(const TrayStrip *strip);
 
 #endif /* FWM_TRAY_H */

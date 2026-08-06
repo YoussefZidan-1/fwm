@@ -126,6 +126,15 @@ void server_kill_modes_menu(FwmServer *server);
  * the rows that carry a segmented control (cava, mass) and ignored for the
  * switch rows. Returns 1 if anything changed. */
 int server_modes_menu_click(FwmServer *server, int row, int seg);
+
+/* ── stats menu (server_actions.c) ────────────────────────────────────── */
+/* The same three verbs as the modes menu, for the pill next door, and on the
+ * same button (see FwmServer.stats_buffer). */
+void server_toggle_stats_menu(FwmServer *server);
+void server_close_stats_menu(FwmServer *server);
+void server_kill_stats_menu(FwmServer *server);
+/* Flip sensor `row` on or off. Returns 1 if anything changed. */
+int server_stats_menu_click(FwmServer *server, int row);
 void server_state_apply_wallpaper(FwmServer *server);
 /* The modes menu's choices, remembered across restarts in
  * ~/.local/state/fwm/modes. Applied over the config after every load; saved the

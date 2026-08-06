@@ -30,6 +30,8 @@
 #include <malloc.h>
 #endif
 #include "ui/tray.h"
+#include "ui/stats_menu.h"
+#include "stats.h"
 #include "ui/hints.h"
 #include "ui/errors.h"
 #include "screenshot.h"
@@ -473,6 +475,11 @@ bool server_init(FwmServer *server) {
     // Palette for every overlay and window border; may sample the wallpaper.
     theme_build(&server->config);
 
+    /* The tray's readouts. Created after the config and before the first frame:
+     * the pill is drawn on that frame, and a handle that appeared later would
+     * mean a strip whose islands move once, a second in. */
+    server->stats = stats_create(&server->config.stats);
+
     // Init physics
     physics_init(&server->physics);
     server_apply_physics_config(server);
@@ -555,6 +562,7 @@ void server_destroy(FwmServer *server) {
     if (server->errors_buffer) cairo_overlay_destroy(server->errors_buffer);
     server->errors_buffer = NULL;
     server_kill_modes_menu(server);
+    server_kill_stats_menu(server);
     /* Before the wallpaper, whose tree the bars hang under — and while the
      * physics world is still alive, so the kinematic row is removed rather than
      * left pointing at freed levels. */
@@ -564,6 +572,10 @@ void server_destroy(FwmServer *server) {
      * a blocking write, and this is the teardown path. */
     if (server->sound) sound_destroy(server->sound);
     server->sound = NULL;
+    /* Kills any sensor command still running; nothing would ever read its
+     * output again. */
+    stats_destroy(server->stats);
+    server->stats = NULL;
     screenshot_cleanup(server);
     launcher_destroy(server->launcher);
     server->launcher = NULL;

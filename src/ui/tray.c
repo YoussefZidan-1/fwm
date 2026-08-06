@@ -80,6 +80,14 @@ double tray_modes_pill_x(const TrayStrip *strip) {
     return strip ? strip->modes.x : 0.0;
 }
 
+int tray_stats_pill_hit(const TrayStrip *strip, double x, double y) {
+    return strip && rect_hit(&strip->stats, x, y);
+}
+
+double tray_stats_pill_x(const TrayStrip *strip) {
+    return strip ? strip->stats.x : 0.0;
+}
+
 /* Island with pointed (chevron) ends: same silhouette family as the old bar. */
 static void pill_path(cairo_t *cr, double x, double y, double w, double h) {
     double cut = h / 2.0;
@@ -371,6 +379,81 @@ static void draw_tray_content(cairo_t *cr, int w, int h, void *user_data) {
         }
     }
 
+    /* ── stats pill: between the desktop island and the modes pill ──
+     *
+     * Anchored to the island's right edge rather than to the modes pill's left,
+     * so it grows rightwards into the free space as its text does. Anchored the
+     * other way it would slide left every time a number gained a digit, and a
+     * readout that moves while you read it is worse than no readout.
+     *
+     * Dropped, like the modes pill, when what is left between the two will not
+     * hold it — the same reasoning, and the same silent overdraw avoided. */
+    {
+        const char *text = (data->stats_text && data->stats_text[0])
+                           ? data->stats_text : NULL;
+        /* An island with nothing in it is still drawn, with a dimmed label: the
+         * menu that turns the readouts back on is opened from this pill, so a
+         * pill that vanished with the last of them would take its own way back
+         * with it. */
+        char placeholder[] = "\xE2\x97\x8B stats";   /* ○ */
+        const char *shown = text ? text : placeholder;
+        pango_layout_set_text(layout, shown, -1);
+        int sw;
+        pango_layout_get_pixel_size(layout, &sw, NULL);
+
+        double px = desk_px + desk_pw + PILL_GAP;
+        double right_limit = (strip->modes.valid ? strip->modes.x : clock_px) - PILL_GAP;
+        double avail = right_limit - px - PILL_PAD * 2;
+
+        /* Ellipsized rather than dropped, which is the opposite of what the
+         * modes pill does — and for the opposite reason. That one is a row of
+         * fixed icons with nothing to give, and it survives as a keybind. This
+         * one is text, it shortens like the title pill does, and it is the ONLY
+         * way to reach its own menu: a pill that vanished on a narrow screen
+         * would take with it the switches that could have made it fit. */
+        int ellipsized = sw > avail;
+        if (ellipsized) {
+            pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
+            pango_layout_set_width(layout, (int)(avail * PANGO_SCALE));
+            pango_layout_set_text(layout, shown, -1);
+            pango_layout_get_pixel_size(layout, &sw, NULL);
+        }
+        double pw = PILL_PAD * 2 + sw;
+
+        /* Below this there is no room for even an ellipsis, and an island with
+         * three dots in it says less than the gap it would fill. */
+        if (avail >= 24.0 && px + pw <= right_limit) {
+            int pressed = data->stats_open;
+            pill_path(cr, px, 0, pw, h);
+            if (pressed)
+                cairo_set_source_rgba(cr, thm->accent[0], thm->accent[1], thm->accent[2],
+                                      data->opacity);
+            else
+                cairo_set_source_rgba(cr, thm->pill[0], thm->pill[1], thm->pill[2],
+                                      data->opacity);
+            cairo_fill(cr);
+
+            if (pressed)     cairo_set_source_rgb(cr, thm->pill[0], thm->pill[1], thm->pill[2]);
+            else if (text)   cairo_set_source_rgb(cr, thm->text[0], thm->text[1], thm->text[2]);
+            else             cairo_set_source_rgb(cr, thm->dim[0], thm->dim[1], thm->dim[2]);
+            cairo_move_to(cr, px + PILL_PAD, text_y);
+            pango_cairo_show_layout(cr, layout);
+
+            strip->stats.x = px; strip->stats.y = 0;
+            strip->stats.w = pw; strip->stats.h = h; strip->stats.valid = 1;
+        } else {
+            strip->stats.valid = 0;
+        }
+
+        /* Handed back unclamped, as the title pill hands it back: this happens
+         * to be the last block that uses the layout, and that is exactly the
+         * kind of fact a later island added below would silently break. */
+        if (ellipsized) {
+            pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_NONE);
+            pango_layout_set_width(layout, -1);
+        }
+    }
+
     g_object_unref(layout);
 }
 
@@ -422,6 +505,10 @@ void tray_redraw(struct wlr_scene_buffer *tray_buf, const TrayData *data,
     sig.sig_m_gravity  = data->modes_gravity;
     sig.sig_m_cava     = data->modes_cava;
     sig.sig_m_open     = data->modes_open;
+    memset(sig.sig_stats, 0, sizeof(sig.sig_stats));
+    if (data->stats_text)
+        snprintf(sig.sig_stats, sizeof(sig.sig_stats), "%s", data->stats_text);
+    sig.sig_stats_open = data->stats_open;
     sig.sig_theme_gen = theme_generation();
 
     /* Compare the signature fields only: the rects below them are an OUTPUT of

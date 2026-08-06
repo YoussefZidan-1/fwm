@@ -30,6 +30,7 @@
 #include "ui/hints.h"
 #include "ui/errors.h"
 #include "ui/modes.h"
+#include "ui/stats_menu.h"
 #include "screenshot.h"
 #include "ui/welcome.h"
 #include "ui/launcher.h"
@@ -392,6 +393,8 @@ void server_dispatch_action(FwmServer *server, const char *action) {
         server_request_tray_redraw(server);
     } else if (strcmp(action, "modes_menu") == 0) {
         server_toggle_modes_menu(server);
+    } else if (strcmp(action, "stats_menu") == 0) {
+        server_toggle_stats_menu(server);
     } else if (strcmp(action, "output_off") == 0) {
         /* The monitor the pointer is on goes dark. Its desktop is handed back
          * to the pool and the pointer is moved to a screen that still exists,
@@ -863,4 +866,63 @@ int server_modes_menu_click(FwmServer *server, int row, int seg) {
         server_request_tray_redraw(server);
     }
     return changed;
+}
+
+/* ── stats menu ──────────────────────────────────────────────────────────
+ * The same three verbs as the modes menu above, and deliberately the same
+ * shape: two menus hanging off two neighbouring pills that were opened and
+ * closed by different code would drift apart in exactly the ways a user
+ * notices. */
+
+void server_close_stats_menu(FwmServer *server) {
+    if (!server->stats_buffer) return;
+    cairo_overlay_animate_out(server->stats_buffer, STATS_MENU_ANIM_MS,
+                              -STATS_MENU_RISE_PX, NULL, NULL);
+    server->stats_buffer = NULL;
+}
+
+/* Teardown path: the scene is going away, so there is nothing to animate into
+ * and no frames left to animate with. */
+void server_kill_stats_menu(FwmServer *server) {
+    if (server->stats_buffer) {
+        cairo_overlay_destroy(server->stats_buffer);
+        server->stats_buffer = NULL;
+    }
+}
+
+void server_toggle_stats_menu(FwmServer *server) {
+    if (server->stats_buffer) {
+        server_close_stats_menu(server);
+    } else {
+        FwmOutput *out = server_active_output(server);
+        /* Ask the strip's node rather than tray_hidden: the node is where both
+         * reasons a strip is off screen have already met — the global toggle,
+         * and a fullscreen window, which is decided per monitor. */
+        if (!out || !out->tray_buffer || !out->tray_buffer->node.enabled) return;
+        /* Dropped on a screen too narrow to hold it, and then there is nothing
+         * to hang a menu off. */
+        if (!tray_stats_pill_hit(&out->tray_strip, tray_stats_pill_x(&out->tray_strip), 1.0))
+            return;
+        server->stats_buffer = stats_menu_show(
+            server->layer_overlay, &out->box,
+            out->tray_buffer->node.x + tray_stats_pill_x(&out->tray_strip),
+            out->tray_strip.stats.w, server->stats,
+            server->config.decor.tray_opacity);
+    }
+    server_request_tray_redraw(server);
+}
+
+int server_stats_menu_click(FwmServer *server, int row) {
+    const StatsItem *it = stats_item(server->stats, row);
+    if (!it) return 0;
+    /* A sensor the machine cannot answer is not a switch: turning it on would
+     * put a name with no value in the pill. The row says "unavailable" and the
+     * click does nothing, which is the honest pair. */
+    if (!it->available) return 0;
+
+    stats_set_enabled(server->stats, row, !it->enabled);
+    stats_menu_redraw(server->stats_buffer, server->stats,
+                      server->config.decor.tray_opacity);
+    server_request_tray_redraw(server);
+    return 1;
 }

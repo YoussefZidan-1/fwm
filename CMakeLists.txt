@@ -103,6 +103,7 @@ set(SOURCES
     src/sound.c
     src/wav.c
     src/ram.c
+    src/stats.c
     src/view.c
     src/view_effects.c
     src/rotate.c
@@ -139,6 +140,7 @@ set(SOURCES
     src/ui/cairo_overlay.c
     src/ui/tray.c
     src/ui/modes.c
+    src/ui/stats_menu.c
     src/ui/hints.c
     src/ui/errors.c
     src/ui/welcome.c
@@ -303,6 +305,17 @@ if(FWM_TESTS)
     target_include_directories(test_wav PRIVATE src tests)
     target_link_libraries(test_wav PRIVATE m)
 
+    # The stats engine forks children and reads /proc, so the suite is the only
+    # place the process handling can be checked at all: a leaked child or a
+    # blocking read shows up here and nowhere else. It reaches wlroots for its
+    # log line and for nothing else.
+    add_executable(test_stats tests/test_stats.c src/stats.c)
+    target_include_directories(test_stats PRIVATE src tests ${WLROOTS_INCLUDE_DIRS}
+        ${WAYLAND_SERVER_INCLUDE_DIRS} ${PIXMAN_INCLUDE_DIRS} ${XKBCOMMON_INCLUDE_DIRS})
+    target_compile_definitions(test_stats PRIVATE WLR_USE_UNSTABLE)
+    target_link_libraries(test_stats PRIVATE ${WLROOTS_LIBRARIES} m)
+    target_link_directories(test_stats PRIVATE ${WLROOTS_LIBRARY_DIRS})
+
     add_test(NAME bsp        COMMAND test_bsp)
     add_test(NAME config     COMMAND test_config)
     add_test(NAME input      COMMAND test_input)
@@ -313,4 +326,5 @@ if(FWM_TESTS)
     add_test(NAME gestures   COMMAND test_gestures)
     add_test(NAME ram        COMMAND test_ram)
     add_test(NAME wav        COMMAND test_wav)
+    add_test(NAME stats      COMMAND test_stats)
 endif()

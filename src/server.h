@@ -290,6 +290,11 @@ typedef struct FwmServer {
     struct FwmSound *sound;
     int sound_applied;
 
+    /* What the tray's stats pill shows. NULL only if the allocation failed;
+     * an empty [stats] is a live handle with no sensors in it, because the
+     * menu still has to open and say so. */
+    struct FwmStats *stats;
+
     /* [physics] mass = "ram": the mode server_mass_sync last acted on, and when
      * it may next walk /proc. Zero-initialised to PHYSICS_MASS_SIZE, which is
      * both the default and a state with nothing to do — so a compositor nobody
@@ -541,6 +546,10 @@ typedef struct FwmServer {
     /* Modes menu, opened from the tray pill. NULL when closed, and that NULL is
      * also what the pill reads to draw itself pressed. */
     struct wlr_scene_buffer *modes_buffer;
+    /* The stats pill's own menu, on exactly the same terms and the same
+     * button: two neighbouring islands that opened on different clicks would
+     * teach the hand nothing it could reuse. */
+    struct wlr_scene_buffer *stats_buffer;
     struct Launcher *launcher;
     /* The desktop strip (expo). NULL when closed — that NULL is the mode flag
      * every input path tests, so there is no second copy of "is it open". */

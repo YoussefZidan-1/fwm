@@ -28,6 +28,7 @@
 #endif
 #include "ui/tray.h"
 #include "ui/modes.h"
+#include "ui/stats_menu.h"
 #include "ui/welcome.h"
 #include "ui/launcher.h"
 #include "ui/cairo_overlay.h"
@@ -389,6 +390,7 @@ static int server_is_busy(FwmServer *server) {
     if (launcher_is_open(server->launcher)) return 1;  /* spring tiles */
     if (cairo_overlay_animating()) return 1;
     if (server->modes_buffer && modes_menu_animating()) return 1;
+    if (server->stats_buffer && stats_menu_animating()) return 1;
     /* Bars that are up must keep the tick at full rate: on the heartbeat they
      * would fall four times a second, and the windows standing on them would
      * be shoved by a bar that teleported rather than rose. Silence lets it go
@@ -1159,6 +1161,26 @@ static int physics_tick_cb(void *data) {
         modes_menu_tick(server->modes_buffer, &ms, elapsed);
     }
 
+    /* And the stats menu's, on the same terms. Not optional and not merely
+     * decorative: the rows are staggered in by this tick from a reveal of zero,
+     * so a menu nobody advances is a panel with nothing drawn in it. */
+    if (server->stats_buffer)
+        stats_menu_tick(server->stats_buffer, server->stats,
+                        server->config.decor.tray_opacity, elapsed);
+
+    /* The readouts. Sampling is cheap on the ticks where nothing is due, and
+     * only a value that CHANGED asks for a repaint — a tray redrawn at the
+     * frame rate to show the same number is the whole thing the strip's
+     * signature exists to prevent. */
+    if (stats_tick(server->stats, elapsed)) {
+        server_request_tray_redraw(server);
+        /* The open menu shows each sensor's live value beside its switch, so it
+         * is as stale as the pill would be. */
+        if (server->stats_buffer)
+            stats_menu_redraw(server->stats_buffer, server->stats,
+                              server->config.decor.tray_opacity);
+    }
+
     /* Audio spectrum. Analysed once per TICK rather than once per step: it is
      * driven by the sound card's clock, not the simulation's, and running the
      * FFT twice over a tick that paid for two steps would just decay the bars
@@ -1273,6 +1295,8 @@ static int physics_tick_cb(void *data) {
      * fullscreen window with nothing left to explain it. */
     if (server->modes_buffer && (real_fs || server->tray_hidden))
         server_close_modes_menu(server);
+    if (server->stats_buffer && (real_fs || server->tray_hidden))
+        server_close_stats_menu(server);
 
     server_video_sync(server); /* (dis)arm the video-frame timer for the new state */
 

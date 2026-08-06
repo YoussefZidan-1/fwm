@@ -29,6 +29,7 @@
 #include "sound.h"
 #include <signal.h>
 #include "ui/tray.h"
+#include "stats.h"
 #include "ui/hints.h"
 #include "ui/errors.h"
 #include "ui/welcome.h"
@@ -448,6 +449,14 @@ void server_reload_config(FwmServer *server) {
         server->sound = NULL;
     }
     server->sound_applied = 0;
+
+    /* The sensors are rebuilt against the new [stats]: names that survived keep
+     * their value and their on/off, so a reload does not blank the pill for an
+     * interval nor undo what the menu was used to choose. */
+    stats_reconfigure(server->stats, &server->config.stats);
+    /* An open menu is a list of the OLD sensors, and the click that would arrive
+     * next is indexed into it. */
+    server_close_stats_menu(server);
 
     /* Rereading the file also discards any `fwmctl set` overrides — the file
      * is the source of truth, and this is the documented way back to it. */

@@ -28,6 +28,7 @@
 #include <signal.h>
 #include "ui/tray.h"
 #include "ui/modes.h"
+#include "ui/stats_menu.h"
 #include "ui/hints.h"
 #include "ui/errors.h"
 #include "screenshot.h"
@@ -511,6 +512,50 @@ static void handle_cursor_button(struct wl_listener *listener, void *data) {
         FwmOutput *to = tray_under_pointer(server, &tx, &ty);
         if (to && tray_modes_pill_hit(&to->tray_strip, tx, ty)) {
             server_toggle_modes_menu(server);
+            server->group_click = 1;
+            return;
+        }
+    }
+
+    /* Stats menu, while it is open: the same three cases as the modes menu
+     * above — a click on a row works its switch, a click on the pill is the
+     * toggle that closes it, and a click anywhere else dismisses it without
+     * being eaten. */
+    if (event->state == WL_POINTER_BUTTON_STATE_PRESSED && event->button == BTN_LEFT &&
+        server->interactive.action == FWM_ACTION_NONE && server->stats_buffer) {
+        double mx = server->cursor->x - server->stats_buffer->node.x;
+        double my = server->cursor->y - server->stats_buffer->node.y;
+        int mw, mh;
+        stats_menu_size(server->stats, &mw, &mh);
+        if (mx >= 0 && mx < mw && my >= 0 && my < mh) {
+            int row = stats_menu_hit(server->stats, mx, my);
+            if (row >= 0) server_stats_menu_click(server, row);
+            server->group_click = 1; /* swallow the matching release */
+            return;
+        }
+        int on_pill = 0;
+        {
+            double tx, ty;
+            FwmOutput *to = tray_under_pointer(server, &tx, &ty);
+            if (to) on_pill = tray_stats_pill_hit(&to->tray_strip, tx, ty);
+        }
+        if (!on_pill) {
+            server_close_stats_menu(server);
+            server_request_tray_redraw(server);
+        }
+    }
+
+    /* Stats pill: opens and closes its menu, on the same button as every other
+     * island in the strip. A readout is not obviously a control, so the one
+     * thing it must not do is need a different click from its neighbour to
+     * open — a menu nobody thinks to try the left button on is a menu nobody
+     * opens. */
+    if (event->state == WL_POINTER_BUTTON_STATE_PRESSED && event->button == BTN_LEFT &&
+        server->interactive.action == FWM_ACTION_NONE) {
+        double tx, ty;
+        FwmOutput *to = tray_under_pointer(server, &tx, &ty);
+        if (to && tray_stats_pill_hit(&to->tray_strip, tx, ty)) {
+            server_toggle_stats_menu(server);
             server->group_click = 1;
             return;
         }

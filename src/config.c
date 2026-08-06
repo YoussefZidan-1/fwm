@@ -80,7 +80,7 @@ int action_is_known(const char *a) {
         "toggle_floating", "toggle_floating_all",
         "calm_all", "fake_fullscreen", "real_fullscreen",
         "launcher", "toggle_tray", "spin_window", "spin_all", "terminal",
-        "expo", "toggle_wrap", "modes_menu",
+        "expo", "toggle_wrap", "modes_menu", "stats_menu",
         "screenshot", "screenshot_region",
         "output_off", "toggle_internal_output", "outputs_on", NULL
     };
@@ -686,6 +686,103 @@ static void load_wallpaper_picker(toml_table_t *root, FwmConfig *cfg) {
     if (f.ok) cfg->wallpaper_picker_fps = f.u.d;
 }
 
+/* ── stats section ───────────────────────────────────────────────────── */
+
+/* Names the compositor answers itself. Anything else in [stats] is a command. */
+static int stats_is_builtin(const char *name) {
+    return strcmp(name, "cpu") == 0 || strcmp(name, "ram") == 0 ||
+           strcmp(name, "gpu") == 0;
+}
+
+static void load_stats(toml_table_t *root, FwmConfig *cfg) {
+    StatsConfig *s = &cfg->stats;
+    memset(s, 0, sizeof(*s));
+    s->interval = 2.0;
+
+    /* The default is the pill everybody would have written anyway. It is not
+     * "nothing": an empty island in the tray teaches nobody that the feature
+     * exists, and every one of these three costs a read of a file that is
+     * already in memory. */
+    snprintf(s->items[0], STATS_NAME_MAX, "cpu");
+    snprintf(s->items[1], STATS_NAME_MAX, "ram");
+    snprintf(s->items[2], STATS_NAME_MAX, "gpu");
+    s->item_count = 3;
+
+    if (!root) return;
+    toml_table_t *tbl = toml_table_in(root, "stats");
+    if (!tbl) return;
+
+    LOAD_DOUBLE(tbl, "interval", s->interval);
+    /* A command every tenth of a second is a fork bomb with a nice UI. The
+     * floor is generous rather than tight: sensors are read, not watched. */
+    if (s->interval < 0.5) s->interval = 0.5;
+
+    /* Commands first, so `items` can be checked against them below whichever
+     * order the two appear in the file. Every key that is not one of the
+     * table's own settings, and not a built-in name, defines a sensor. */
+    for (int i = 0; ; i++) {
+        const char *key = toml_key_in(tbl, i);
+        if (!key) break;
+        if (strcmp(key, "items") == 0 || strcmp(key, "interval") == 0) continue;
+
+        toml_datum_t d = toml_string_in(tbl, key);
+        if (!d.ok) continue;   /* not a string: not a command, so not ours */
+
+        if (stats_is_builtin(key)) {
+            config_report_error(cfg, "[stats] %s is a built-in sensor and cannot be "
+                                     "given a command", key);
+            free(d.u.s);
+            continue;
+        }
+        if (strlen(key) >= STATS_NAME_MAX) {
+            config_report_error(cfg, "[stats] sensor name \"%s\" is too long (max %d)",
+                                key, STATS_NAME_MAX - 1);
+            free(d.u.s);
+            continue;
+        }
+        if (s->custom_count >= STATS_MAX_ITEMS) {
+            config_report_error(cfg, "[stats] more than %d sensors — \"%s\" ignored",
+                                STATS_MAX_ITEMS, key);
+            free(d.u.s);
+            continue;
+        }
+        StatsCustom *c = &s->custom[s->custom_count++];
+        snprintf(c->name, sizeof(c->name), "%s", key);
+        snprintf(c->cmd, sizeof(c->cmd), "%s", d.u.s);
+        free(d.u.s);
+    }
+
+    toml_array_t *arr = toml_array_in(tbl, "items");
+    if (!arr) return;
+
+    s->item_count = 0;
+    int n = toml_array_nelem(arr);
+    for (int i = 0; i < n; i++) {
+        toml_datum_t d = toml_string_at(arr, i);
+        if (!d.ok) {
+            config_report_error(cfg, "[stats] items: entry %d is not a name", i + 1);
+            continue;
+        }
+        int known = stats_is_builtin(d.u.s);
+        for (int c = 0; !known && c < s->custom_count; c++)
+            known = strcmp(s->custom[c].name, d.u.s) == 0;
+
+        if (!known) {
+            /* Reported rather than dropped in silence: a misspelt sensor and a
+             * sensor with nothing to say look identical in the tray. */
+            config_report_error(cfg, "[stats] items: no sensor called \"%s\" — "
+                                     "built-ins are cpu, ram, gpu; anything else "
+                                     "needs a line of its own in [stats]", d.u.s);
+        } else if (s->item_count >= STATS_MAX_ITEMS) {
+            config_report_error(cfg, "[stats] items: more than %d shown — \"%s\" dropped",
+                                STATS_MAX_ITEMS, d.u.s);
+        } else {
+            snprintf(s->items[s->item_count++], STATS_NAME_MAX, "%s", d.u.s);
+        }
+        free(d.u.s);
+    }
+}
+
 /* ── sound section ───────────────────────────────────────────────────── */
 
 static void load_sound(toml_table_t *root, FwmConfig *cfg) {
@@ -1173,6 +1270,7 @@ void config_load(FwmConfig *cfg, const char *path) {
     load_gestures(NULL, cfg);
     load_cava(NULL, cfg);
     load_sound(NULL, cfg);
+    load_stats(NULL, cfg);
     load_mouse(NULL, cfg);   /* the built-in drag verbs, for every early-out below */
 
     FILE *f = fopen(path, "r");
@@ -1212,6 +1310,7 @@ void config_load(FwmConfig *cfg, const char *path) {
     load_gestures(root, cfg);
     load_cava(root, cfg);
     load_sound(root, cfg);
+    load_stats(root, cfg);
     load_wallpaper(root, cfg);
     load_wallpaper_picker(root, cfg);
     load_rules(root, cfg);

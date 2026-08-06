@@ -89,6 +89,35 @@ tick_rate             = 60.0
 #min_speed  = 200.0    # px/s: a nudge below this is not worth hearing
 #max_speed  = 2000.0   # px/s: full volume at and above this
 
+# What the machine is doing, in the tray: the island between the desktop dots
+# and the modes pill. Click it for the menu that switches each readout on and
+# off, or bind the `stats_menu` action to a key.
+#
+# Three sensors are built in:
+#
+#   cpu   how much of the last second every core spent working
+#   ram   memory in use (total minus MemAvailable, i.e. what you actually mean)
+#   gpu   how busy the card is; needs a driver that reports it (amdgpu, i915).
+#         A card that does not is shown greyed in the menu rather than hidden.
+#
+# ANY OTHER KEY HERE IS A SENSOR OF YOUR OWN: the key is its name, the value is
+# a shell command, and what the command prints on its first line is what the
+# tray shows. One line per sensor, which is the whole point — a readout you
+# have to write four lines of ceremony for is a readout nobody adds.
+#
+# `items` is both the selection and the order; a name in it that is neither
+# built in nor defined below is reported as a config problem rather than
+# quietly left out. `interval` (seconds, floor 0.5) is how often the commands
+# are run — the built-ins sample once a second regardless. A command is run in
+# its own process group and killed if it has not answered in five seconds, and
+# only one run of it exists at a time, so a slow sensor reports less often
+# instead of piling up processes.
+#[stats]
+#items    = ["cpu", "ram", "gpu", "vol", "mic"]
+#interval = 2.0
+#vol = "pactl get-sink-volume @DEFAULT_SINK@ | grep -o '[0-9]*%' | head -1"
+#mic = "pactl get-source-mute @DEFAULT_SOURCE@ | grep -q yes && echo off || echo on"
+
 # Window decorations: focus border colors ("#RRGGBB" or "#RRGGBBAA"),
 # border width (0 disables) and map fade-in duration (0 disables).
 [decor]

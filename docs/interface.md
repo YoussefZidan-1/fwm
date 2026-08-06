@@ -23,6 +23,10 @@ Left to right:
   and mass. Each monitor reports the window on *its own* desktop.
 - **Desktop indicators** — ten dots, the current one marked. The marker slides as
   the camera pans, so it tracks a free pan rather than jumping between desktops.
+- **The stats pill** — what the machine is doing: `CPU 12% • RAM 7.4G • GPU 41%`.
+  Click it for the menu below. Ellipsized rather than dropped on a narrow screen:
+  it is the only way to reach its own menu, and the switches in that menu are
+  what would make it fit.
 - **The modes pill** — four icons (tiling, floating, gravity, visualiser), lit
   when that mode is on. Click for the menu below. Fixed width, and dropped rather
   than squeezed on a screen too narrow for it: the clock grows with the locale's
@@ -70,6 +74,40 @@ click. Delete that file to go back to whatever the config says.
 Layout, gravity and the ring are *not* remembered either: they are per-session
 state that a keybind changes just as often as the menu does. Breakable is not
 remembered for a different reason — see above.
+
+## The stats menu
+
+Click the stats pill (or bind `stats_menu`). One row per sensor, each with its
+live value and a switch; switching one off takes it out of the pill but keeps it sampled-ready, so
+switching it back on shows a number immediately.
+
+Three sensors are built in — `cpu` (load over the last second), `ram` (in use,
+i.e. total minus `MemAvailable`) and `gpu` (busy percentage, from `amdgpu` or
+`i915`; a card that does not report it is shown greyed rather than hidden).
+
+**Everything else is yours.** Any key in `[stats]` that is not one of the
+table's own settings defines a sensor: the key is its name, the value is a shell
+command, and its first line of output is what the tray shows.
+
+```toml
+[stats]
+items    = ["cpu", "ram", "gpu", "vol", "mic"]
+interval = 2.0
+vol = "pactl get-sink-volume @DEFAULT_SINK@ | grep -o '[0-9]*%' | head -1"
+mic = "pactl get-source-mute @DEFAULT_SOURCE@ | grep -q yes && echo off || echo on"
+```
+
+`items` is the selection *and* the order; a name in it that is neither built in
+nor defined is reported as a config problem, because a misspelt sensor and a
+sensor with nothing to say look identical in a tray. Commands run every
+`interval` seconds (floor 0.5; the built-ins sample once a second regardless),
+one run at a time per sensor, in their own process group, and are killed if they
+have not answered in five seconds — so a slow sensor reports less often instead
+of piling up processes.
+
+The compositor never blocks on a sensor: a command is started on one frame and
+collected on a later one, through a pipe that is only read when it has something
+to say.
 
 ## The launcher
 

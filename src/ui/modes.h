@@ -49,6 +49,23 @@ enum {
  * so the caller owns the colour and therefore the on/off/dimmed distinction. */
 void modes_icon(cairo_t *cr, int icon, double x, double y, double size);
 
+/* ── shared menu chrome ───────────────────────────────────────────────────
+ * The panel outline and the switch, exported because the stats menu (ui/stats_
+ * menu.c) is the same object with different rows. Two menus that hang off two
+ * neighbouring pills must be the same menu to look at; copying the geometry
+ * into a second file is how that stops being true after the first change to
+ * either. */
+#define MODES_MENU_CHAMFER  10.0   /* 45-degree corner cut; the tray is pointed */
+#define MODES_SWITCH_W      36.0
+#define MODES_SWITCH_H      18.0
+
+/* Chamfered panel path. Left as a path, not filled: callers pick the source. */
+void modes_panel_path(cairo_t *cr, double x, double y, double w, double h, double c);
+
+/* `pos` is an ANIMATED 0..1 knob position rather than a boolean — the caller
+ * has already eased it, and the colours crossfade along the same number. */
+void modes_switch(cairo_t *cr, double x, double y, double pos, double alpha);
+
 /* Everything the pill and the menu render. Filled by the server each frame from
  * the live compositor state, never cached here — a mode changed by a keybind
  * must show up in the pill without anyone telling it. */

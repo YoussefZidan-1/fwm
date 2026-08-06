@@ -33,6 +33,8 @@
 #endif
 #include "ui/tray.h"
 #include "ui/modes.h"
+#include "ui/stats_menu.h"
+#include "stats.h"
 #include "ui/errors.h"
 #include "ui/welcome.h"
 #include "ui/launcher.h"
@@ -410,6 +412,12 @@ void server_request_tray_redraw(FwmServer *server) {
         data.modes_ring     = server->config.camera.wrap;
         data.modes_open     = server->modes_buffer != NULL;
     }
+    /* The stats pill's whole content, formatted by the sensor engine — the tray
+     * draws the line and knows nothing about what is in it. */
+    char stats_line[160];
+    stats_format(server->stats, stats_line, sizeof(stats_line));
+    data.stats_text = stats_line;
+    data.stats_open = server->stats_buffer != NULL;
     if (server->focused_view) {
         PhysicsBody *b = physics_find_body(&server->physics, server->focused_view->id);
         if (b) {

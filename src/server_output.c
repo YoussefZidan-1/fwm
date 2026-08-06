@@ -27,6 +27,7 @@
 #include "session.h"
 #include <signal.h>
 #include "ui/tray.h"
+#include "ui/stats_menu.h"
 #include "ui/hints.h"
 #include "ui/errors.h"
 #include "ui/welcome.h"
@@ -900,6 +901,7 @@ static int output_set_enabled(FwmServer *server, FwmOutput *out, int on) {
     } else {
         /* Anchored to the strip on a screen that is going dark. */
         if (server->modes_buffer) server_kill_modes_menu(server);
+        if (server->stats_buffer) server_kill_stats_menu(server);
         output_leave_layout(server, out);
     }
     wlr_log(WLR_INFO, "output %s: %s", out->wlr_output->name, on ? "on" : "off");

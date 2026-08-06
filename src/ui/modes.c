@@ -193,9 +193,6 @@ void modes_icon(cairo_t *cr, int icon, double x, double y, double size) {
 #define MENU_W        300
 #define MENU_PAD      12.0
 #define MENU_ROW_H    36.0
-#define MENU_CHAMFER  10.0   /* 45-degree corner cut; the tray is pointed, not round */
-#define SWITCH_W      36.0
-#define SWITCH_H      18.0
 #define SEG_W         174.0
 #define SEG_H         20.0
 #define MENU_H        ((int)(MENU_PAD * 2 + MENU_ROW_H * MODES_ROW_COUNT))
@@ -313,7 +310,7 @@ static double row_reveal(int row) {
 /* Chamfered panel: the corners are cut at 45 degrees rather than rounded,
  * which is the same geometry the chevron-ended islands use — a rounded panel
  * next to a pointed pill reads as two different programs. */
-static void panel_path(cairo_t *cr, double x, double y, double w, double h, double c) {
+void modes_panel_path(cairo_t *cr, double x, double y, double w, double h, double c) {
     cairo_new_path(cr);
     cairo_move_to(cr, x + c,     y);
     cairo_line_to(cr, x + w - c, y);
@@ -329,16 +326,16 @@ static void panel_path(cairo_t *cr, double x, double y, double w, double h, doub
 /* `pos` is the animated 0..1 knob position, not a boolean: the caller has
  * already eased it, and the colours crossfade along the same number so the
  * track and the knob can never disagree about which way the switch is going. */
-static void draw_switch(cairo_t *cr, double x, double y, double pos, double alpha) {
+void modes_switch(cairo_t *cr, double x, double y, double pos, double alpha) {
     const FwmTheme *thm = theme_get();
-    double cut = SWITCH_H / 2.0;
+    double cut = MODES_SWITCH_H / 2.0;
     cairo_new_path(cr);
     cairo_move_to(cr, x + cut, y);
-    cairo_line_to(cr, x + SWITCH_W - cut, y);
-    cairo_line_to(cr, x + SWITCH_W, y + SWITCH_H / 2.0);
-    cairo_line_to(cr, x + SWITCH_W - cut, y + SWITCH_H);
-    cairo_line_to(cr, x + cut, y + SWITCH_H);
-    cairo_line_to(cr, x, y + SWITCH_H / 2.0);
+    cairo_line_to(cr, x + MODES_SWITCH_W - cut, y);
+    cairo_line_to(cr, x + MODES_SWITCH_W, y + MODES_SWITCH_H / 2.0);
+    cairo_line_to(cr, x + MODES_SWITCH_W - cut, y + MODES_SWITCH_H);
+    cairo_line_to(cr, x + cut, y + MODES_SWITCH_H);
+    cairo_line_to(cr, x, y + MODES_SWITCH_H / 2.0);
     cairo_close_path(cr);
 
     double off[4] = { thm->dim[0], thm->dim[1], thm->dim[2], alpha * 0.5 };
@@ -355,11 +352,11 @@ static void draw_switch(cairo_t *cr, double x, double y, double pos, double alph
      * on its point belongs to the same family as the tray's islands. The
      * quarter turn across the travel is what makes the motion legible at 18px
      * — a shape that only slides that far reads as a flicker. */
-    double kw = SWITCH_H * 0.58;
+    double kw = MODES_SWITCH_H * 0.58;
     double x0 = x + cut;
-    double x1 = x + SWITCH_W - cut;
+    double x1 = x + MODES_SWITCH_W - cut;
     double kx = x0 + (x1 - x0) * pos;
-    double ky = y + SWITCH_H / 2.0;
+    double ky = y + MODES_SWITCH_H / 2.0;
 
     cairo_save(cr);
     cairo_translate(cr, kx, ky);
@@ -462,7 +459,7 @@ static void draw_menu(cairo_t *cr, int w, int h, void *user) {
     const FwmTheme *thm = theme_get();
 
     cairo_set_source_rgba(cr, thm->pill[0], thm->pill[1], thm->pill[2], st->opacity);
-    panel_path(cr, 0, 0, w, h, MENU_CHAMFER);
+    modes_panel_path(cr, 0, 0, w, h, MODES_MENU_CHAMFER);
     cairo_fill(cr);
 
     PangoLayout *layout = pango_cairo_create_layout(cr);
@@ -524,8 +521,8 @@ static void draw_menu(cairo_t *cr, int w, int h, void *user) {
                           ry + (MENU_ROW_H - SEG_H) / 2.0, labels, segs,
                           row_target_seg(r, st), g_anim.seg[r], st->opacity);
         } else {
-            draw_switch(cr, MENU_W - MENU_PAD - SWITCH_W,
-                        ry + (MENU_ROW_H - SWITCH_H) / 2.0,
+            modes_switch(cr, MENU_W - MENU_PAD - MODES_SWITCH_W,
+                        ry + (MENU_ROW_H - MODES_SWITCH_H) / 2.0,
                         g_anim.live ? g_anim.sw[r] : (on[r] ? 1.0 : 0.0), st->opacity);
         }
 

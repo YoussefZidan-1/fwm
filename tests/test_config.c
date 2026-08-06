@@ -885,6 +885,83 @@ static void test_outputs(void) {
     drop_config();
 }
 
+static void test_stats(void) {
+    CASE("[stats] defaults to the three built-in sensors");
+    const char *p = write_config("[binds]\n\"super+q\" = \"killclient\"\n");
+    FwmConfig cfg;
+    config_load(&cfg, p);
+    CHECK_INT(cfg.stats.item_count, 3);
+    CHECK_STR(cfg.stats.items[0], "cpu");
+    CHECK_STR(cfg.stats.items[1], "ram");
+    CHECK_STR(cfg.stats.items[2], "gpu");
+    CHECK_INT(cfg.stats.custom_count, 0);
+    config_free(&cfg);
+    drop_config();
+
+    /* The whole point of the one-line shape: a key that is not one of the
+     * table's own settings IS a sensor, and naming it in `items` shows it. */
+    CASE("a bare key defines a custom sensor");
+    p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[stats]\n"
+        "items = [\"vol\", \"cpu\"]\n"
+        "vol = \"echo 60%\"\n");
+    config_load(&cfg, p);
+    CHECK_INT(cfg.error_count, 0);
+    CHECK_INT(cfg.stats.custom_count, 1);
+    CHECK_STR(cfg.stats.custom[0].name, "vol");
+    CHECK_STR(cfg.stats.custom[0].cmd, "echo 60%");
+    /* Order is the user's, not the built-ins-first order of the default. */
+    CHECK_INT(cfg.stats.item_count, 2);
+    CHECK_STR(cfg.stats.items[0], "vol");
+    CHECK_STR(cfg.stats.items[1], "cpu");
+    config_free(&cfg);
+    drop_config();
+
+    CASE("the command may be written after the items that use it");
+    p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[stats]\nitems = [\"mic\"]\nmic = \"echo on\"\n");
+    config_load(&cfg, p);
+    CHECK_INT(cfg.error_count, 0);
+    CHECK_INT(cfg.stats.item_count, 1);
+    config_free(&cfg);
+    drop_config();
+
+    /* A misspelt sensor and a sensor with nothing to say look identical in the
+     * tray, so the typo has to be said out loud. */
+    CASE("an unknown name is reported and dropped");
+    p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[stats]\nitems = [\"cpu\", \"bogus\"]\n");
+    config_load(&cfg, p);
+    CHECK_INT(cfg.error_count, 1);
+    CHECK_INT(cfg.stats.item_count, 1);
+    CHECK_STR(cfg.stats.items[0], "cpu");
+    config_free(&cfg);
+    drop_config();
+
+    CASE("a built-in name cannot be given a command");
+    p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[stats]\ncpu = \"echo 1\"\n");
+    config_load(&cfg, p);
+    CHECK_INT(cfg.error_count, 1);
+    CHECK_INT(cfg.stats.custom_count, 0);
+    config_free(&cfg);
+    drop_config();
+
+    /* A command every tenth of a second is a fork bomb with a nice UI. */
+    CASE("the interval has a floor");
+    p = write_config(
+        "[binds]\n\"super+q\" = \"killclient\"\n"
+        "[stats]\ninterval = 0.01\n");
+    config_load(&cfg, p);
+    CHECK_DBL(cfg.stats.interval, 0.5, 1e-9);
+    config_free(&cfg);
+    drop_config();
+}
+
 int main(void) {
     test_missing_file();
     test_values_parse();
@@ -904,5 +981,6 @@ int main(void) {
     test_option_table();
     test_output_spellings();
     test_outputs();
+    test_stats();
     return t_report("config");
 }
