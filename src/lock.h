@@ -36,4 +36,10 @@ void lock_init(struct FwmServer *server);
 /* True while the session is locked, including after the lock client died. */
 bool lock_is_active(struct FwmServer *server);
 
+/* Re-place and re-size every lock surface against its monitor's layout box.
+ * Called from the output layout update, alongside layer_arrange: a monitor
+ * arriving, leaving or changing mode while locked must not leave a screen
+ * uncovered. A no-op when nothing is locked. */
+void lock_arrange(struct FwmServer *server);
+
 #endif /* FWM_LOCK_H */

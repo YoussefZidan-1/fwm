@@ -780,6 +780,10 @@ static void server_output_layout_update(FwmServer *server) {
 
     /* Bars and docks get their screen; tiled desktops get the new splits. */
     layer_arrange(server);
+    /* And the lock screen, if one is up: it is sized to a monitor exactly as a
+     * bar is, and a monitor that changed shape under it must not be left
+     * showing anything but the locker. */
+    lock_arrange(server);
     if (resized) {
         for (int d = 0; d < FWM_DESKTOPS; d++) {
             if (server->desktop_mode[d] == DESKTOP_MODE_TILING) server_apply_tiling(server, d);

@@ -17,6 +17,7 @@
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_output.h>
+#include <wlr/types/wlr_output_layout.h>
 #include <wlr/util/log.h>
 
 #include "lock.h"
@@ -49,6 +50,40 @@ static void set_normal_content_enabled(FwmServer *server, bool enabled) {
 
 bool lock_is_active(FwmServer *server) {
     return server->locked;
+}
+
+/* Put one lock surface on its own monitor, at that monitor's size.
+ *
+ * Both halves have to come from the layout box, for the same reason
+ * layer_arrange reads it: wlr_output.width/height are the panel's physical
+ * pixels, which on a scaled or rotated output are not the size a surface is
+ * configured with — a scale-2 4K screen would ask the locker for a 3840x2160
+ * surface to fill a 1920x1080 logical screen. And the box's x/y are what keeps
+ * the second monitor's lock screen off the first: the scene is one world with
+ * the outputs laid out side by side, so a surface left at the origin covers the
+ * leftmost screen twice and the other one not at all. */
+static void lock_surface_arrange(FwmLockSurface *ls) {
+    struct wlr_output *output = ls->surface->output;
+    if (!output) return;
+
+    struct wlr_box box;
+    wlr_output_layout_get_box(ls->server->output_layout, output, &box);
+    /* An output on its way out of the layout has no box to aim at; it takes
+     * its lock surface with it, so there is nothing to do but wait. */
+    if (box.width <= 0 || box.height <= 0) return;
+
+    wlr_scene_node_set_position(&ls->tree->node, box.x, box.y);
+    /* The lock surface must cover its whole output, and the client cannot pick
+     * its own size — we configure it. */
+    wlr_session_lock_surface_v1_configure(ls->surface, box.width, box.height);
+}
+
+/* Every lock surface re-placed and re-sized. Called on any layout change, so a
+ * monitor plugged in, unplugged or switched to another mode while the session
+ * is locked leaves the lock screen covering exactly what it must. */
+void lock_arrange(FwmServer *server) {
+    FwmLockSurface *ls;
+    wl_list_for_each(ls, &server->lock_surfaces, link) lock_surface_arrange(ls);
 }
 
 /* Hand the keyboard to a lock surface. Done on every map and on unlock-failure
@@ -89,14 +124,7 @@ static void handle_new_lock_surface(struct wl_listener *listener, void *data) {
 
     ls->tree = wlr_scene_subsurface_tree_create(server->layer_lock, surface->surface);
     if (!ls->tree) { free(ls); return; }
-    wlr_scene_node_set_position(&ls->tree->node, 0, 0);
-
-    /* The lock surface must cover its whole output, and the client cannot pick
-     * its own size — we configure it. */
-    struct wlr_output *output = surface->output;
-    if (output) {
-        wlr_session_lock_surface_v1_configure(surface, output->width, output->height);
-    }
+    lock_surface_arrange(ls);
 
     ls->map.notify = lock_surface_handle_map;
     wl_signal_add(&surface->surface->events.map, &ls->map);
