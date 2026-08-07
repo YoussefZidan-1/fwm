@@ -946,7 +946,26 @@ void server_camera_settled(FwmServer *server) {
      * desktop you can no longer see. Covers every way of getting here — the
      * view: binds, the tray, edge auto-scroll, a three-finger swipe. */
     int arrived = server_active_desktop(server);
-    if (arrived != server->focus_desktop) {
+
+    /* Asked of the focused window itself, not of focus_desktop, because that
+     * number is a cache and the cache can lie. Anything that places the
+     * keyboard deliberately writes it (move_to_view:, a click in the strip) so
+     * that the arrival below leaves that choice alone — which also means it can
+     * be left naming a desktop the monitor is no longer on, and the arrival
+     * that then lands on that very number would skip the re-home entirely and
+     * strand the keyboard on a window nobody can see. No window in fwm is
+     * sticky, so a focused window on another desktop is always wrong, whatever
+     * the cache says. */
+    FwmView *focused = server->focused_view;
+    PhysicsBody *fb = focused
+        ? physics_find_body(&server->physics, focused->id) : NULL;
+    int stranded = fb && fb->desktop_id != arrived;
+
+    /* The `desktop` event rides the same test on purpose. It is the only place
+     * one is emitted, so a cache that lied dropped the event as well as the
+     * re-home — and for a control protocol a missed switch is worse than the
+     * duplicate this can cost when a thrown window drifts over the line. */
+    if (arrived != server->focus_desktop || stranded) {
         server->focus_desktop = arrived;
         server_refocus(server, arrived, NULL);
         ipc_emit_desktop(server->ipc, arrived);
