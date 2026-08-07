@@ -118,6 +118,10 @@ static void tile_move_to(FwmServer *server, FwmView *view, PhysicsBody *pb, int 
                                         (int)lround(view->x),
                                         (int)lround(view->y));
         }
+        /* The size configure above went out with the OLD position — an X11
+         * client that believed it would put its menus at the slot it just
+         * left. Tell it where it actually is now. */
+        view_sync_position(view);
     }
 }
 

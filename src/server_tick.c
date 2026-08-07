@@ -1142,12 +1142,14 @@ static int physics_tick_cb(void *data) {
             if (!av->tile_anim) continue;
             PhysicsBody *pb = physics_find_body(&server->physics, av->id);
             if (!pb) { av->tile_anim = 0; continue; }
+            int settled = 0;
             double dx = av->tile_tx - pb->x;
             double dy = av->tile_ty - pb->y;
             if (fabs(dx) < 1.0 && fabs(dy) < 1.0) {
                 pb->x = av->tile_tx;
                 pb->y = av->tile_ty;
                 av->tile_anim = 0;
+                settled = 1;
             } else {
                 pb->x += dx * k;
                 pb->y += dy * k;
@@ -1155,6 +1157,13 @@ static int physics_tick_cb(void *data) {
             pb->vx = 0; pb->vy = 0; pb->flying = 0;
             av->x = pb->x;
             av->y = pb->y;
+            /* An X11 client places its menus from the root coords it was last
+             * configured with, so a window that glided to a new slot without
+             * being told would open them back at the old slot until something
+             * else resynced it (a desktop switch did). Once per glide, at the
+             * end: mid-flight configures would be a configure storm for a
+             * position the window is about to leave anyway. */
+            if (settled) view_sync_position(av);
         }
     }
 
