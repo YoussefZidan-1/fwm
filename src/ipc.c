@@ -964,7 +964,11 @@ static int ipc_listen_readable(int fd, uint32_t mask, void *data) {
 
 FwmIpc *ipc_create(struct FwmServer *server, const char *wl_socket) {
     const char *dir = getenv("XDG_RUNTIME_DIR");
-    if (!dir || !*dir) dir = "/tmp";
+    if (!dir || !*dir) {
+        dir = "/tmp";
+        wlr_log(WLR_INFO, "ipc: no XDG_RUNTIME_DIR — the control socket goes in "
+                          "/tmp, where only its own mode keeps it private");
+    }
 
     FwmIpc *ipc = calloc(1, sizeof(*ipc));
     if (!ipc) return NULL;
@@ -993,10 +997,37 @@ FwmIpc *ipc_create(struct FwmServer *server, const char *wl_socket) {
 
     struct sockaddr_un addr = { .sun_family = AF_UNIX };
     memcpy(addr.sun_path, ipc->path, strlen(ipc->path) + 1);
-    if (bind(ipc->fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 ||
-        listen(ipc->fd, IPC_MAX_CLIENTS) < 0) {
-        wlr_log(WLR_ERROR, "ipc: bind/listen on %s failed: %s", ipc->path, strerror(errno));
+    if (bind(ipc->fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        wlr_log(WLR_ERROR, "ipc: bind on %s failed: %s", ipc->path, strerror(errno));
         close(ipc->fd);
+        free(ipc);
+        return NULL;
+    }
+
+    /* Owner only. `dispatch spawn:…` runs a command as the user who is logged
+     * in, so anyone who can connect to this socket can run anything they like
+     * as them — and bind() takes its mode from the umask, which is 0022 on a
+     * normal login and world-readable-and-writable on some. XDG_RUNTIME_DIR is
+     * 0700 and hides the whole question, but the fallback above is /tmp, which
+     * hides nothing.
+     *
+     * Ordered bind → chmod → listen on purpose, and not bind → listen → chmod:
+     * connect() to a socket that is bound but not yet listening is refused
+     * outright, so there is no window in which a permissive mode is also a
+     * reachable one. */
+    if (chmod(ipc->path, S_IRUSR | S_IWUSR) < 0) {
+        wlr_log(WLR_ERROR, "ipc: could not restrict %s to its owner: %s",
+                ipc->path, strerror(errno));
+        close(ipc->fd);
+        unlink(ipc->path);
+        free(ipc);
+        return NULL;
+    }
+
+    if (listen(ipc->fd, IPC_MAX_CLIENTS) < 0) {
+        wlr_log(WLR_ERROR, "ipc: listen on %s failed: %s", ipc->path, strerror(errno));
+        close(ipc->fd);
+        unlink(ipc->path);
         free(ipc);
         return NULL;
     }
