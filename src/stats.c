@@ -183,9 +183,17 @@ static int sample_gpu(FwmStats *s, char *out, size_t out_size) {
 static int reap(Item *it) {
     if (it->fd >= 0) { close(it->fd); it->fd = -1; }
     if (it->pid > 0) {
-        /* The child has closed its stdout, so it is exiting or already gone —
-         * but "already gone" is not guaranteed, so this waits. It is bounded by
-         * the same thing that ended the read. */
+        /* The wait runs on the compositor's own thread, so it has to be
+         * bounded — and the pipe closing does not bound it. EOF says the write
+         * end is gone, not that the process is: `cmd = "echo 50; exec >/dev/null;
+         * sleep 300"` reaches here with the shell alive for another five
+         * minutes, and waiting for it would stop the compositor dead for that
+         * long. Killing the group first makes the wait what the comment used
+         * to claim it already was.
+         *
+         * Safe against a recycled pgid precisely because the child has not been
+         * reaped yet: its pid is still ours and cannot name another process. */
+        kill(-it->pid, SIGKILL);
         while (waitpid(it->pid, NULL, 0) < 0 && errno == EINTR) {}
         it->pid = 0;
     }
@@ -260,8 +268,8 @@ static int poll_command(Item *it, double dt) {
     for (;;) {
         if (it->len >= sizeof(it->buf) - 1) {
             /* More than a tray line's worth. Everything after the first line is
-             * discarded anyway, so stop reading and take what we have. */
-            kill(-it->pid, SIGKILL);
+             * discarded anyway, so stop reading and take what we have — reap
+             * kills the group, so a command still printing is not left to it. */
             return reap(it);
         }
         ssize_t n = read(it->fd, it->buf + it->len, sizeof(it->buf) - 1 - it->len);
@@ -275,7 +283,6 @@ static int poll_command(Item *it, double dt) {
     if (it->age > STATS_CMD_TIMEOUT_S) {
         wlr_log(WLR_INFO, "stats: \"%s\" did not answer in %.0fs — killed",
                 it->pub.name, STATS_CMD_TIMEOUT_S);
-        kill(-it->pid, SIGKILL);
         return reap(it);
     }
     return 0;
