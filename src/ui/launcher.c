@@ -33,6 +33,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 
 /* Search-bar launcher in the tray's "sharp islands" style: a chevron-ended
  * bar in the upper third; result tiles are Box2D bodies, each pulled to its
@@ -50,6 +51,9 @@
 #define SPRING_W    14.0  /* spring frequency toward the slot, rad/s */
 #define SPRING_Z    0.5   /* damping ratio: < 1 = springy overshoot */
 #define MAX_APPS    2048
+/* XDG_DATA_HOME plus however many XDG_DATA_DIRS a distribution sets; the
+ * longest seen in the wild is a handful. */
+#define APP_DIRS_MAX 16
 
 #define QUERY_MAX   120
 
@@ -84,6 +88,7 @@ struct Launcher {
 
     LApp *apps;
     int   app_count;
+    time_t apps_stamp;  /* newest .desktop directory mtime at the last scan */
     LApp *walls;      /* wallpaper files, scanned from config wallpaper_dir */
     int   wall_count;
     bool  wall_scanned;
@@ -193,22 +198,29 @@ static void scan_dir(Launcher *l, const char *dir,
     closedir(d);
 }
 
-static void scan_apps(Launcher *l) {
-    l->apps = calloc(MAX_APPS, sizeof(LApp));
-    l->app_count = 0;
+/* The application directories in XDG precedence order, user's first. Both the
+ * scan and the staleness check below walk this one list, so the two can never
+ * disagree about what "the installed set" means. */
+static int app_dirs_add(char *out[], int n, int max, const char *dir) {
+    if (n >= max) return n;
+    char *copy = strdup(dir);
+    if (!copy) return n;
+    out[n] = copy;
+    return n + 1;
+}
 
-    char **seen = NULL;
-    int seen_count = 0;
+static int app_dirs(char *out[], int max) {
+    int n = 0;
     char dir[1024];
 
     const char *home = getenv("HOME");
     const char *data_home = getenv("XDG_DATA_HOME");
     if (data_home && data_home[0]) {
         snprintf(dir, sizeof(dir), "%s/applications", data_home);
-        scan_dir(l, dir, &seen, &seen_count);
+        n = app_dirs_add(out, n, max, dir);
     } else if (home) {
         snprintf(dir, sizeof(dir), "%s/.local/share/applications", home);
-        scan_dir(l, dir, &seen, &seen_count);
+        n = app_dirs_add(out, n, max, dir);
     }
 
     const char *data_dirs = getenv("XDG_DATA_DIRS");
@@ -218,8 +230,62 @@ static void scan_apps(Launcher *l) {
     for (char *save = NULL, *tok = strtok_r(dirs, ":", &save); tok;
          tok = strtok_r(NULL, ":", &save)) {
         snprintf(dir, sizeof(dir), "%s/applications", tok);
-        scan_dir(l, dir, &seen, &seen_count);
+        n = app_dirs_add(out, n, max, dir);
     }
+    return n;
+}
+
+static void app_dirs_free(char *dirs[], int n) {
+    for (int i = 0; i < n; i++) free(dirs[i]);
+}
+
+/* Newest mtime across those directories. A directory's mtime moves when an
+ * entry is added to or removed from it, which is exactly what installing or
+ * uninstalling an application does — so this is the cheap question "has the
+ * installed set changed since the last scan", answered with a few stat()s
+ * rather than by re-reading every .desktop file on every open. */
+static time_t app_dirs_stamp(void) {
+    char *dirs[APP_DIRS_MAX];
+    int n = app_dirs(dirs, APP_DIRS_MAX);
+    time_t newest = 0;
+    for (int i = 0; i < n; i++) {
+        struct stat st;
+        if (stat(dirs[i], &st) == 0 && st.st_mtime > newest) newest = st.st_mtime;
+    }
+    app_dirs_free(dirs, n);
+    return newest;
+}
+
+static void scan_apps(Launcher *l) {
+    /* Built aside and swapped in, so a scan that cannot allocate leaves the
+     * listing that is already there rather than a NULL the draw path would
+     * walk into. `scanned` stays false and the next open tries again. */
+    LApp *apps = calloc(MAX_APPS, sizeof(LApp));
+    if (!apps) return;
+
+    /* Stamped before the walk, not after: a .desktop file that lands while the
+     * scan is running would otherwise be both missed by it and covered by the
+     * stamp, and never picked up at all. Taken first, the worst case is one
+     * redundant rescan on the next open. */
+    l->apps_stamp = app_dirs_stamp();
+
+    /* Icons are resolved lazily on draw, so dropping them costs a re-decode of
+     * the few tiles actually on screen — and only on the rare open that finds
+     * the installed set changed. */
+    for (int i = 0; i < l->app_count; i++) {
+        if (l->apps[i].icon_surf) cairo_surface_destroy(l->apps[i].icon_surf);
+    }
+    free(l->apps);
+    l->apps = apps;
+    l->app_count = 0;
+
+    char **seen = NULL;
+    int seen_count = 0;
+
+    char *dirs[APP_DIRS_MAX];
+    int ndirs = app_dirs(dirs, APP_DIRS_MAX);
+    for (int i = 0; i < ndirs; i++) scan_dir(l, dirs[i], &seen, &seen_count);
+    app_dirs_free(dirs, ndirs);
 
     for (int i = 0; i < seen_count; i++) free(seen[i]);
     free(seen);
@@ -809,7 +875,12 @@ static void launcher_open(Launcher *l) {
         /* Rescanned on every open: the folder's contents are expected to
          * change between openings, unlike the installed .desktop set. */
         scan_wallpapers(l);
-    } else if (!l->scanned) {
+    } else if (!l->scanned || app_dirs_stamp() != l->apps_stamp) {
+        /* Not "once per session": a compositor stays up for days, and an
+         * application installed this morning has to be launchable this
+         * afternoon. Re-reading every .desktop file on every open would be
+         * wasteful, so the full scan runs only when the directories say their
+         * contents moved. */
         scan_apps(l);
     }
 
