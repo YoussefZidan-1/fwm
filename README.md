@@ -8,6 +8,10 @@
   </a>
 </p>
 
+<p align="center">
+  <b><a href="https://fwm-website.vercel.app">fwm-website.vercel.app</a></b>
+</p>
+
 # fwm — Physics Window Manager (Wayland)
 
 A Wayland compositor written in C (wlroots) where windows behave as physical objects with **mass, momentum, inertia, and velocity** — simulated by a real rigid-body engine ([Box2D](https://box2d.org/) v3). Drag a window and throw it — it slides, bounces off walls, stacks under gravity, and comes to rest like a real object.
@@ -16,7 +20,8 @@ This is the primary, actively developed version. The legacy X11 version lives on
 
 ## 📚 Documentation
 
-This page is the tour. The manual is in [`docs/`](docs/):
+The site is [fwm-website.vercel.app](https://fwm-website.vercel.app). This page
+is the tour. The manual is in [`docs/`](docs/):
 
 | | |
 |---|---|
@@ -24,7 +29,7 @@ This page is the tour. The manual is in [`docs/`](docs/):
 | [Configuration](docs/configuration.md) | every section of `config.toml`, key by key |
 | [Keybindings and actions](docs/keybindings.md) | the defaults, the full action vocabulary, modes, mouse, gestures |
 | [Physics](docs/physics.md) | how the simulation works, its units, its limits |
-| [The interface](docs/interface.md) | tray, modes menu, launcher, desktop strip, picker, visualiser, sound |
+| [The interface](docs/interface.md) | tray, modes menu, stats menu, launcher, desktop strip, picker, visualiser, sound |
 | [fwmctl and the IPC](docs/fwmctl.md) | reading state, live settings, events, scripting |
 | [Troubleshooting](docs/troubleshooting.md) | when something does not work |
 | [Architecture](docs/architecture.md) | for anyone changing the code |
@@ -177,10 +182,46 @@ rate your hand was turning it.
 - **Wobbly windows** — a dragged window goes soft and bends, the way KDE's do. See below.
 - **Rotated and bent windows** — a spinning window is drawn at any angle, not in quarter turns, and a dragged one is drawn through a deforming mesh. wlroots' scene graph is axis-aligned to its bones, so these two draw their own geometry on the renderer's GL context (`src/rotate.c`); everything else stays on the public API.
 - **Wallpaper-derived palette** — optionally tint the whole UI toward the wallpaper's dominant hue (`color_source = "wallpaper"`).
-- **Minimal tray** — flat chevron-ended islands: focused window + physics readout, desktop indicators, a modes pill, clock. No titlebars anywhere (server-side decorations).
+- **Minimal tray** — flat chevron-ended islands: focused window + physics readout, desktop indicators, a stats pill, a modes pill, clock. No titlebars anywhere (server-side decorations).
+- **Stats pill** — what the machine is doing, in the tray: `CPU 12% • RAM 7.4G • GPU 41%`. Click it (or bind `stats_menu`) for a switch per readout. See below.
 - **Modes pill** — four icons between the desktop indicators and the clock (tiling, floating, gravity, cava), lit when the mode is on. Click it for a menu of switches; two rows are segmented controls rather than switches, because they are not on-off things — cava (off / visual / physical) and mass (size / ram: what decides how heavy a window is, its size or how much memory the application is using). The mass and sound choices are remembered in `~/.local/state/fwm/modes` and survive a restart. Fixed width, and dropped rather than squeezed on a screen too narrow to hold it — the clock grows with the locale's date and the desktop island is centred, so something has to give, and losing a pill that is also a keybind beats overlapping the clock.
 - **Transparency** — client alpha (e.g. kitty `background_opacity`) is rendered as-is.
 - **Fake fullscreen** (`Super+D`) keeps the tray visible; **real fullscreen** (`Super+F`) hides it and covers the whole output.
+
+### The machine's own numbers
+
+The island between the desktop dots and the modes pill. Three sensors are built
+in — `cpu` (how much of the last second every core spent working), `ram` (in
+use: total minus `MemAvailable`) and `gpu` (busy percentage, from `amdgpu` or
+`i915`; a card that does not report it is greyed out in the menu rather than
+hidden).
+
+**Everything else is yours.** Any key in `[stats]` that is not one of the
+table's own settings is a sensor: the key is its name, the value is a shell
+command, and its first line of output is what the tray shows. One line per
+readout, because a readout that costs four lines of ceremony is a readout
+nobody adds — a compositor has no business knowing how to ask PulseAudio for
+the volume.
+
+```toml
+[stats]
+items    = ["cpu", "ram", "gpu", "vol", "mic"]
+interval = 2.0
+vol = "pactl get-sink-volume @DEFAULT_SINK@ | grep -o '[0-9]*%' | head -1"
+mic = "pactl get-source-mute @DEFAULT_SOURCE@ | grep -q yes && echo off || echo on"
+```
+
+`items` is the selection *and* the order, and a name in it that is neither
+built in nor defined is reported as a config problem rather than quietly left
+out — a misspelt sensor and a sensor with nothing to say look identical in a
+tray. Nothing here can stall the compositor: a command is started on one frame
+and collected on a later one, one run at a time per sensor, in its own process
+group, killed if it has not answered in five seconds, so a slow sensor reports
+less often instead of piling up processes.
+
+Clicking the pill opens a menu with a switch per readout; unlike the modes pill
+beside it, this one ellipsizes rather than being dropped on a narrow screen,
+since it is the only way to reach the menu whose switches would make it fit.
 
 ### Audio visualiser that windows can stand on
 
@@ -263,6 +304,8 @@ renderer.
 
 ### Desktop integration
 Runs the software you already use: **XWayland** (X11 apps as ordinary physics windows), **layer-shell** (waybar, mako, rofi, swaybg), **ext-session-lock** (hyprlock, swaylock), **idle protocols** (swayidle, no blanking during video), **xdg-activation**, **screencopy** (screenshots, screen share), **gamma-control** (wlsunset), **pointer constraints** (games and mouse-look), **pointer-gestures** (touchpad swipes and pinches reach the app when fwm has no bind for them), **foreign-toplevel** (taskbars), plus drag-and-drop and primary selection.
+
+**Cursor theme** is chosen rather than left to chance: `XCURSOR_THEME`/`XCURSOR_SIZE` are honoured as named, and with nothing asked for fwm goes looking for an installed theme that actually has the shapes clients ask for (resize arrows, grab hand, crosshair) instead of falling back to wlroots' built-in four. The name it settles on is exported, so GTK and Xwayland load the same one and the pointer keeps its style across windows.
 
 **Multiple monitors** are independent screens sharing one set of ten desktops (the i3 arrangement). Each monitor shows one desktop and switches on its own: a desktop bind moves the screen the pointer is on, and asking for a desktop that is already up on the other monitor trades the two rather than showing it twice. Every monitor gets its own wallpaper, fitted to its own size, its own status strip reporting its own desktop, and its own desktop strip (`expo`) — opening one leaves the other screen working. Sending a window to a desktop puts it on whichever monitor is showing it. Monitors can be plugged and unplugged while fwm runs; a new one comes up on the lowest desktop nobody else has.
 
@@ -414,7 +457,16 @@ fwmctl config                   # every settable option, with values and ranges
 fwmctl get physics.gravity      # read one option
 fwmctl set physics.gravity 200  # change it, live
 fwmctl subscribe                # stream events as they happen
+fwmctl version                  # which binary is answering: path, mtime, pid
+fwmctl memory                   # fwm's own memory, split into its parts
 ```
+
+Two of those exist because a question kept being answered wrongly. `version`
+reads `/proc/self/exe` at runtime rather than a compile-time stamp, so it tells
+you whether the socket is served by the installed `fwm` or the one in `build/`.
+`memory` splits RSS into heap, mapped libraries and client buffers, because the
+single number `top` shows is mostly mesa, ffmpeg and pango — pages every process
+mapping them counts again — and only `anon_mb` can grow because of a bug here.
 
 Every numeric and colour option in the config is addressable by name, so you can
 tune the feel while watching it rather than editing, reloading and guessing:
@@ -767,6 +819,7 @@ fit  = "pan"
 | `screenshot_region` | drag a rectangle out with the mouse and copy that; Escape (or a click with no drag in it) cancels |
 | `show_errors` | open the config-problem panel (same as clicking the tray's ⚠ pill) |
 | `modes_menu` | open the modes menu (same as clicking the tray's modes pill) |
+| `stats_menu` | open the stats menu (same as clicking the tray's stats pill) |
 | `output_off` | turn off the monitor the pointer is on — it leaves the layout, hands its desktop back and the pointer moves to a screen that is still lit. The last lit screen is never turned off |
 | `toggle_internal_output` | the same for the built-in laptop panel (eDP/LVDS/DSI) whichever screen the pointer is on. Closing the lid does this by itself, as long as another monitor is plugged in |
 | `outputs_on` | every monitor back on — the way out when you turned off the screen you were looking at |
