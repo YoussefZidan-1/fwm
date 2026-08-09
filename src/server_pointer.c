@@ -304,37 +304,7 @@ static bool constraint_allows_at(FwmServer *server, double nx, double ny) {
                                           NULL);
 }
 
-static void handle_cursor_motion(struct wl_listener *listener, void *data) {
-    FwmServer *server = wl_container_of(listener, server, cursor_motion);
-    struct wlr_pointer_motion_event *event = data;
-
-    /* Relative motion goes out regardless of whether the cursor itself is
-     * allowed to move: a locked pointer is exactly the case where the client
-     * steers from deltas and the cursor must stay put. */
-    if (server->relative_pointer) {
-        wlr_relative_pointer_manager_v1_send_relative_motion(
-            server->relative_pointer, server->seat,
-            (uint64_t)event->time_msec * 1000, event->delta_x, event->delta_y,
-            event->unaccel_dx, event->unaccel_dy);
-    }
-
-    if (server->active_constraint && !lock_is_active(server)) {
-        if (server->active_constraint->type == WLR_POINTER_CONSTRAINT_V1_LOCKED) {
-            /* Mouse-look: the cursor does not move at all. */
-            server_notify_activity(server);
-            return;
-        }
-        /* Confined: allow the move only while it stays inside the region. */
-        if (!constraint_allows_at(server, server->cursor->x + event->delta_x,
-                                  server->cursor->y + event->delta_y)) {
-            server_notify_activity(server);
-            return;
-        }
-    }
-
-    wlr_cursor_move(server->cursor, &event->pointer->base, event->delta_x, event->delta_y);
-    
-    // Process pointer movement
+static void process_cursor_motion(FwmServer *server, uint32_t time_msec) {
     double lx = server->cursor->x;
     double ly = server->cursor->y;
 
@@ -377,10 +347,42 @@ static void handle_cursor_motion(struct wl_listener *listener, void *data) {
     /* A drag the CLIENT is doing: the pointer is spoken for, and neither the
      * focus nor the surface under the cursor may change until the button is
      * let go. */
-    if (pointer_grab_deliver(server, lx, ly, event->time_msec)) return;
+    if (pointer_grab_deliver(server, lx, ly, time_msec)) return;
 
     // Focus follows pointer
-    pointer_update_focus(server, lx, ly, event->time_msec);
+    pointer_update_focus(server, lx, ly, time_msec);
+}
+
+static void handle_cursor_motion(struct wl_listener *listener, void *data) {
+    FwmServer *server = wl_container_of(listener, server, cursor_motion);
+    struct wlr_pointer_motion_event *event = data;
+
+    /* Relative motion goes out regardless of whether the cursor itself is
+     * allowed to move: a locked pointer is exactly the case where the client
+     * steers from deltas and the cursor must stay put. */
+    if (server->relative_pointer) {
+        wlr_relative_pointer_manager_v1_send_relative_motion(
+            server->relative_pointer, server->seat,
+            (uint64_t)event->time_msec * 1000, event->delta_x, event->delta_y,
+            event->unaccel_dx, event->unaccel_dy);
+    }
+
+    if (server->active_constraint && !lock_is_active(server)) {
+        if (server->active_constraint->type == WLR_POINTER_CONSTRAINT_V1_LOCKED) {
+            /* Mouse-look: the cursor does not move at all. */
+            server_notify_activity(server);
+            return;
+        }
+        /* Confined: allow the move only while it stays inside the region. */
+        if (!constraint_allows_at(server, server->cursor->x + event->delta_x,
+                                  server->cursor->y + event->delta_y)) {
+            server_notify_activity(server);
+            return;
+        }
+    }
+
+    wlr_cursor_move(server->cursor, &event->pointer->base, event->delta_x, event->delta_y);
+    process_cursor_motion(server, event->time_msec);
 }
 
 static void handle_cursor_motion_absolute(struct wl_listener *listener, void *data) {
@@ -404,26 +406,20 @@ static void handle_cursor_motion_absolute(struct wl_listener *listener, void *da
             (uint64_t)event->time_msec * 1000, dx, dy, dx, dy);
     }
     if (server->active_constraint && !lock_is_active(server)) {
-        if (server->active_constraint->type == WLR_POINTER_CONSTRAINT_V1_LOCKED ||
-            !constraint_allows_at(server, nx, ny)) {
+        if (server->active_constraint->type == WLR_POINTER_CONSTRAINT_V1_LOCKED) {
+            /* Mouse-look: the cursor does not move at all. */
+            server_notify_activity(server);
+            return;
+        }
+        /* Confined: allow the move only while it stays inside the region. */
+        if (!constraint_allows_at(server, nx, ny)) {
             server_notify_activity(server);
             return;
         }
     }
 
     wlr_cursor_warp_absolute(server->cursor, &event->pointer->base, event->x, event->y);
-    server_notify_activity(server);
-    if (lock_is_active(server)) return; /* nothing under the lock may be reached */
-    drag_icon_update_position(server);
-    if (screenshot_handle_motion(server, server->cursor->x, server->cursor->y)) {
-        wlr_seat_pointer_clear_focus(server->seat);
-        return;
-    }
-    if (launcher_is_open(server->launcher)) {
-        launcher_handle_motion(server->launcher, server->cursor->x, server->cursor->y);
-        wlr_cursor_set_xcursor(server->cursor, server->cursor_mgr, "default");
-        wlr_seat_pointer_clear_focus(server->seat);
-    }
+    process_cursor_motion(server, event->time_msec);
 }
 
 /* Kernel button code -> the enum [mouse] binds are written in. Anything else
