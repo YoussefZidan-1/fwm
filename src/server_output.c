@@ -623,6 +623,9 @@ void server_views_place(FwmServer *server) {
             server_place_node(server, &g->scene_buffer->node,
                               g->x + g->draw_dx, g->y + g->draw_dy);
     }
+    /* Override-redirect X11 surfaces are not views, but they sit on a desktop
+     * like everything else and have to travel with it. */
+    server_xwl_unmanaged_place(server);
 }
 
 /* A world whose columns just changed size keeps every window where it was ON

@@ -379,6 +379,7 @@ bool server_init(FwmServer *server) {
     server->launcher = launcher_create(server);
 
     wl_list_init(&server->views);
+    wl_list_init(&server->xwl_unmanaged);
     wl_list_init(&server->groups);
     wl_list_init(&server->ghosts);
     wl_list_init(&server->outputs);

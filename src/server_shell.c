@@ -139,13 +139,81 @@ struct FwmXwlUnmanaged {
     struct wlr_xwayland_surface *xs;
     FwmServer *server;
     struct wlr_scene_tree *tree;
+    struct wl_list link;              /* FwmServer.xwl_unmanaged */
+    /* Where the surface is in the WORLD, and which desktop that puts it on.
+     *
+     * The client only ever speaks screen coordinates — the X root window is
+     * one screen, not the ten-column strip — so what it says is read against
+     * the camera at the moment it says it and kept as a world position from
+     * then on. Without this the surface was nailed to the screen: switching
+     * desktops slid every window away and left a fullscreen game hanging over
+     * all ten of them. */
+    double wx, wy;
+    int desktop;
     struct wl_listener associate;
     struct wl_listener dissociate;
     struct wl_listener destroy;
     struct wl_listener set_geometry;
+    struct wl_listener set_override_redirect;
     struct wl_listener map;
     struct wl_listener unmap;
 };
+
+/* Hand the keyboard back to the focused window after an unmanaged surface that
+ * had it goes away. Nothing to do in the ordinary case, where the keyboard was
+ * never taken.
+ *
+ * Nothing is said to X on the way out either, for the same reason as on the
+ * way in: the X focus was never ours to move for an override-redirect
+ * window. */
+static void xwl_or_drop_focus(FwmServer *server, struct wlr_xwayland_surface *xs) {
+    if (server->focused_unmanaged != xs) return;
+    server->focused_unmanaged = NULL;
+    if (server->focused_view) {
+        server_keyboard_enter(server, view_surface(server->focused_view));
+    } else {
+        wlr_seat_keyboard_clear_focus(server->seat);
+    }
+}
+
+/* Read the position the client just gave us — screen coordinates — and keep it
+ * as a world one. Only meaningful while the surface's desktop is the one on
+ * screen: with it panned away there is no screen point to read the client's
+ * numbers against, and the world position we already have is the truth. */
+static void xwl_or_note_geometry(struct FwmXwlUnmanaged *u) {
+    double wx, wy;
+    if (!server_screen_to_world(u->server, u->xs->x, u->xs->y, &wx, &wy)) return;
+    u->wx = wx;
+    u->wy = wy;
+    u->desktop = server_desktop_at_x(u->server, wx);
+}
+
+static void xwl_or_place(struct FwmXwlUnmanaged *u) {
+    if (u->tree) server_place_node(u->server, &u->tree->node, u->wx, u->wy);
+}
+
+void server_xwl_unmanaged_place(FwmServer *server) {
+    struct FwmXwlUnmanaged *u;
+    wl_list_for_each(u, &server->xwl_unmanaged, link) xwl_or_place(u);
+}
+
+bool server_xwl_unmanaged_refocus(FwmServer *server, int desktop) {
+    struct FwmXwlUnmanaged *u;
+    wl_list_for_each(u, &server->xwl_unmanaged, link) {
+        if (!u->tree) continue;   /* not mapped: nothing on screen to type into */
+        if (u->desktop != desktop) continue;
+        if (!wlr_xwayland_surface_override_redirect_wants_focus(u->xs)) continue;
+        /* Through server_focus_view(NULL) first, so the window that had the
+         * focus is told it lost it — otherwise a window on the desktop we just
+         * left keeps its lit border and, for an X client, its idea of being
+         * frontmost. */
+        server_focus_view(server, NULL);
+        server_keyboard_enter(server, u->xs->surface);
+        server->focused_unmanaged = u->xs;
+        return true;
+    }
+    return false;
+}
 
 static void xwl_or_handle_map(struct wl_listener *listener, void *data) {
     struct FwmXwlUnmanaged *u = wl_container_of(listener, u, map);
@@ -156,12 +224,51 @@ static void xwl_or_handle_map(struct wl_listener *listener, void *data) {
         u->tree = NULL;
         return;
     }
-    wlr_scene_node_set_position(&u->tree->node, u->xs->x, u->xs->y);
+    xwl_or_note_geometry(u);
+    xwl_or_place(u);
     wlr_scene_node_raise_to_top(&u->tree->node);
+
+    /* Most unmanaged surfaces are menus and tooltips, which take pointer
+     * events and want nothing to do with the keyboard. Some are not: a Wine
+     * game's own fullscreen window arrives here (winex11 makes it
+     * override-redirect to keep the window manager out of it), and so do the
+     * dialogs of X clients that set an input hint on a popup. Those are, from
+     * the user's side, simply the thing they are looking at, and without the
+     * keyboard the window renders while every key goes somewhere else.
+     *
+     * The keyboard goes to the surface directly, not through
+     * server_focus_view: there is no view to focus, and inventing one would
+     * give a menu a physics body and a place in the layout. So focused_view
+     * stays where it was — its border stays lit, which is the honest picture:
+     * the window is still the one in front, this is a surface on top of it.
+     * The seat is what actually decides where keys land, and it is pointed
+     * here until the surface unmaps or focus moves on its own.
+     *
+     * Only the seat is told. Restacking the window in X is not ours to do —
+     * wlroots asserts against it for override-redirect surfaces (xwm.c), which
+     * is the whole point of them: the client stacks itself and the window
+     * manager stays out. The scene node above is where our stacking happens. */
+    if (wlr_xwayland_surface_override_redirect_wants_focus(u->xs)) {
+        /* The seat, and only the seat. wlr_xwayland_surface_activate returns
+         * without doing anything for an override-redirect surface (xwm.c), so
+         * there is no X input focus to be had here and nothing to ask for: the
+         * X window keeps whatever focus X gives it, usually PointerRoot.
+         *
+         * Pointing the seat here is still what decides everything, because it
+         * is what makes Xwayland receive the key events at all. Where they go
+         * inside X is then X's business — the client's own keyboard grab, or
+         * the pointer being inside the window, which for something covering
+         * the whole screen it is. This is the same thing sway does with
+         * override-redirect surfaces, and it is what the wlroots hint above is
+         * for. */
+        server_keyboard_enter(u->server, u->xs->surface);
+        u->server->focused_unmanaged = u->xs;
+    }
 }
 
 static void xwl_or_handle_unmap(struct wl_listener *listener, void *data) {
     struct FwmXwlUnmanaged *u = wl_container_of(listener, u, unmap);
+    xwl_or_drop_focus(u->server, u->xs);
     if (u->tree) {
         wlr_scene_node_destroy(&u->tree->node);
         u->tree = NULL;
@@ -170,9 +277,11 @@ static void xwl_or_handle_unmap(struct wl_listener *listener, void *data) {
 
 static void xwl_or_handle_set_geometry(struct wl_listener *listener, void *data) {
     struct FwmXwlUnmanaged *u = wl_container_of(listener, u, set_geometry);
-    if (u->tree) {
-        wlr_scene_node_set_position(&u->tree->node, u->xs->x, u->xs->y);
-    }
+    if (!u->tree) return;
+    /* Only believe the client's coordinates while its desktop is the one being
+     * shown; see xwl_or_note_geometry. */
+    if (server_output_showing(u->server, u->desktop)) xwl_or_note_geometry(u);
+    xwl_or_place(u);
 }
 
 static void xwl_or_handle_associate(struct wl_listener *listener, void *data) {
@@ -187,19 +296,44 @@ static void xwl_or_handle_dissociate(struct wl_listener *listener, void *data) {
     wl_list_remove(&u->unmap.link); wl_list_init(&u->unmap.link);
 }
 
-static void xwl_or_handle_destroy(struct wl_listener *listener, void *data) {
-    struct FwmXwlUnmanaged *u = wl_container_of(listener, u, destroy);
+/* Everything the unmanaged surface owns, given up. Shared by the destroy event
+ * and by the surface changing hands to a managed view, which is the same
+ * teardown minus the client going away. */
+static void xwl_or_destroy(struct FwmXwlUnmanaged *u) {
+    xwl_or_drop_focus(u->server, u->xs);
     if (u->tree) wlr_scene_node_destroy(&u->tree->node);
     wl_list_remove(&u->map.link);
     wl_list_remove(&u->unmap.link);
     wl_list_remove(&u->associate.link);
     wl_list_remove(&u->dissociate.link);
     wl_list_remove(&u->set_geometry.link);
+    wl_list_remove(&u->set_override_redirect.link);
     wl_list_remove(&u->destroy.link);
+    wl_list_remove(&u->link);
     free(u);
 }
 
-static void xwl_unmanaged_create(FwmServer *server, struct wlr_xwayland_surface *xs) {
+static void xwl_or_handle_destroy(struct wl_listener *listener, void *data) {
+    struct FwmXwlUnmanaged *u = wl_container_of(listener, u, destroy);
+    xwl_or_destroy(u);
+}
+
+/* The mirror of xwl_handle_set_override_redirect in view.c: a surface that
+ * stops being override-redirect is a window asking to be managed after all —
+ * Wine clears the flag when what it created unmanaged becomes an ordinary
+ * top-level. It gets a real view, with the physics body, borders and focus
+ * that come with one. */
+static void xwl_or_handle_set_override_redirect(struct wl_listener *listener, void *data) {
+    struct FwmXwlUnmanaged *u = wl_container_of(listener, u, set_override_redirect);
+    struct wlr_xwayland_surface *xs = u->xs;
+    if (xs->override_redirect) return;
+
+    FwmServer *server = u->server;
+    xwl_or_destroy(u);
+    view_xwl_adopt(view_xwl_create(xs, server));
+}
+
+void server_xwl_unmanaged_create(FwmServer *server, struct wlr_xwayland_surface *xs) {
     struct FwmXwlUnmanaged *u = calloc(1, sizeof(*u));
     if (!u) return;
     u->xs = xs;
@@ -212,8 +346,19 @@ static void xwl_unmanaged_create(FwmServer *server, struct wlr_xwayland_surface 
     wl_signal_add(&xs->events.dissociate, &u->dissociate);
     u->set_geometry.notify = xwl_or_handle_set_geometry;
     wl_signal_add(&xs->events.set_geometry, &u->set_geometry);
+    u->set_override_redirect.notify = xwl_or_handle_set_override_redirect;
+    wl_signal_add(&xs->events.set_override_redirect, &u->set_override_redirect);
     u->destroy.notify = xwl_or_handle_destroy;
     wl_signal_add(&xs->events.destroy, &u->destroy);
+    wl_list_insert(&server->xwl_unmanaged, &u->link);
+
+    /* Arriving from a view rather than from new_surface: the wlr_surface is
+     * already there and may already be on screen, so the associate and map
+     * events that would have set this up have both been and gone. */
+    if (xs->surface) {
+        xwl_or_handle_associate(&u->associate, NULL);
+        if (xs->surface->mapped) xwl_or_handle_map(&u->map, NULL);
+    }
 }
 
 static void handle_xwl_ready(struct wl_listener *listener, void *data) {
@@ -247,7 +392,7 @@ static void handle_xwl_new_surface(struct wl_listener *listener, void *data) {
     FwmServer *server = wl_container_of(listener, server, xwl_new_surface);
     struct wlr_xwayland_surface *xs = data;
     if (xs->override_redirect) {
-        xwl_unmanaged_create(server, xs);
+        server_xwl_unmanaged_create(server, xs);
     } else {
         view_xwl_create(xs, server);
     }

@@ -52,6 +52,7 @@ typedef struct FwmView {
     struct wl_listener xwl_associate;
     struct wl_listener xwl_dissociate;
     struct wl_listener xwl_request_configure;
+    struct wl_listener xwl_set_override_redirect;
     
     /* Saved geometry (local coordinates in desktop) */
     int x, y;
@@ -244,6 +245,11 @@ typedef struct FwmView {
 
 FwmView *view_create(struct wlr_xdg_toplevel *toplevel, struct FwmServer *server);
 FwmView *view_xwl_create(struct wlr_xwayland_surface *xsurface, struct FwmServer *server);
+/* Take on an X11 surface that already has its wlr_surface, and may already be
+ * mapped — the state a window is in when it stops being override-redirect
+ * mid-life and has to change hands. A freshly created view gets there through
+ * the associate and map events instead; this is the same arrival, said late. */
+void view_xwl_adopt(FwmView *view);
 void view_destroy(FwmView *view);
 void view_map(FwmView *view);
 void view_unmap(FwmView *view);

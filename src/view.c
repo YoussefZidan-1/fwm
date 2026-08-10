@@ -401,6 +401,43 @@ static void xwl_handle_request_configure(struct wl_listener *listener, void *dat
     view_sync_position(view);
 }
 
+/* Override-redirect is not a property a window is born with and keeps.
+ *
+ * It is an attribute, and X11 lets a client change it on a live window —
+ * Wine does exactly that: winex11 creates a window unmanaged while it is
+ * still being set up, or when the game asks for a borderless fullscreen it
+ * means to own outright, and clears the flag later when the same window
+ * becomes an ordinary top-level. Deciding once, at creation, left such a
+ * window in the wrong half of the compositor for the rest of its life: a
+ * bare scene surface with no body, no border, no focus and no place in the
+ * layout, which is a game that renders but cannot be typed into.
+ *
+ * So the surface changes hands. The view is torn down (unmapping first if it
+ * was mapped, which is what view_destroy already does) and the same
+ * wlr_xwayland_surface is handed to the unmanaged path, which adopts it
+ * mapped or not. The window blinks — it loses its physics body and gets a
+ * new one on the way back — and that is honest: it stopped being the kind of
+ * thing that had one. */
+static void xwl_handle_set_override_redirect(struct wl_listener *listener, void *data) {
+    (void)data;
+    FwmView *view = wl_container_of(listener, view, xwl_set_override_redirect);
+    struct wlr_xwayland_surface *xs = view->xwl_surface;
+    if (!xs->override_redirect) return;
+
+    FwmServer *server = view->server;
+    view_destroy(view);
+    server_xwl_unmanaged_create(server, xs);
+}
+
+void view_xwl_adopt(FwmView *view) {
+    if (!view || view->type != FWM_VIEW_XWAYLAND) return;
+    struct wlr_surface *surface = view->xwl_surface->surface;
+    if (!surface) return;   /* not associated yet: the normal path still applies */
+
+    xwl_handle_associate(&view->xwl_associate, NULL);
+    if (surface->mapped) view_map(view);
+}
+
 static void xwl_handle_request_move(struct wl_listener *listener, void *data) {
     FwmView *view = wl_container_of(listener, view, request_move);
     server_start_interactive_move(view->server, view, 0);
@@ -437,6 +474,8 @@ FwmView *view_xwl_create(struct wlr_xwayland_surface *xsurface, struct FwmServer
     wl_signal_add(&xsurface->events.dissociate, &view->xwl_dissociate);
     view->xwl_request_configure.notify = xwl_handle_request_configure;
     wl_signal_add(&xsurface->events.request_configure, &view->xwl_request_configure);
+    view->xwl_set_override_redirect.notify = xwl_handle_set_override_redirect;
+    wl_signal_add(&xsurface->events.set_override_redirect, &view->xwl_set_override_redirect);
     view->request_move.notify = xwl_handle_request_move;
     wl_signal_add(&xsurface->events.request_move, &view->request_move);
     view->request_resize.notify = xwl_handle_request_resize;
@@ -506,6 +545,7 @@ void view_destroy(FwmView *view) {
         wl_list_remove(&view->xwl_associate.link);
         wl_list_remove(&view->xwl_dissociate.link);
         wl_list_remove(&view->xwl_request_configure.link);
+        wl_list_remove(&view->xwl_set_override_redirect.link);
     }
     wl_list_remove(&view->link);
     

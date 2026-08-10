@@ -125,8 +125,12 @@ void launcher_grab_sync(FwmServer *server, bool was_open) {
     if (open == was_open) return;
     if (open) {
         wlr_seat_keyboard_notify_clear_focus(server->seat);
-    } else if (server->focused_view) {
-        server_keyboard_enter(server, view_surface(server->focused_view));
+    } else {
+        /* Back to whoever had the keyboard, which is not always the focused
+         * window: an override-redirect surface (a Wine game's own fullscreen
+         * window) can be holding it, and handing the keys to the window behind
+         * it would leave the thing on screen unable to be typed into. */
+        server_keyboard_enter(server, server_keyboard_target(server));
     }
 }
 
