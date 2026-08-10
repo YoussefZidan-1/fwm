@@ -148,7 +148,9 @@ rate your hand was turning it.
 - **Smooth tile animations** — windows glide into their slots (~250 ms, configurable) instead of teleporting.
 - **Configurable gaps** — inner (`gaps_in`) and outer (`gaps_out`).
 - **Keyboard control** — directional focus (`Super+Arrows`), move window (`Super+Shift+Arrows`), flip split orientation (`Super+S`).
-- **Mouse control** — drag BSP borders with `Super+RightDrag` (instant, no animation lag), swap tiles with `Super+Shift+Drag`. Both are `[mouse]` binds like any other; see below.
+- **Pick a tile up** — `Super+Drag` takes the window out of the layout the moment the hand moves; the slot closes behind it and the window is free. Drop it beside another one — the side of that window your cursor is nearest is the side it lands on — or carry it into the edge of the screen and onto another desktop, or onto a physics desktop, where it just stays free.
+- **Resize from anywhere in the window** — `Super+RightDrag` moves the dividers along the two edges nearest your hand (instant, no animation lag), so there is no seam to aim at. A window that refuses to shrink past its own minimum stops the divider there instead of letting its neighbour slide underneath it.
+- **Swap two tiles** — `Super+Shift+Drag`. All of these are `[mouse]` binds like any other; see below.
 
 ### Keyboard and mouse
 - **The mouse is a bind table too** — `[mouse]` says what a drag with a modifier does: `move`, `move_nocollide`, `resize`, `swap`, `twist`, or any `[binds]` action fired on the press. The defaults are the combinations that used to be hard-coded, so deleting the section changes nothing.
@@ -831,9 +833,9 @@ fit  = "pan"
 
 | Gesture | Effect |
 |---|---|
-| `Super+LeftDrag` | move / throw a window (floating) |
+| `Super+LeftDrag` | move / throw a window (floating) — or take a tile out of the layout and put it down elsewhere (tiling) |
 | `Super+Shift+LeftDrag` | move through windows (no collision) — or swap tiles when tiling |
-| `Super+RightDrag` | resize (floating) / drag BSP border (tiling) |
+| `Super+RightDrag` | resize (floating) / resize the tile from its nearest corner (tiling) |
 
 ---
 

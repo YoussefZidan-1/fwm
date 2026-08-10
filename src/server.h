@@ -155,6 +155,10 @@ typedef struct {
     struct timespec hist_time[4];
     int hist_count;
     int collision_disabled;
+    /* A tiled window is held, but the hand has not yet moved far enough to mean
+     * it. Until it does the window stays in the layout and nothing has
+     * happened, so letting go is a plain click (see TILE_TEAR_PX). */
+    int tile_grab;
 
     /* Where the camera of the monitor under the hand stood when the dragged
      * window was last placed, and which monitor that was. The drag anchors the
@@ -210,9 +214,14 @@ typedef struct {
      * is still there, and bsp_desktop remembers whose tree to ask. That desktop
      * is also the one the drag lays out again: the monitor the hand is on can
      * be showing another one. */
-    BspNode *bsp_node;
+    /* Two of them, one per axis: the resize grabs the window's nearest corner,
+     * so the hand usually moves a vertical divider and a horizontal one at the
+     * same time. Either may be NULL — a window against the edge of the screen
+     * has no divider on that side, and then only the other axis moves. */
+    BspNode *bsp_node;      /* the vertical line, splitting left from right */
+    BspNode *bsp_node_v;    /* the horizontal one, splitting top from bottom */
     int bsp_desktop;
-    float bsp_start_ratio;
+    float bsp_start_ratio, bsp_start_ratio_v;
     
     /* Swap drag */
     double cur_x, cur_y;
@@ -674,6 +683,8 @@ void server_apply_tiling(FwmServer *server, int desktop);
 /* Re-run tile positioning against the sizes clients actually committed. Called
  * when a tiled window commits a size different from the one it was asked for. */
 void server_align_tiles(FwmServer *server, int desktop);
+void server_tile_ratio_limits(FwmServer *server, int desktop, BspNode *node,
+                              float *lo, float *hi);
 /* Move one desktop to DESKTOP_MODE_*, running the leave/enter work for both
  * the old and the new mode. No-op when the desktop is already in that mode. */
 void server_set_desktop_mode(FwmServer *server, int d, int mode);

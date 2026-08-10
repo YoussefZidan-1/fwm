@@ -410,7 +410,7 @@ the ones only a drag can express:
 |---|---|---|
 | `move` | drag the window; let go while moving to throw it | drags the tile out of the layout |
 | `move_nocollide` | drag it through everything else | swaps two tiles |
-| `resize` | resize from the nearest corner | drags the BSP border under the cursor |
+| `resize` | resize from the nearest corner | resizes the tile from its nearest corner, moving the layout dividers |
 | `swap` | — | swaps two tiles |
 | `twist` | turn the window about its centre; let go spinning and it keeps spinning | — |
 

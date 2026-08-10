@@ -550,12 +550,21 @@ tap = true
 #
 # Drag verbs:
 #   move            drag the window; let go and it is thrown at the speed
-#                   your hand had. Inert on a tiling desktop.
+#                   your hand had. On a tiling desktop the window LEAVES the
+#                   layout as soon as the hand moves — the slot closes behind
+#                   it — and is put back wherever it is dropped: beside the
+#                   window it is let go over, on whichever side of that window
+#                   the cursor is nearest, or onto another desktop entirely by
+#                   carrying it into the edge of the screen. Dropped on a
+#                   physics desktop it simply stays a free window.
 #   move_nocollide  the same, but shoving nothing on the way. On a tiling
 #                   desktop this drags one tile onto another to swap them.
 #   swap            swap two tiles, and only that.
 #   resize          drag the bottom-right corner. On a tiling desktop it
-#                   drags the BSP border under the cursor instead.
+#                   resizes the tile from the corner nearest the hand, from
+#                   anywhere inside the window: no aiming at the seam between
+#                   two of them, and both dividers move at once when the window
+#                   has one on each axis.
 #   twist           turn the window with the hand: it follows the angle from
 #                   its own centre to the cursor, winds up as you stir, and
 #                   keeps spinning at whatever rate you let go at. Needs

@@ -175,9 +175,9 @@ depends on the desktop's mode:
 
 | Verb | Physics / floating | Tiling |
 |---|---|---|
-| `move` | drag, and let go while moving to throw | pull the tile out of the layout |
+| `move` | drag, and let go while moving to throw | pull the tile out of the layout and put it down anywhere, including on another desktop |
 | `move_nocollide` | drag it through everything | swap two tiles |
-| `resize` | resize from the nearest corner | drag the BSP border under the cursor |
+| `resize` | resize from the nearest corner | resize the tile from its nearest corner, moving the layout dividers |
 | `swap` | — | swap two tiles |
 | `twist` | turn it about its centre; let go spinning and it keeps spinning | — |
 
