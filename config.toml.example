@@ -511,6 +511,11 @@ tap = true
 "super+8"            = "view:7"
 "super+9"            = "view:8"
 "super+0"            = "view:9"
+# One desktop over, without naming it. These are steps, not destinations: with
+# wrap = true they carry on off desktop 9 onto 0 and back the other way, the
+# same join super+h and super+l pan through.
+"super+ctrl+Left"    = "view:prev"
+"super+ctrl+Right"   = "view:next"
 
 # Modes (submaps): a second keymap you step into, so bare keys can mean
 # something. Press the `enter` key and the mode owns the keyboard — its binds

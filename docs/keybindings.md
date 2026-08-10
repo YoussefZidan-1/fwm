@@ -46,6 +46,7 @@ unusable, so they work on a machine with no config at all.
 |---|---|---|
 | `Super+1`…`0` | `view:0`…`view:9` | jump to a desktop |
 | `Super+Shift+1`…`0` | `move_to:0`…`move_to:9` | send the focused window there |
+| `Super+Ctrl+←` / `Super+Ctrl+→` | `view:prev` / `view:next` | one desktop over; wraps round the ring at either end |
 | `Super+H` / `Super+L` | `move_camera:-50` / `move_camera:50` | pan the camera (hold to repeat) |
 | `Super+A` | `expo` | the desktop strip |
 

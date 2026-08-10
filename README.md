@@ -784,6 +784,8 @@ fit  = "pan"
 "super+Tab"          = "group_next"
 "super+shift+w"      = "group_add"
 "super+1"            = "view:0"          # ... "super+0" = "view:9"
+"super+ctrl+Left"    = "view:prev"       # one over; wraps at the ends on a ring
+"super+ctrl+Right"   = "view:next"
 "super+shift+1"      = "move_to:0"       # ... "super+shift+0" = "move_to:9"
 ```
 
