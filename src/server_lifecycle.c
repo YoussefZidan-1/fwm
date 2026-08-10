@@ -669,6 +669,7 @@ void server_destroy(FwmServer *server) {
     /* Owned by other modules but attached to globals just the same. */
     server_remove_listener(&server->new_layer_surface);
     server_remove_listener(&server->new_lock);
+    server_remove_listener(&server->workspace_commit);
 
     wl_display_destroy_clients(server->wl_display);
     wl_display_destroy(server->wl_display);
