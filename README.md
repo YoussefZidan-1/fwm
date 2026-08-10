@@ -380,9 +380,18 @@ cd fwm
 Updating later:
 
 ```sh
-./install.sh update      # git pull + rebuild + reinstall
-./install.sh uninstall   # removes binary + session file, keeps your config
+./install.sh update         # git pull + rebuild + reinstall
+./install.sh update config  # merge new options into your config.toml, keeping your values
+./install.sh uninstall      # removes binary + session file, keeps your config
 ```
+
+An update never touches `config.toml`, so an old one quietly stops mentioning
+options that have been added since. `update config` merges the current example
+into yours: the example's comments, ordering and new options, your values put
+back into them, your own binds kept at the end of their section, and your
+`[mode.*]` / `[[rule]]` blocks kept at the end of the file. It asks before
+backing the old one up, and never overwrites an existing backup unless you say
+so.
 
 ## Build (manual)
 
