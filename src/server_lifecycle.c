@@ -546,8 +546,15 @@ void server_run(FwmServer *server) {
 /* Detach a listener that may never have been attached: server_init memsets the
  * whole struct, so an unused one still has a zeroed link and wl_list_remove
  * would walk a NULL pointer. */
+/* Re-initialised, not merely unlinked: a listener may also be taken off by the
+ * global it belongs to, on its way out, and which of the two happens first is
+ * not ours to decide (see workspace.c). Leaving the removed links pointing at
+ * their old neighbours makes the second removal corrupt the list; an empty list
+ * can be removed from as often as anyone likes. */
 static void server_remove_listener(struct wl_listener *l) {
-    if (l->link.prev) wl_list_remove(&l->link);
+    if (!l->link.prev) return;
+    wl_list_remove(&l->link);
+    wl_list_init(&l->link);
 }
 
 void server_destroy(FwmServer *server) {
@@ -669,6 +676,11 @@ void server_destroy(FwmServer *server) {
     /* Owned by other modules but attached to globals just the same. */
     server_remove_listener(&server->new_layer_surface);
     server_remove_listener(&server->new_lock);
+    /* The commit listener has to come off here: the manager asserts on destroy
+     * that nothing is still on that signal. The DESTROY listener deliberately
+     * stays — it is what tells us the manager and its groups have been freed,
+     * and it can only do that if it is still attached when they are. It takes
+     * itself off from inside (workspace.c). */
     server_remove_listener(&server->workspace_commit);
 
     wl_display_destroy_clients(server->wl_display);

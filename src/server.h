@@ -465,6 +465,7 @@ typedef struct FwmServer {
      * state each was last told so an unchanged tick says nothing. */
     struct wlr_ext_workspace_manager_v1 *workspace_manager;
     struct wl_listener workspace_commit;
+    struct wl_listener workspace_destroy;
     struct wlr_ext_workspace_handle_v1 *workspace[FWM_DESKTOPS];
     struct wlr_ext_workspace_group_handle_v1 *workspace_group[FWM_DESKTOPS];
     bool workspace_active[FWM_DESKTOPS];

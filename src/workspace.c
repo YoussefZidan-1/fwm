@@ -57,6 +57,33 @@ static void handle_commit(struct wl_listener *listener, void *data) {
     }
 }
 
+/* The manager is going, and wlroots frees every group and workspace with it.
+ *
+ * Nothing controls the order here: wl_display_destroy takes down the globals
+ * and the backend's outputs together, so a monitor can perfectly well be
+ * destroyed AFTER this — and workspace_output_gone would then destroy a group
+ * that has already been freed. Drop every pointer while they are still ours to
+ * drop, and the paths above all become no-ops. */
+static void handle_manager_destroy(struct wl_listener *listener, void *data) {
+    FwmServer *server = wl_container_of(listener, server, workspace_destroy);
+
+    server->workspace_manager = NULL;
+    for (int d = 0; d < FWM_DESKTOPS; d++) {
+        server->workspace[d] = NULL;
+        server->workspace_group[d] = NULL;
+    }
+    FwmOutput *out;
+    wl_list_for_each(out, &server->outputs, link) out->ws_group = NULL;
+
+    /* Off the signals before they are torn down — the manager asserts that its
+     * commit signal has no listeners left. Re-initialised rather than merely
+     * removed, so the sweep in server_destroy can safely remove them again. */
+    wl_list_remove(&server->workspace_commit.link);
+    wl_list_init(&server->workspace_commit.link);
+    wl_list_remove(&server->workspace_destroy.link);
+    wl_list_init(&server->workspace_destroy.link);
+}
+
 void workspace_init(FwmServer *server) {
     server->workspace_manager = wlr_ext_workspace_manager_v1_create(server->wl_display, 1);
     if (!server->workspace_manager) {
@@ -66,6 +93,8 @@ void workspace_init(FwmServer *server) {
 
     server->workspace_commit.notify = handle_commit;
     wl_signal_add(&server->workspace_manager->events.commit, &server->workspace_commit);
+    server->workspace_destroy.notify = handle_manager_destroy;
+    wl_signal_add(&server->workspace_manager->events.destroy, &server->workspace_destroy);
 
     for (int d = 0; d < FWM_DESKTOPS; d++) {
         /* The id is what a client may store to recognise this desktop in a
