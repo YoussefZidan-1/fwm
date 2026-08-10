@@ -329,6 +329,24 @@ The desktop's size is the primary monitor's, so a second monitor of a different 
 
 Known gaps: output scale is applied to the monitor and to client surfaces, but fwm's own chrome (status strip, launcher, expo) is still drawn at logical size and scaled up, so it is soft rather than crisp on a HiDPI screen. No IME (xkb layouts do work).
 
+### Games under Wine and Proton: use borderless, not exclusive fullscreen
+
+A Windows game running under Proton that is set to **exclusive fullscreen** can go black and deaf the first time it stops being the focused window — switch to another desktop, come back, and the screen is black, the game takes no input, and the process sits there burning a core. Clicking it does not bring it back. Elite Dangerous with `FullScreen=1` does exactly this.
+
+It is worth writing down what that is, because it looks like a compositor bug and is not one. Two things meet:
+
+- Wine gives its game windows the ICCCM **globally active** input model — `WM_HINTS.input = False` plus `WM_TAKE_FOCUS`. A window manager must not hand such a window the X input focus; it may only *offer* it, and the client decides. fwm focuses the window, wlroots advertises it in `_NET_ACTIVE_WINDOW` and sends the offer — and a game whose Direct3D device has gone dormant declines it.
+- In exclusive fullscreen the swapchain is lost when the game stops being the foreground application, and a game that will not take the focus back never re-acquires it. What fwm then puts on screen is the game's own frame, which is black.
+
+Borderless avoids the whole exchange: the game stays an ordinary window, keeps drawing, and comes back with the desktop. In Elite Dangerous it is Graphics → Display mode → Borderless, or in
+`.../compatdata/<appid>/pfx/drive_c/users/steamuser/AppData/Local/Frontier Developments/Elite Dangerous/Options/Graphics/DisplaySettings.xml`:
+
+```xml
+<FullScreen>2</FullScreen>   <!-- 0 windowed, 1 exclusive fullscreen, 2 borderless -->
+```
+
+Edit it with the game closed — it rewrites the file on exit. Nothing is lost by the change: fwm composites a borderless window that covers the output the same way it composites an exclusive one, and windows fwm considers whole-output fullscreen already get the screen to themselves, status strip included.
+
 ---
 
 ## Requirements
