@@ -92,7 +92,8 @@ static void tile_area(FwmServer *server, int desktop, int *x, int *y, int *w, in
      * bar's own zone is already in `work`, and reserving on top of that would
      * leave a second empty band under it. */
     FwmOutput *mon = server_output_showing(server, desktop);
-    int tray_gone = server->tray_hidden || (mon && mon->tray_yielded);
+    int tray_gone = server->tray_hidden
+                  || (mon && mon->top_reserved && server->config.decor.tray_yield);
     if (!tray_gone && work.y < TRAY_BOTTOM) {
         work.height -= TRAY_BOTTOM - work.y;
         work.y = TRAY_BOTTOM;

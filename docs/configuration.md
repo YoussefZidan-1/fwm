@@ -239,11 +239,18 @@ col_inactive      = "#45475a"
 fade_in_ms        = 260.0         # window open fade; 0 disables
 wallpaper_fade_ms = 420.0         # wallpaper cross-fade; 0 = instant cut
 tray_opacity      = 0.92          # tray island fill alpha
+tray_yield        = false         # hide the strip where a bar reserved the top
 launcher_opacity  = 0.92
 icon_theme        = ""            # launcher icons; "" = auto (gtk3, then hicolor)
 color_source      = "config"      # or "wallpaper"
 tint_strength     = 0.4           # 0..1, only with color_source = "wallpaper"
 ```
+
+`tray_yield` is what lets an external bar **replace** the status strip rather
+than stack with it: on a monitor where a layer-shell client reserved space along
+the top, fwm's strip hides and stops reserving its own band. Off by default —
+a client asking for space should not be able to take fwm's chrome off the screen
+on its own. See [the interface](interface.md#the-tray).
 
 `color_source = "wallpaper"` derives the whole UI palette — island fill, accent,
 text — from the current wallpaper image, so the tray belongs to the desktop

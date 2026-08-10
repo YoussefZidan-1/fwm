@@ -567,11 +567,13 @@ desktop strip, `wlr-foreign-toplevel-management` for a taskbar and
 `ext-session-lock` for a lock screen — and `subscribe` is how a module reads
 the things only fwm has: gravity mode, per-desktop mode, the window strip.
 
-An external shell can also take fwm's chrome over rather than sit beside it. A
-bar that reserves space along the top of a screen makes fwm's own status strip
-stand down on that monitor, and `global:<app_id>:<name>` hands a keybind to a
-client that registered one over hyprland-global-shortcuts — so `Super+Space`
-can open the shell's launcher instead of the built-in one. See
+An external shell can also take fwm's chrome over rather than sit beside it —
+if you say so. With `[decor] tray_yield`, a bar that reserves space along the
+top of a screen makes fwm's own status strip stand down on that monitor; and
+`global:<app_id>:<name>` hands a keybind to a client that registered one over
+hyprland-global-shortcuts, so `Super+Space` can open the shell's launcher
+instead of the built-in one. Both are off until asked for: a client should not
+be able to take fwm's own interface off the screen by requesting it. See
 [keybindings](docs/keybindings.md#giving-a-key-to-an-external-shell).
 
 fwm deliberately has no in-process plugin API. wlroots has no stable ABI, so

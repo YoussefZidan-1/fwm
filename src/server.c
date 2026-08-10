@@ -278,7 +278,8 @@ void server_set_fullscreen(FwmServer *server, struct FwmView *view, bool fullscr
         /* A strip that stood down for an external bar reserves nothing either:
          * the bar's own exclusive zone is already in `work`, and holding the
          * old band back on top of it would leave a gap under the bar. */
-        int tray_gone = server->tray_hidden || (mon && mon->tray_yielded);
+        int tray_gone = server->tray_hidden
+                      || (mon && mon->top_reserved && server->config.decor.tray_yield);
         int reserve = tray_gone ? 0 : TRAY_BOTTOM + 12;
         int top = real ? 0 : (work.y > reserve ? work.y : reserve);
         view->x = d * server->screen_width + (real ? 0 : work.x);

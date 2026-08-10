@@ -73,12 +73,14 @@ void layer_arrange(FwmServer *server) {
          * shrink fake fullscreen THERE and nowhere else. */
         if (mon) {
             mon->usable_area = usable;
-            /* Something reserved space along the top of this screen — that is
-             * where our own strip lives, so it gives way (see tray_yielded).
+            /* Something reserved space along the top of this screen, which is
+             * where our own strip lives. Recorded, not acted on: [decor]
+             * tray_yield decides what it means, at the point of use.
+             *
              * Read off the reserved area rather than off the surfaces: a bar
              * that anchors top without an exclusive zone is asking to float
              * over the screen, not to replace anything. */
-            mon->tray_yielded = usable.y > full.y;
+            mon->top_reserved = usable.y > full.y;
         }
         if (full.x == 0 && full.y == 0) primary_usable = usable;
     }

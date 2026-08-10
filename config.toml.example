@@ -140,6 +140,16 @@ fade_in_ms   = 260.0
 wallpaper_fade_ms = 420.0
 # Island fill opacity (0..1), separate for the tray bar and the app launcher.
 tray_opacity     = 0.92
+# Let an external bar REPLACE the status strip instead of stacking with it. On a
+# monitor where a layer-shell panel (waybar, quickshell, a dock) reserved space
+# along the top, fwm's strip hides itself and stops reserving its own band.
+#
+# Off by default: a client asking for space must not be able to take fwm's own
+# chrome off the screen by itself. Running a bar instead of the strip is your
+# decision, and this is where you make it. Per monitor — a second screen with no
+# bar keeps its strip. Only an exclusive zone counts; a panel that floats over
+# the top without reserving space changes nothing.
+#tray_yield       = true
 launcher_opacity = 0.92
 # Launcher icon theme. "" = auto: gtk-3.0 settings.ini, then hicolor.
 icon_theme = ""

@@ -1341,10 +1341,10 @@ static int physics_tick_cb(void *data) {
         /* Real fullscreen hides the tray; fake fullscreen deliberately keeps
          * it. A user-hidden tray stays hidden through both, and so does one
          * that stood down for an external bar on this screen. */
+        bool yielded = server->config.decor.tray_yield && fo->top_reserved;
         if (fo->tray_buffer)
             wlr_scene_node_set_enabled(&fo->tray_buffer->node,
-                                       !real_fs && !server->tray_hidden
-                                       && !fo->tray_yielded);
+                                       !real_fs && !server->tray_hidden && !yielded);
         /* Either kind fully hides the wallpaper (fake fills the work area and
          * the tray covers the strip above it), so pause a video behind it: the
          * decode thread then blocks on its full queue and stops burning CPU. */

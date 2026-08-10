@@ -117,12 +117,13 @@ typedef struct FwmOutput {
     struct wlr_scene_buffer *tray_buffer;
     TrayStrip tray_strip;
     struct wlr_box usable_area;           /* this monitor minus exclusive zones */
-    /* An external bar reserved space along the TOP of this monitor, so our own
-     * status strip stands down on it: two bars stacked at the top of one screen
-     * is not a layout anybody chose, and the outside one is the one the user
-     * went and configured. Per monitor — a second screen with no bar keeps its
-     * strip. Recomputed by layer_arrange; nothing persists it. */
-    int tray_yielded;
+    /* An external bar has reserved space along the TOP of this monitor, where
+     * our own status strip lives. A FACT about the screen, not a decision:
+     * whether the strip actually stands down for it is [decor] tray_yield,
+     * read where this is used. Keeping the two apart is what lets the setting
+     * be changed live — the fact only moves when the bars do, and
+     * layer_arrange is the one place that recomputes it. */
+    int top_reserved;
     /* This monitor as ext-workspace-v1 shows it: a group, holding whichever
      * desktop it is currently displaying (see workspace.h). */
     struct wlr_ext_workspace_group_handle_v1 *ws_group;

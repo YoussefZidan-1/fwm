@@ -364,6 +364,7 @@ static void load_decor(toml_table_t *root, FwmConfig *cfg) {
     dc->fade_in_ms = 260.0;
     dc->wallpaper_fade_ms = 420.0;
     dc->tray_opacity = 0.92;
+    dc->tray_yield = 0;
     dc->launcher_opacity = 0.92;
     dc->icon_theme[0] = '\0';
     dc->color_source = COLOR_SOURCE_CONFIG;
@@ -405,6 +406,8 @@ static void load_decor(toml_table_t *root, FwmConfig *cfg) {
     if (dc->tint_strength < 0.0) dc->tint_strength = 0.0;
     if (dc->tint_strength > 1.0) dc->tint_strength = 1.0;
     LOAD_DOUBLE(tbl, "tray_opacity", dc->tray_opacity);
+    toml_datum_t ty = toml_bool_in(tbl, "tray_yield");
+    if (ty.ok) dc->tray_yield = ty.u.b ? 1 : 0;
     LOAD_DOUBLE(tbl, "launcher_opacity", dc->launcher_opacity);
     if (dc->tray_opacity < 0.0) dc->tray_opacity = 0.0;
     if (dc->tray_opacity > 1.0) dc->tray_opacity = 1.0;
@@ -1253,6 +1256,7 @@ void config_load(FwmConfig *cfg, const char *path) {
     cfg->decor.fade_in_ms = 260.0;
     cfg->decor.wallpaper_fade_ms = 420.0;
     cfg->decor.tray_opacity = 0.92;
+    cfg->decor.tray_yield = 0;
     cfg->decor.launcher_opacity = 0.92;
     cfg->decor.icon_theme[0] = '\0';
     cfg->decor.color_source = COLOR_SOURCE_CONFIG;

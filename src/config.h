@@ -186,6 +186,14 @@ typedef struct {
     double fade_in_ms;       /* window fade-in duration; <= 0 disables */
     double wallpaper_fade_ms;/* wallpaper cross-fade duration; <= 0 = instant cut */
     double tray_opacity;     /* island fill alpha 0..1 for the tray bar */
+    /* Stand the status strip down on a monitor where a layer-shell panel has
+     * reserved space along the top — an external bar replacing it rather than
+     * stacking with it.
+     *
+     * OFF by default, and deliberately so: fwm's chrome is part of what fwm is,
+     * and a client should not be able to take it off the screen by asking. The
+     * user who runs a bar says so here, once. */
+    int    tray_yield;
     double launcher_opacity; /* island fill alpha 0..1 for the app launcher */
     char   icon_theme[64];   /* launcher icon theme; "" = auto (gtk3 setting, then hicolor) */
     int    color_source;     /* COLOR_SOURCE_* — where the UI palette comes from */
