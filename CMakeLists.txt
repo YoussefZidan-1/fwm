@@ -56,6 +56,7 @@ pkg_check_modules(LIBINPUT REQUIRED libinput)
 # context (see the header for why). Nothing else in fwm touches GL.
 pkg_check_modules(EGL REQUIRED egl)
 pkg_check_modules(GLESV2 REQUIRED glesv2)
+pkg_check_modules(DRM REQUIRED libdrm)
 # Video wallpaper decode. ffmpeg 6 on Void is the split libav* set + headers in
 # ffmpeg6-devel; the runtime is libav*6. Software decode only, so no libva pin.
 pkg_check_modules(LIBAV REQUIRED libavformat libavcodec libavutil libswscale)
@@ -224,6 +225,7 @@ target_include_directories(fwm PRIVATE
         ${EGL_INCLUDE_DIRS}
         ${GLESV2_INCLUDE_DIRS}
         ${LIBAV_INCLUDE_DIRS}
+        ${DRM_INCLUDE_DIRS}
         src
         ${CMAKE_BINARY_DIR}
         src/ui

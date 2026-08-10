@@ -345,6 +345,7 @@ Known gaps: output scale is applied to the monitor and to client surfaces, but f
 | PipeWire and/or PulseAudio — *optional*, `[cava]` visualiser and `[sound]` knocks | `libpipewire`, `libpulse` |
 | CMake + pkg-config | `cmake`, `pkgconf` |
 | Xwayland (runtime) | `xorg-xwayland` |
+| libdrm — DRM format headers | `libdrm` |
 
 The sound libraries are the only optional ones: build without them and
 everything else works, minus the audio visualiser and the collision knocks
@@ -411,6 +412,31 @@ Or nested inside another compositor / X session for testing:
 ```sh
 WLR_BACKENDS=x11 ./build/fwm      # nested X11 window
 WLR_BACKENDS=wayland ./build/fwm  # nested Wayland window
+```
+
+## NixOS
+This project comes with flake.nix file that exposes a package and module. To use it:
+
+- Add this to your system `flake.nix`:
+
+```nix
+inputs = {
+    fwm.url = "github:iluaii/fwm";
+};
+```
+
+- Import the module:
+
+```nix
+modules = [
+    inputs.fwm.nixosModules.default
+];
+```
+
+- And enable it somewhere in your configuration
+
+```nix
+programs.fwm.enable = true;
 ```
 
 ---
