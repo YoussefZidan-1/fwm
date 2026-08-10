@@ -1,7 +1,17 @@
 cmake_minimum_required(VERSION 3.10)
-project(fwm C)
+
+# The version lives in one file at the root, not in this one, so that everything
+# which needs it reads the same characters: the build, `fwm --version`, the IPC,
+# and packaging that has no business parsing CMake (a Nix derivation asked for
+# exactly this — see PR #19). Bumping a release means editing VERSION and
+# tagging v<that>.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" FWM_VERSION)
+string(STRIP "${FWM_VERSION}" FWM_VERSION)
+
+project(fwm VERSION ${FWM_VERSION} LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
+add_compile_definitions(FWM_VERSION="${FWM_VERSION}")
 
 # A compositor cannot report its own memory corruption: it IS the display
 # server, so a smashed stack takes the whole session down with no way to see

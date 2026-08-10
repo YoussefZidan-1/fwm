@@ -468,7 +468,7 @@ fwmctl config                   # every settable option, with values and ranges
 fwmctl get physics.gravity      # read one option
 fwmctl set physics.gravity 200  # change it, live
 fwmctl subscribe                # stream events as they happen
-fwmctl version                  # which binary is answering: path, mtime, pid
+fwmctl version                  # release, and which binary is answering: path, mtime, pid
 fwmctl memory                   # fwm's own memory, split into its parts
 ```
 
