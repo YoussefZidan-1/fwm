@@ -23,6 +23,8 @@
 #include "layer.h"
 #include "lock.h"
 #include "foreign.h"
+#include "workspace.h"
+#include "shortcuts.h"
 #include "ipc.h"
 #include "session.h"
 #include <signal.h>
@@ -72,6 +74,8 @@
 #include <wlr/backend/session.h>
 #include <wlr/types/wlr_screencopy_v1.h>
 #include <wlr/types/wlr_xdg_output_v1.h>
+#include <wlr/types/wlr_data_control_v1.h>
+#include <wlr/types/wlr_ext_data_control_v1.h>
 #include <wlr/types/wlr_primary_selection.h>
 #include <wlr/types/wlr_primary_selection_v1.h>
 #include <wlr/types/wlr_viewporter.h>
@@ -325,6 +329,12 @@ bool server_init(FwmServer *server) {
     // single-pixel-buffer are expected by games/video players/toolkits;
     // presentation-time gives clients accurate frame timing (mpv, games).
     wlr_primary_selection_v1_device_manager_create(server->wl_display);
+    /* Clipboard managers (cliphist and the widgets that wrap it) read the
+     * selection without holding keyboard focus, which is the one thing the
+     * ordinary data-device cannot give them. Both spellings: ext- is the
+     * standardised one, wlr- is what most of the existing tools still bind. */
+    wlr_data_control_manager_v1_create(server->wl_display);
+    wlr_ext_data_control_manager_v1_create(server->wl_display, 1);
     wlr_viewporter_create(server->wl_display);
     wlr_fractional_scale_manager_v1_create(server->wl_display, 1);
     wlr_single_pixel_buffer_manager_v1_create(server->wl_display);
@@ -380,6 +390,8 @@ bool server_init(FwmServer *server) {
     layer_shell_init(server);
     lock_init(server);
     foreign_init(server);
+    workspace_init(server);
+    shortcuts_init(server);
 
     server->cursor = wlr_cursor_create();
     server->cursor_mgr = cursor_theme_load();

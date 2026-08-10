@@ -40,6 +40,9 @@ static const PhysicsConfig physics_defaults = {
     .restitution            = 0.75,
     .gravity                = 200.0,
     .tick_rate              = 60.0,
+    /* Bars are scenery, not furniture: the world keeps the shape it always
+     * had unless the config asks for the other one. */
+    .solid_bars             = 0,
     /* No profiles, every desktop on the world's own values, and the gravity
      * ladder cycle_gravity has always climbed. Spelled out because this struct
      * is also assigned wholesale on the paths that never reach load_physics
@@ -86,7 +89,7 @@ int action_is_known(const char *a) {
     };
     static const char *prefixes[] = {
         "spawn:", "view:", "move_camera:", "tile_focus:", "tile_move:",
-        "move_to:", "move_to_view:", FWM_MODE_ACTION, NULL
+        "move_to:", "move_to_view:", "global:", FWM_MODE_ACTION, NULL
     };
     for (int i = 0; exact[i]; i++)
         if (strcmp(a, exact[i]) == 0) return 1;
@@ -232,6 +235,8 @@ static void load_physics(toml_table_t *root, FwmConfig *cfg) {
     LOAD_DOUBLE(tbl, "mass_ram_ref",           p->mass_ram_ref);
     LOAD_DOUBLE(tbl, "mass_ram_max",           p->mass_ram_max);
     LOAD_DOUBLE(tbl, "hp_break_speed",         p->hp_break_speed);
+    toml_datum_t sb = toml_bool_in(tbl, "solid_bars");
+    if (sb.ok) p->solid_bars = sb.u.b ? 1 : 0;
     /* There is deliberately no "hp" key to go with it: breakable windows are
      * session state, turned on from the modes menu and never restored from
      * anywhere. See PhysicsConfig.hp. */

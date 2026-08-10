@@ -117,6 +117,15 @@ typedef struct FwmOutput {
     struct wlr_scene_buffer *tray_buffer;
     TrayStrip tray_strip;
     struct wlr_box usable_area;           /* this monitor minus exclusive zones */
+    /* An external bar reserved space along the TOP of this monitor, so our own
+     * status strip stands down on it: two bars stacked at the top of one screen
+     * is not a layout anybody chose, and the outside one is the one the user
+     * went and configured. Per monitor — a second screen with no bar keeps its
+     * strip. Recomputed by layer_arrange; nothing persists it. */
+    int tray_yielded;
+    /* This monitor as ext-workspace-v1 shows it: a group, holding whichever
+     * desktop it is currently displaying (see workspace.h). */
+    struct wlr_ext_workspace_group_handle_v1 *ws_group;
 
     /* Impact shake, and the slide across the ring's join. Both move what this
      * ONE monitor draws without moving its camera — the camera must not move,
@@ -446,7 +455,21 @@ typedef struct FwmServer {
     struct wl_listener new_lock_surface;
     struct wl_listener lock_unlock;
     struct wl_listener lock_destroy;
-    
+
+    /* hyprland-global-shortcuts-v1: keybinds an external shell has claimed
+     * (see shortcuts.h). Empty unless some client registered one. */
+    struct wl_list shortcuts;
+
+    /* ext-workspace-v1: the ten desktops as external bars see them (see
+     * workspace.h). One handle each, for the compositor's whole life, plus the
+     * state each was last told so an unchanged tick says nothing. */
+    struct wlr_ext_workspace_manager_v1 *workspace_manager;
+    struct wl_listener workspace_commit;
+    struct wlr_ext_workspace_handle_v1 *workspace[FWM_DESKTOPS];
+    struct wlr_ext_workspace_group_handle_v1 *workspace_group[FWM_DESKTOPS];
+    bool workspace_active[FWM_DESKTOPS];
+
+
     /* Keyboard input */
     struct wl_list keyboards;
     struct wl_list pointers;   /* struct FwmPointer; see server_internal.h */
@@ -613,6 +636,9 @@ int server_output_set_enabled(FwmServer *server, FwmOutput *out, int on);
 FwmOutput *server_internal_output(FwmServer *server);
 /* The monitor with this connector name ("HDMI-A-1"), or NULL. */
 FwmOutput *server_output_find(FwmServer *server, const char *name);
+/* The monitor wrapping this wlr_output, or NULL. What the protocol handlers
+ * need: they are handed a wlr_output and have to get back to our own. */
+FwmOutput *server_output_for(FwmServer *server, struct wlr_output *wlr_output);
 
 /* How one monitor should be driven: what `[[output]]` and `fwmctl output` both
  * end up saying. Every field is optional, and the have_* flags are what make

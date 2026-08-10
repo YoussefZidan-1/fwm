@@ -30,6 +30,15 @@ tick_rate             = 60.0
 # The default is the built-in trio — weightless, a lick of it, earth.
 #gravity_steps        = [0.0, 0.15, 1.0]
 
+# Make an external bar a solid object. A layer-shell panel that reserved space
+# for itself (waybar, quickshell, a dock) then holds the floor up: a thrown
+# window lands ON the bar instead of sliding away underneath it, and a bar
+# along the top of the screen is a ceiling. Off by default, and the windows go
+# under the bar exactly as they always have.
+#
+# fwm's own tray is not affected — it floats above the windows and always has.
+#solid_bars           = true
+
 # Breakable windows. A single hard enough collision destroys a window; damage
 # is never accumulated, so anything that survives a hit is unharmed by it.
 #

@@ -87,8 +87,13 @@ static void tile_area(FwmServer *server, int desktop, int *x, int *y, int *w, in
         work = (struct wlr_box){ 0, 0, server->screen_width, server->screen_height };
     }
     /* A hidden tray reserves nothing — that is what makes it *gone* rather than
-     * merely invisible. Layer-shell exclusive zones still apply. */
-    if (!server->tray_hidden && work.y < TRAY_BOTTOM) {
+     * merely invisible. Layer-shell exclusive zones still apply. A strip that
+     * stood down for an external bar is hidden in exactly the same sense: the
+     * bar's own zone is already in `work`, and reserving on top of that would
+     * leave a second empty band under it. */
+    FwmOutput *mon = server_output_showing(server, desktop);
+    int tray_gone = server->tray_hidden || (mon && mon->tray_yielded);
+    if (!tray_gone && work.y < TRAY_BOTTOM) {
         work.height -= TRAY_BOTTOM - work.y;
         work.y = TRAY_BOTTOM;
     }

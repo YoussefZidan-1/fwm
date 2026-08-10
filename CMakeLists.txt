@@ -118,6 +118,8 @@ set(SOURCES
     src/layer.c
     src/lock.c
     src/foreign.c
+    src/workspace.c
+    src/shortcuts.c
     src/group.c
     src/ipc.c
     src/ipc_events.c
@@ -170,6 +172,31 @@ foreach(proto ${WLR_PROTOCOLS})
         DEPENDS ${CMAKE_SOURCE_DIR}/protocols/${proto}.xml
         COMMENT "Generating ${proto} protocol header")
     list(APPEND PROTOCOL_HEADERS ${header})
+endforeach()
+
+# Protocols wlroots does NOT implement, so fwm implements the interfaces itself
+# (see src/shortcuts.c). These need the glue code as well as the header — the
+# loop above only produces headers because wlroots supplies the code for its
+# own protocols.
+set(OWN_PROTOCOLS
+    hyprland-global-shortcuts-v1)
+
+foreach(proto ${OWN_PROTOCOLS})
+    set(header ${CMAKE_BINARY_DIR}/${proto}-protocol.h)
+    set(code ${CMAKE_BINARY_DIR}/${proto}-protocol.c)
+    add_custom_command(
+        OUTPUT ${header}
+        COMMAND ${WAYLAND_SCANNER} server-header
+                ${CMAKE_SOURCE_DIR}/protocols/${proto}.xml ${header}
+        DEPENDS ${CMAKE_SOURCE_DIR}/protocols/${proto}.xml
+        COMMENT "Generating ${proto} protocol header")
+    add_custom_command(
+        OUTPUT ${code}
+        COMMAND ${WAYLAND_SCANNER} private-code
+                ${CMAKE_SOURCE_DIR}/protocols/${proto}.xml ${code}
+        DEPENDS ${CMAKE_SOURCE_DIR}/protocols/${proto}.xml
+        COMMENT "Generating ${proto} protocol code")
+    list(APPEND PROTOCOL_HEADERS ${header} ${code})
 endforeach()
 
 add_executable(fwm ${SOURCES} ${PROTOCOL_HEADERS})

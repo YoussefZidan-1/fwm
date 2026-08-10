@@ -305,7 +305,7 @@ since a rectangle cannot bend along with it. The effect needs the GLES2
 renderer.
 
 ### Desktop integration
-Runs the software you already use: **XWayland** (X11 apps as ordinary physics windows), **layer-shell** (waybar, mako, rofi, swaybg), **ext-session-lock** (hyprlock, swaylock), **idle protocols** (swayidle, no blanking during video), **xdg-activation**, **screencopy** (screenshots, screen share), **gamma-control** (wlsunset), **pointer constraints** (games and mouse-look), **pointer-gestures** (touchpad swipes and pinches reach the app when fwm has no bind for them), **foreign-toplevel** (taskbars), plus drag-and-drop and primary selection.
+Runs the software you already use: **XWayland** (X11 apps as ordinary physics windows), **layer-shell** (waybar, mako, rofi, swaybg), **ext-session-lock** (hyprlock, swaylock), **idle protocols** (swayidle, no blanking during video), **xdg-activation**, **screencopy** (screenshots, screen share), **gamma-control** (wlsunset), **pointer constraints** (games and mouse-look), **pointer-gestures** (touchpad swipes and pinches reach the app when fwm has no bind for them), **foreign-toplevel** (taskbars), **ext-workspace** (desktop strips in external bars), **data-control** (clipboard managers), **hyprland-global-shortcuts** (an external shell can own a keybind), plus drag-and-drop and primary selection.
 
 **Cursor theme** is chosen rather than left to chance: `XCURSOR_THEME`/`XCURSOR_SIZE` are honoured as named, and with nothing asked for fwm goes looking for an installed theme that actually has the shapes clients ask for (resize arrows, grab hand, crosshair) instead of falling back to wlroots' built-in four. The name it settles on is exported, so GTK and Xwayland load the same one and the pointer keeps its style across windows.
 
@@ -562,8 +562,17 @@ done
 ```
 
 Panels and widgets need nothing new either: fwm implements `wlr-layer-shell`,
-so waybar, eww and ags already work, and `subscribe` is how a module reads the
-things only fwm has — gravity mode, per-desktop mode, the window strip.
+so waybar, eww, ags and quickshell already work — with `ext-workspace` for the
+desktop strip, `wlr-foreign-toplevel-management` for a taskbar and
+`ext-session-lock` for a lock screen — and `subscribe` is how a module reads
+the things only fwm has: gravity mode, per-desktop mode, the window strip.
+
+An external shell can also take fwm's chrome over rather than sit beside it. A
+bar that reserves space along the top of a screen makes fwm's own status strip
+stand down on that monitor, and `global:<app_id>:<name>` hands a keybind to a
+client that registered one over hyprland-global-shortcuts — so `Super+Space`
+can open the shell's launcher instead of the built-in one. See
+[keybindings](docs/keybindings.md#giving-a-key-to-an-external-shell).
 
 fwm deliberately has no in-process plugin API. wlroots has no stable ABI, so
 loadable modules would break on every wlroots release and every crash in one

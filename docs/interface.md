@@ -41,6 +41,15 @@ Left to right:
 Opacity is `[decor] tray_opacity`; the whole palette can be derived from the
 wallpaper with `[decor] color_source = "wallpaper"`.
 
+**It stands down for an external bar.** On a monitor where a layer-shell client
+reserved space along the top — waybar, quickshell, a dock — fwm's strip hides
+itself and stops reserving its own band, so the two never stack. Per monitor: a
+second screen with no bar keeps its strip, and closing the bar brings it back.
+
+Only an **exclusive zone** counts. A panel that anchors to the top without
+reserving space is asking to float over the screen rather than replace anything,
+and the strip stays. `Super+J` (`toggle_tray`) still hides it by hand.
+
 ## The modes menu
 
 Click the modes pill (or bind `modes_menu`). Eight rows:

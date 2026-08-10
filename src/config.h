@@ -125,6 +125,20 @@ typedef struct {
     double gravity;
     double tick_rate;
 
+    /* A layer-shell bar that reserved space with an exclusive zone is a solid
+     * object: the floor stands on top of a bar at the bottom of the screen and
+     * the ceiling hangs under one at the top, so a thrown window lands on the
+     * bar instead of sliding away underneath it.
+     *
+     * Off by default, because it changes how the world feels rather than how it
+     * looks, and because without a bar running there is nothing to notice.
+     *
+     * Only EXCLUSIVE ZONES count — fwm's own tray is not one. The tray floats
+     * over the windows and always has; a window resting under it is visibly
+     * under something translucent, while a window buried under an opaque bar
+     * simply looks lost, which is the difference this setting is about. */
+    int    solid_bars;
+
     PhysicsProfileConfig profiles[CONFIG_MAX_PROFILES];
     int    profile_count;
     /* Which profile each desktop was assigned, or -1 for the [physics] values.

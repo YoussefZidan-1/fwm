@@ -275,7 +275,11 @@ void server_set_fullscreen(FwmServer *server, struct FwmView *view, bool fullscr
             };
             if (!wlr_box_intersection(&work, &work, &screen)) work = screen;
         }
-        int reserve = server->tray_hidden ? 0 : TRAY_BOTTOM + 12;
+        /* A strip that stood down for an external bar reserves nothing either:
+         * the bar's own exclusive zone is already in `work`, and holding the
+         * old band back on top of it would leave a gap under the bar. */
+        int tray_gone = server->tray_hidden || (mon && mon->tray_yielded);
+        int reserve = tray_gone ? 0 : TRAY_BOTTOM + 12;
         int top = real ? 0 : (work.y > reserve ? work.y : reserve);
         view->x = d * server->screen_width + (real ? 0 : work.x);
         view->y = top;
@@ -339,6 +343,10 @@ void server_set_fullscreen(FwmServer *server, struct FwmView *view, bool fullscr
         }
     }
     
+    /* External panels track this window's size state; it just changed by a
+     * bind, a client request or their own button. */
+    foreign_view_sync_fullscreen(view);
+
     server_request_tray_redraw(server);
 }
 

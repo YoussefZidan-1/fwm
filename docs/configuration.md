@@ -44,6 +44,7 @@ gravity                = 981.0   # px/s^2; 981 = earth at 100 px/m
 tick_rate              = 60.0    # simulation steps per second
 gravity_steps          = [0.0, 0.15, 1.0]   # what Super+G cycles
 hp_break_speed         = 0.0     # 0 = follow max_throw_speed
+solid_bars             = false   # do panels hold the floor up?
 ```
 
 | Key | Meaning |
@@ -61,6 +62,7 @@ hp_break_speed         = 0.0     # 0 = follow max_throw_speed
 | `tick_rate` | Simulation steps per second. Read once at startup; a change needs a restart, not a reload. |
 | `gravity_steps` | The multipliers `cycle_gravity` (`Super+G`) walks, in order. Up to 8. |
 | `hp_break_speed` | How fast a window must hit another **of its own mass** to destroy it, px/s. 0 (the default) means "use `max_throw_speed`". Only tunes the mode; it cannot switch it on. |
+| `solid_bars` | Turn a layer-shell panel that reserved space into a solid object: the floor stands on top of a bar at the bottom of the screen, and a bar at the top is a ceiling. Off by default, and windows slide underneath one as they always have. Only **exclusive zones** count — fwm's own tray floats above the windows and is not one. The floor is one line across all ten desktops, so it follows the **primary** monitor's bars. |
 
 ### breakable windows
 

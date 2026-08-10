@@ -49,6 +49,7 @@ void layer_arrange(FwmServer *server) {
         wlr_output_layout_get_box(server->output_layout, lo->output, &full);
         if (full.width <= 0 || full.height <= 0) continue;
         struct wlr_box usable = full;
+        FwmOutput *mon = server_output_for(server, lo->output);
 
         /* Two passes, as the protocol requires: surfaces that reserve space are
          * placed first so the rest see the area that is actually left. */
@@ -68,6 +69,17 @@ void layer_arrange(FwmServer *server) {
             }
         }
 
+        /* Each monitor keeps its own answer: a bar on the second screen must
+         * shrink fake fullscreen THERE and nowhere else. */
+        if (mon) {
+            mon->usable_area = usable;
+            /* Something reserved space along the top of this screen — that is
+             * where our own strip lives, so it gives way (see tray_yielded).
+             * Read off the reserved area rather than off the surfaces: a bar
+             * that anchors top without an exclusive zone is asking to float
+             * over the screen, not to replace anything. */
+            mon->tray_yielded = usable.y > full.y;
+        }
         if (full.x == 0 && full.y == 0) primary_usable = usable;
     }
 
@@ -150,10 +162,11 @@ static void layer_handle_commit(struct wl_listener *listener, void *data) {
         wlr_output_layout_get_box(ls->server->output_layout, s->output, &full);
         if (full.width <= 0 || full.height <= 0)
             full = (struct wlr_box){ 0, 0, ls->server->screen_width, ls->server->screen_height };
-        /* usable_area is the primary's; anything on another monitor gets that
-         * monitor whole, which is true until something reserves space there. */
-        struct wlr_box usable = (full.x == 0 && full.y == 0)
-                              ? ls->server->usable_area : full;
+        /* Against ITS monitor's usable area — the one it named, not the
+         * primary's — falling back to the whole screen while nothing has
+         * reserved anything there yet. */
+        FwmOutput *mon = server_output_for(ls->server, s->output);
+        struct wlr_box usable = mon ? mon->usable_area : full;
         if (usable.width <= 0 || usable.height <= 0) usable = full;
         wlr_scene_layer_surface_v1_configure(ls->scene, &full, &usable);
         return;

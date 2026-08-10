@@ -225,6 +225,10 @@ typedef struct FwmView {
     struct wl_listener ftl_request_activate;
     struct wl_listener ftl_request_close;
     struct wl_listener ftl_request_fullscreen;
+    struct wl_listener ftl_request_maximize;
+    /* The monitor the handle currently says this window is on, so enter/leave
+     * are only sent when the answer changes. NULL while it is on none. */
+    struct wlr_output *ftl_output;
 
     /* Tab-stack membership; NULL when not grouped (see group.h). */
     struct FwmGroup *group;

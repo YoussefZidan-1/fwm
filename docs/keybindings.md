@@ -138,7 +138,32 @@ action is reported when the config loads rather than doing nothing when pressed.
 |---|---|
 | `spawn:<command>` | run it through a shell, so `spawn:$BROWSER --new-window` works |
 | `mode:<name>` | switch keymaps; `mode:default` returns to the root map |
+| `global:<app_id>:<name>` | hand the key to an external shell — see below |
 | `EXIT` | end the session |
+
+### Giving a key to an external shell
+
+A Wayland client cannot see a key it is not focused for, so an outside launcher
+can never answer `Super+Space` by itself: the compositor has to hand the press
+over. `global:` is that handover, over
+[hyprland-global-shortcuts-v1](https://github.com/hyprwm/hyprland-protocols),
+which Quickshell exposes as its `GlobalShortcut` type.
+
+The client registers a *named* action and says nothing about keys — which keys
+reach it stays fwm's decision:
+
+```qml
+GlobalShortcut { appid: "quickshell"; name: "launcher"; onPressed: /* ... */ }
+```
+
+```toml
+[binds]
+"super+space" = "global:quickshell:launcher"   # instead of "launcher"
+```
+
+Binding the key away from `launcher` is what makes this *replace* fwm's own
+launcher rather than sit beside it. Nothing has registered the name yet — the
+shell is not running — and the key does nothing but say so in the log.
 
 ## Modes (submaps)
 
