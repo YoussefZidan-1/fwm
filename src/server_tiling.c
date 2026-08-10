@@ -77,31 +77,62 @@
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
-/* The area tiles live in: the space layer-shell clients left us, minus our own
- * tray and the outer gap. Shared by the layout and the alignment pass so the
- * two cannot drift apart. */
-static void tile_area(FwmServer *server, int desktop, int *x, int *y, int *w, int *h) {
+/* The room a window has on `desktop`: the space layer-shell clients left us,
+ * minus our own status strip, minus the outer gap. In world coordinates, so the
+ * desktop's own column offset is already in x.
+ *
+ * The tiling layout, the alignment pass and FAKE FULLSCREEN all come through
+ * here. That last one is the point of the function being shared rather than
+ * copied: "fake fullscreen" means "as large as a window is allowed to be", and
+ * the moment that answer is written down twice the two drift — which is exactly
+ * what had happened. The old copy in server_set_fullscreen reserved a hardcoded
+ * band under the tray instead of the gap, and measured its height from the
+ * screen rather than the work area, so a dock along the bottom was covered
+ * over. */
+void server_work_area(FwmServer *server, int desktop, int *x, int *y, int *w, int *h) {
     int gout = server->config.tiling.gaps_out;
-    struct wlr_box work = server->usable_area;
-    if (work.width <= 0 || work.height <= 0) {
-        work = (struct wlr_box){ 0, 0, server->screen_width, server->screen_height };
+
+    struct wlr_box screen = { 0, 0, server->screen_width, server->screen_height };
+    struct wlr_box work = screen;
+
+    /* The monitor showing this desktop is the one whose bars apply; with nobody
+     * showing it, the desktop's own size is the answer. Per monitor, so a bar
+     * on the second screen does not shrink the first. */
+    FwmOutput *mon = server_output_showing(server, desktop);
+    if (mon && mon->usable_area.width > 0 && mon->usable_area.height > 0) {
+        /* usable_area is in layout coordinates; a desktop's frame starts at 0,0. */
+        work = (struct wlr_box){
+            mon->usable_area.x - mon->box.x, mon->usable_area.y - mon->box.y,
+            mon->usable_area.width, mon->usable_area.height,
+        };
+        if (!wlr_box_intersection(&work, &work, &screen)) work = screen;
     }
+
     /* A hidden tray reserves nothing — that is what makes it *gone* rather than
      * merely invisible. Layer-shell exclusive zones still apply. A strip that
-     * stood down for an external bar is hidden in exactly the same sense: the
-     * bar's own zone is already in `work`, and reserving on top of that would
-     * leave a second empty band under it. */
-    FwmOutput *mon = server_output_showing(server, desktop);
+     * stood down for an external bar ([decor] tray_yield) is hidden in exactly
+     * the same sense: the bar's own zone is already in `work`, and reserving on
+     * top of that would leave a second empty band under it. */
     int tray_gone = server->tray_hidden
                   || (mon && mon->top_reserved && server->config.decor.tray_yield);
     if (!tray_gone && work.y < TRAY_BOTTOM) {
         work.height -= TRAY_BOTTOM - work.y;
         work.y = TRAY_BOTTOM;
     }
+
     *x = desktop * server->screen_width + work.x + gout;
     *y = work.y + gout;
     *w = work.width  - gout * 2;
     *h = work.height - gout * 2;
+
+    /* Gaps wider than the screen they are cut from would ask for a window of
+     * negative size, and every caller would hand that to a client. */
+    if (*w < 1) *w = 1;
+    if (*h < 1) *h = 1;
+}
+
+static void tile_area(FwmServer *server, int desktop, int *x, int *y, int *w, int *h) {
+    server_work_area(server, desktop, x, y, w, h);
 }
 
 /* Move one tile to where the alignment pass decided it goes. */

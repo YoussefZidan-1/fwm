@@ -21,7 +21,7 @@ unusable, so they work on a machine with no config at all.
 | `Super+Return` | `terminal` | `$TERMINAL`, else the first emulator installed |
 | `Super+Space` | `launcher` | the application launcher |
 | `Super+Q` | `killclient` | close the focused window |
-| `Super+D` | `fake_fullscreen` | fill the work area, keep the tray |
+| `Super+D` | `fake_fullscreen` | fill the work area, keep the tray and the gaps |
 | `Super+F` | `real_fullscreen` | true fullscreen, tray hidden |
 | `Super+P` | `pin_window` | freeze it: physics stops moving it |
 | `Super+N` | `toggle_nocollide` | other windows pass through it |
@@ -81,7 +81,7 @@ action is reported when the config loads rather than doing nothing when pressed.
 | `spin_window` | give the focused window a spin (experimental) |
 | `spin_all` | ...every window |
 | `calm_all` | zero every velocity |
-| `fake_fullscreen` | fill the work area, keep the tray |
+| `fake_fullscreen` | fill the work area, keep the tray. Sits exactly where a single tile would: same monitor work area, same `[tiling] gaps_out`. |
 | `real_fullscreen` | true fullscreen |
 | `group_toggle`, `group_next`, `group_prev`, `group_add` | tab groups |
 
