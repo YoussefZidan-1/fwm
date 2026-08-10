@@ -104,29 +104,15 @@ void layer_update_keyboard_focus(FwmServer *server) {
     if (want == server->focused_layer) return;
     server->focused_layer = want;
 
-    struct wlr_keyboard *kbd = wlr_seat_get_keyboard(server->seat);
     if (want) {
-        if (kbd) {
-            wlr_seat_keyboard_notify_enter(server->seat, want->layer_surface->surface,
-                                           kbd->keycodes, kbd->num_keycodes, &kbd->modifiers);
-        } else {
-            wlr_seat_keyboard_notify_enter(server->seat, want->layer_surface->surface,
-                                           NULL, 0, NULL);
-        }
+        server_keyboard_enter(server, want->layer_surface->surface);
         return;
     }
 
     /* Nothing wants it any more — give the keyboard back to the focused
      * window, the same way closing the built-in launcher does. */
     if (server->focused_view) {
-        struct wlr_surface *surface = view_surface(server->focused_view);
-        if (!surface) return;
-        if (kbd) {
-            wlr_seat_keyboard_notify_enter(server->seat, surface,
-                                           kbd->keycodes, kbd->num_keycodes, &kbd->modifiers);
-        } else {
-            wlr_seat_keyboard_notify_enter(server->seat, surface, NULL, 0, NULL);
-        }
+        server_keyboard_enter(server, view_surface(server->focused_view));
     } else {
         wlr_seat_keyboard_notify_clear_focus(server->seat);
     }

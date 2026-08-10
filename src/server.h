@@ -584,6 +584,10 @@ void server_schedule_frames(FwmServer *server);
  * `skip` excludes a view that is unmapping but still listed; NULL otherwise. */
 void server_refocus(FwmServer *server, int desktop, struct FwmView *skip);
 void server_focus_view(FwmServer *server, struct FwmView *view);
+/* Give the keyboard to a surface. Use this rather than
+ * wlr_seat_keyboard_notify_enter: it leaves out the keys a bind has swallowed,
+ * whose release the new client will never be told about. */
+void server_keyboard_enter(FwmServer *server, struct wlr_surface *surface);
 /* ── monitors ─────────────────────────────────────────────────────────────
  * The world is a strip of FWM_DESKTOPS columns of screen_width; each monitor
  * shows one column. These are how the rest of the compositor asks "which

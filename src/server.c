@@ -152,12 +152,7 @@ void server_focus_view(FwmServer *server, struct FwmView *view) {
     if (view) {
         if (view->scene_tree) wlr_scene_node_raise_to_top(&view->scene_tree->node);
         
-        struct wlr_keyboard *kbd = wlr_seat_get_keyboard(server->seat);
-        struct wlr_surface *surface = view_surface(view);
-        if (kbd && surface) {
-            wlr_seat_keyboard_notify_enter(server->seat, surface,
-                kbd->keycodes, kbd->num_keycodes, &kbd->modifiers);
-        }
+        server_keyboard_enter(server, view_surface(view));
         view_set_activated(view, true);
         foreign_view_set_activated(view, true);
         
