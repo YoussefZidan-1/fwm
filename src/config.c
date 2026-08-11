@@ -304,6 +304,7 @@ static void load_tiling(toml_table_t *root, TilingConfig *t) {
     t->gaps_in    = 6;
     t->gaps_out   = 14;
     t->anim_speed = 12.0; /* ~250 ms glide */
+    t->pickup     = 0.28; /* big enough to still be the window you picked up */
 
     toml_table_t *tbl = toml_table_in(root, "tiling");
     if (!tbl) return;
@@ -314,9 +315,14 @@ static void load_tiling(toml_table_t *root, TilingConfig *t) {
     d = toml_int_in(tbl, "gaps_out");
     if (d.ok) t->gaps_out = (int)d.u.i;
     LOAD_DOUBLE(tbl, "anim_speed", t->anim_speed);
+    LOAD_DOUBLE(tbl, "pickup", t->pickup);
 
     if (t->gaps_in < 0) t->gaps_in = 0;
     if (t->gaps_out < 0) t->gaps_out = 0;
+    /* Past most of the screen it is not a window in the hand any more, it is
+     * the layout you were trying to leave. */
+    if (t->pickup < 0.0) t->pickup = 0.0;
+    if (t->pickup > 0.9) t->pickup = 0.9;
 }
 
 /* ── camera section ──────────────────────────────────────────────────── */
@@ -539,6 +545,7 @@ static void load_effects(toml_table_t *root, EffectsConfig *e) {
     e->camera_shake = 0.0;
     e->squash = 1.0;
     e->jelly = 1.0;
+    e->droplet = 1.0;
     e->spin = 1.0;
     e->live = 1.0;
     e->shot_fly = 1.0;
@@ -554,6 +561,11 @@ static void load_effects(toml_table_t *root, EffectsConfig *e) {
     LOAD_DOUBLE(tbl, "jelly", e->jelly);
     if (e->jelly < 0.0) e->jelly = 0.0;
     if (e->jelly > 2.0) e->jelly = 2.0;
+    LOAD_DOUBLE(tbl, "droplet", e->droplet);
+    if (e->droplet < 0.0) e->droplet = 0.0;
+    /* At 1 the corners are already on the ellipse; past that the mesh folds
+     * through itself and the drop turns inside out. */
+    if (e->droplet > 1.0) e->droplet = 1.0;
     LOAD_DOUBLE(tbl, "live", e->live);
     if (e->live < 0.0) e->live = 0.0;
     if (e->live > 1.0) e->live = 1.0;
@@ -1247,7 +1259,8 @@ int config_match_rules(const FwmConfig *cfg, const char *app_id, const char *tit
 
 void config_load(FwmConfig *cfg, const char *path) {
     cfg->physics         = physics_defaults;
-    cfg->tiling          = (TilingConfig){ .gaps_in = 6, .gaps_out = 14, .anim_speed = 12.0 };
+    cfg->tiling          = (TilingConfig){ .gaps_in = 6, .gaps_out = 14, .anim_speed = 12.0,
+                                           .pickup = 0.28 };
     cfg->camera          = (CameraConfig){ .anim_ms = 350.0, .free_speed = 14.0 };
     // Defaults for the no-config-file path; load_decor re-applies them anyway.
     cfg->decor.border_width = 2;

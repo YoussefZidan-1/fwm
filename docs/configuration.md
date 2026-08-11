@@ -212,7 +212,22 @@ There is deliberately no per-window "float": tiling on fwm is a property of the
 gaps_in    = 6      # px between adjacent tiles
 gaps_out   = 14     # px between tiles and the screen edge
 anim_speed = 12.0   # tile-glide rate, 1/s; 0 = snap into place
+pickup     = 0.28   # size a window leaves the layout at, fraction of the screen
 ```
+
+`pickup` is what you get in your hand when you drag a window out of the tree.
+Every window comes off at the same size, on purpose: a tile is whatever shape
+its column happened to be, and being handed a full-height sliver — or most of
+the screen — to carry around is the thing this replaces.
+
+Setting it to `0` restores the older behaviour, which was to give the window
+back the geometry it had before the desktop was tiled. That answer was only
+ever available to a window that had been there first; one that opened onto an
+already-tiled desktop had no pre-tiling size to return to and came off the tree
+still wearing its slot.
+
+See `droplet` under [effects](#effects) for what the window *looks* like on the
+way out and back.
 
 ## camera
 
@@ -310,6 +325,7 @@ already on the visible desktop.
 camera_shake = 1.0   # screen shake on impact; 0 disables
 squash       = 1.0   # squash & stretch on impact; 0 disables
 jelly        = 1.0   # wobble while dragging; 0 disables
+droplet      = 1.0   # carry a window out of a tiling layout as a drop; 0 disables
 spin         = 1.0   # strength of the spin_window kick (experimental)
 live         = 1.0   # live window content under spin/wobble; 0 = still frame
 shot_fly     = 1.0   # region screenshot peels off and flies away; 0 disables
@@ -336,6 +352,21 @@ it saturates: shake a window as hard as you like and the wobble grows exactly as
 it always did up to the point it would have torn, then simply stops growing. A
 higher `jelly` scales the deformation, so it reaches that ceiling proportionally
 sooner.
+
+`droplet` is the shape a window takes when it leaves a tiling layout. Dragged
+out of the tree it shrinks to [`tiling.pickup`](#tiling) and rounds off at the
+corners into a drop, still wobbling on the drag springs if `jelly` is on. Put
+back into a layout it does not glide into its slot — it lands where the cursor
+let go and spreads out to the slot's edges, the near corners arriving before the
+far ones and squaring off as they get there. `1` is as round as it goes — a true
+circle, the one inscribed in the window, with the picture squeezed along its
+longer side to fit it. Lower values merely pull the corners in; `0` disables the
+shape entirely and leaves the resize, which is `tiling.pickup`'s doing and
+happens either way.
+
+It rides the same mesh the wobble does, so it needs the GLES2 renderer for the
+same reason — but not the same setting. `droplet = 1` with `jelly = 0` is a drop
+that holds its shape while you carry it.
 
 ## session
 

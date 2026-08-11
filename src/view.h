@@ -22,6 +22,7 @@
 #include <wlr/xwayland.h>
 #include <stdbool.h>
 
+#include "droplet.h"
 #include "wobble.h"
 
 struct FwmServer;
@@ -187,6 +188,22 @@ typedef struct FwmView {
     double jelly_snap_t;              /* since the last COMPOSITED refresh, s */
     double jelly_px, jelly_py;        /* window position at the last tick */
 
+    /* The drop (droplet.h): a window carried off a tiling layout.
+     *
+     * It is not a third thing that owns the picture — it is a shape the wobble
+     * above is drawn in, which is why it lives among the jelly fields and not
+     * beside them. `drop_round` is eased toward `drop_want` so a window rounds
+     * off into a drop over a few frames instead of popping into one, and both
+     * are 0 for every window that is not being carried out of a tree.
+     *
+     * `drop_fill` replaces the springs entirely for the length of the landing:
+     * once it is armed the lattice comes from droplet_fill_points and the
+     * wobble is not stepped at all. Two shapes, one at a time. */
+    double drop_round;                /* how round the sheet is drawn, 0..1 */
+    double drop_want;                 /* what it is easing toward */
+    int drop_filling;                 /* the landing owns the lattice */
+    DropletFill drop_fill;
+
     /* Free rotation (experimental; see PhysicsBody.spin).
      *
      * Same snapshot trick as the squash, for the same reason and one step
@@ -306,6 +323,27 @@ void view_jelly_begin(FwmView *view, double strength, double grab_lx, double gra
 void view_jelly_tick(FwmView *view, double strength, double dt);
 void view_jelly_release(FwmView *view);
 void view_jelly_stop(FwmView *view);
+
+/* The drop (see the drop_* fields above and droplet.h).
+ *
+ * view_droplet_begin says this window has just been taken out of a tiling
+ * layout and should round off into one; it arms the mesh itself if the wobble
+ * has not already, so the drop does not need [effects] jelly to be on.
+ * view_droplet_fill says it has been put back into one, `lx`/`ly` being where
+ * the cursor let go in the SLOT's frame — the fill spreads out from there and
+ * hands the live window back when the slot is full. view_droplet_clear drops
+ * the shape without ending the wobble, for a window that left the tree and is
+ * not going back into one.
+ *
+ * All three are no-ops at [effects] droplet 0, which leaves the pickup resize
+ * and nothing else — the window simply becomes small in your hand. */
+void view_droplet_begin(FwmView *view, double grab_lx, double grab_ly);
+void view_droplet_fill(FwmView *view, double lx, double ly, double drop_w, double drop_h);
+void view_droplet_clear(FwmView *view);
+/* Is this window a drop right now? Asked at the end of a drag, where it is the
+ * difference between a window that came out of a layout and one that was
+ * carried in from a physics desktop and never was one. */
+bool view_is_droplet(FwmView *view);
 
 /* Free rotation (see the spin_* fields above). view_spin_tick shows the window
  * at `angle` radians, creating the snapshot machinery on the first call and

@@ -239,10 +239,17 @@ void server_drag_follow_camera(FwmServer *server) {
  * screen edge, the desktop it lands on, the throw at the end) already works on
  * free windows and is untouched by this.
  *
- * It goes back to whatever size it had before the desktop was tiled, held so
- * the hand keeps the same grip on it: shrinking a full-height tile under a
- * cursor that stays where it was would otherwise leave the window hanging off
- * a corner it was not picked up by. */
+ * It comes off at one size whatever it was ([tiling] pickup), held so the hand
+ * keeps the same grip on it: shrinking a full-height tile under a cursor that
+ * stays where it was would otherwise leave the window hanging off a corner it
+ * was not picked up by.
+ *
+ * One size and not the geometry it had before the desktop was tiled, which is
+ * what this used to restore. That answer was only ever available to a window
+ * that had lived on the desktop BEFORE it went tiling: one that opened onto a
+ * tiled desktop never had a pre-tiling size to go back to, so it came off the
+ * tree still wearing its slot — a full-height sliver, or most of the screen —
+ * which is the shape you are dragging it out of in the first place. */
 static void tile_tear_out(FwmServer *server, FwmView *view, PhysicsBody *pb,
                           double wx, double wy) {
     int d = pb->desktop_id;
@@ -255,7 +262,18 @@ static void tile_tear_out(FwmServer *server, FwmView *view, PhysicsBody *pb,
     double fx = view->width  > 0 ? (wx - view->x) / view->width  : 0.5;
     double fy = view->height > 0 ? (wy - view->y) / view->height : 0.5;
 
-    if (pb->tiling_saved && pb->tile_sav_w > 0 && pb->tile_sav_h > 0) {
+    double pickup = server->config.tiling.pickup;
+    if (pickup > 0.0) {
+        int w = (int)lround(pickup * server->screen_width);
+        int h = (int)lround(pickup * server->screen_height);
+        int mw, mh;
+        view_min_size(view, &mw, &mh);
+        if (w < mw) w = mw;
+        if (h < mh) h = mh;
+        pb->width  = view->width  = w;
+        pb->height = view->height = h;
+        view_set_size(view, view->width, view->height);
+    } else if (pb->tiling_saved && pb->tile_sav_w > 0 && pb->tile_sav_h > 0) {
         pb->width  = view->width  = pb->tile_sav_w;
         pb->height = view->height = pb->tile_sav_h;
         view_set_size(view, view->width, view->height);
@@ -269,6 +287,11 @@ static void tile_tear_out(FwmServer *server, FwmView *view, PhysicsBody *pb,
         wlr_scene_node_set_position(&view->scene_tree->node, view->x, view->y);
     view_sync_position(view);
 
+    /* Whatever is in the hand now is a drop, and rounds off into one over the
+     * next few frames. Told where it was taken hold of for the same reason the
+     * wobble is: that is the part of the sheet the hand has. */
+    view_droplet_begin(view, wx - pb->x, wy - pb->y);
+
     /* The desktop it LEFT, laid out again without it. */
     server_apply_tiling(server, d);
 }
@@ -276,8 +299,18 @@ static void tile_tear_out(FwmServer *server, FwmView *view, PhysicsBody *pb,
 /* Put a carried window down on a tiling desktop: beside the window it was
  * dropped on, on the side of that window the cursor is nearest to. Dropped on
  * the gaps, or on an empty desktop, it simply joins the layout wherever
- * bsp_insert would have put it. */
-static void tile_drop(FwmServer *server, FwmView *view, int d, double wx, double wy) {
+ * bsp_insert would have put it.
+ *
+ * `spread` says the thing being put down is a drop, and so should arrive by
+ * spreading into its slot rather than gliding to it. Only a window that came
+ * OUT of a layout is one: carry a window in from a physics desktop and it was
+ * never round, so rounding it off for a fifth of a second on the way in would
+ * be an effect about nothing. It just takes its slot. */
+static void tile_drop(FwmServer *server, FwmView *view, int d, double wx, double wy,
+                      bool spread) {
+    /* The shape in the hand, before the layout resizes it into a slot. */
+    int drop_w = view->width, drop_h = view->height;
+
     BspNode *leaf = bsp_leaf_at(server->bsp_roots[d], wx, wy);
     if (leaf && leaf->aw > 0 && leaf->ah > 0) {
         /* Which edge of the target the cursor is nearest, measured as a
@@ -293,6 +326,25 @@ static void tile_drop(FwmServer *server, FwmView *view, int d, double wx, double
         bsp_insert(&server->bsp_roots[d], 0, view->id);
     }
     server_apply_tiling(server, d);
+
+    /* The slot is where the window goes; the fill is how it gets there. So the
+     * tile glide that would otherwise carry it across is finished here and now
+     * — the window is already home, and everything still moving is a picture of
+     * it spreading out from where your hand let go. */
+    PhysicsBody *pb = physics_find_body(&server->physics, view->id);
+    if (spread && pb && server->config.effects.droplet > 0.0) {
+        if (view->tile_anim) {
+            pb->x = view->tile_tx;
+            pb->y = view->tile_ty;
+            view->x = (int)lround(pb->x);
+            view->y = (int)lround(pb->y);
+            view->tile_anim = 0;
+            if (view->scene_tree)
+                wlr_scene_node_set_position(&view->scene_tree->node, view->x, view->y);
+            view_sync_position(view);
+        }
+        view_droplet_fill(view, wx - pb->x, wy - pb->y, drop_w, drop_h);
+    }
 }
 
 /* Motion while a gesture is held. False when there is none, and the caller
@@ -849,9 +901,18 @@ void server_drag_release(FwmServer *server, double lx, double ly) {
         // Button release
         if (server->interactive.action == FWM_ACTION_MOVE) {
             FwmView *view = server->interactive.view;
+            /* Was what is being put down a drop? Only a window taken out of a
+             * layout ever is, and the answer has to be taken before the clear
+             * below wipes it — it is what tells a window going back into a tree
+             * from one arriving from a physics desktop, which was never round
+             * and must not become round on the way in. */
+            bool was_drop = view && view_is_droplet(view);
             /* Let the wobble ring itself out — whatever the drop turns out to
              * be, the hand is off the window. */
             if (view) view_jelly_release(view);
+            /* And it is not a drop any more either — unless it lands in a
+             * layout, and tile_drop below says so by arming the fill. */
+            if (view) view_droplet_clear(view);
             // Dropping an ungrouped window onto a tab bar adds it to that stack.
             int tab;
             FwmGroup *bg = view ? group_bar_at(server, lx, ly, &tab) : NULL;
@@ -869,7 +930,7 @@ void server_drag_release(FwmServer *server, double lx, double ly) {
                         double wx, wy;
                         if (!bsp_find(server->bsp_roots[d], view->id)
                             && server_screen_to_world(server, lx, ly, &wx, &wy)) {
-                            tile_drop(server, view, d, wx, wy);
+                            tile_drop(server, view, d, wx, wy, was_drop);
                         } else {
                             server_apply_tiling(server, d);
                         }

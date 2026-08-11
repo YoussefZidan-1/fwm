@@ -126,6 +126,7 @@ set(SOURCES
     src/expo_draw.c
     src/expo_input.c
     src/wobble.c
+    src/droplet.c
     src/layer.c
     src/lock.c
     src/foreign.c
@@ -323,6 +324,14 @@ if(FWM_TESTS)
     target_include_directories(test_wobble PRIVATE src tests)
     target_link_libraries(test_wobble PRIVATE m)
 
+    # The drop, for the same reason as the wobble and one more: the fill is a
+    # mesh that has to stay inside the buffer it is drawn into, and a lattice
+    # that folded through itself would show up as a window turning inside out
+    # for a fifth of a second rather than as anything a stack trace could find.
+    add_executable(test_droplet tests/test_droplet.c src/droplet.c)
+    target_include_directories(test_droplet PRIVATE src tests)
+    target_link_libraries(test_droplet PRIVATE m)
+
     # Touchpad gestures are decided in gestures.c, which reaches no further
     # than config.h's types — the wlroots half is server_gestures.c and stays
     # out of it, so what a swipe means can be asserted without a touchpad.
@@ -362,6 +371,7 @@ if(FWM_TESTS)
     add_test(NAME physics_speed COMMAND test_physics_speed)
     add_test(NAME ipc_events COMMAND test_ipc_events)
     add_test(NAME wobble     COMMAND test_wobble)
+    add_test(NAME droplet    COMMAND test_droplet)
     add_test(NAME gestures   COMMAND test_gestures)
     add_test(NAME ram        COMMAND test_ram)
     add_test(NAME wav        COMMAND test_wav)

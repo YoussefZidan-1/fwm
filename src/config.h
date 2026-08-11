@@ -158,6 +158,14 @@ typedef struct {
     int    gaps_in;    /* gap between adjacent tiles (px) */
     int    gaps_out;   /* gap between tiles and the screen edges (px) */
     double anim_speed; /* tile-glide speed, 1/s (higher = snappier); <= 0 disables */
+    /* The size a window comes off the layout at when it is dragged out of the
+     * tree, as a fraction of the screen. One size for every window, on purpose:
+     * a tile is whatever shape its column happened to be, and handing you that
+     * shape to carry — a full-height sliver, or most of the screen — is the
+     * thing this replaces. <= 0 goes back to the old answer, which was the
+     * geometry the window had before the desktop was tiled, and nothing much
+     * at all for a window that was born on a tiled desktop and never had one. */
+    double pickup;
 } TilingConfig;
 
 /* ── camera ──────────────────────────────────────────────────────────── */
@@ -271,6 +279,17 @@ typedef struct {
      * along the way it is being pulled. 0 disables, 1 = default. Never applies
      * to a spinning window. */
     double jelly;
+    /* A window carried off a tiling layout is drawn as a drop: rounded off at
+     * the corners on the way out, and on the way back in it lands where the
+     * cursor let go and spreads to the edges of its new slot. 0 disables — the
+     * window then simply changes size, which is [tiling] pickup's doing and
+     * happens either way. 1 = default and as round as this goes, a true circle
+     * inscribed in the window; below that the corners are merely pulled in.
+     *
+     * Rides the wobble's machinery but not its setting: this is on even with
+     * [effects] jelly at 0, and a drop that is not also wobbling is a drop that
+     * holds its shape while it is carried. */
+    double droplet;
     /* Free window rotation (EXPERIMENTAL), strength of the spin_window kick.
      * 0 makes the bind do nothing. Nothing rotates on its own: a window only
      * ever spins because the bind told it to. */
