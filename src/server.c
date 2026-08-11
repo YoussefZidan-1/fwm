@@ -262,10 +262,13 @@ void server_set_fullscreen(FwmServer *server, struct FwmView *view, bool fullscr
          * bezel. A single-output setup gets the box it always did. */
         /* A desktop is one screen, so fullscreen is that screen. */
         if (real) {
+            FwmOutput *out = server_output_showing(server, d);
+            int dw = out ? out->box.width : server->screen_width;
+            int dh = out ? out->box.height : server->screen_height;
             view->x = d * server->screen_width;
             view->y = 0;
-            view->width = server->screen_width;
-            view->height = server->screen_height;
+            view->width = dw;
+            view->height = dh;
         } else {
             /* Fake fullscreen is "as large as a window is allowed to be", which
              * is the same question the tiling layout answers — so it is the same

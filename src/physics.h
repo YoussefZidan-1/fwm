@@ -130,6 +130,11 @@ typedef struct {
      * wrap, so a bar appearing moves the floor under a window already resting
      * on it and the window is pushed up rather than left buried. */
     int inset_top, inset_bottom;
+    
+    /* Desktop-specific monitor sizes for physics boundaries */
+    int desktop_h[FWM_DESKTOPS];
+    
+    /* Configurable physics parameters */
 
 
     /* Configurable physics parameters */

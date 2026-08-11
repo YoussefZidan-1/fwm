@@ -600,9 +600,12 @@ void view_map(FwmView *view) {
     if (restored >= 0 && !(have_rule && rule.desktop >= 0)) current_desktop = restored;
     /* Centred on its desktop — which IS one screen now, so this lands in the
      * middle of whichever monitor is showing it. */
+    FwmOutput *mapped_out = server_output_showing(view->server, current_desktop);
+    int out_w = mapped_out ? mapped_out->box.width : view->server->screen_width;
+    int out_h = mapped_out ? mapped_out->box.height : view->server->screen_height;
     int cx = current_desktop * view->server->screen_width
-           + (view->server->screen_width - initial_w) / 2;
-    int cy = (view->server->screen_height - initial_h) / 2;
+           + (out_w - initial_w) / 2;
+    int cy = (out_h - initial_h) / 2;
     
     view->x = cx;
     view->y = cy;

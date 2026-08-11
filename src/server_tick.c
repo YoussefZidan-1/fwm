@@ -730,8 +730,10 @@ void server_cava_sync(FwmServer *server) {
     CavaConfig cfg = server->config.cava;
     cfg.mode = want;
 
-    server->cava = cava_create(server->layer_background, &cfg,
-                               server->screen_width, server->screen_height);
+    FwmOutput *primary = server_primary_output(server);
+    int cw = primary ? primary->box.width : server->screen_width;
+    int ch = primary ? primary->box.height : server->screen_height;
+    server->cava = cava_create(server->layer_background, &cfg, cw, ch);
     if (server->cava) {
         server->cava_reported = 0;
     } else if (!server->cava_reported) {
@@ -1243,10 +1245,12 @@ static int physics_tick_cb(void *data) {
     if (server->config.physics.solid_bars) {
         struct wlr_box u = server->usable_area;
         if (u.width > 0 && u.height > 0) {
-            int top = u.y, bottom = server->screen_height - (u.y + u.height);
+            FwmOutput *primary = server_primary_output(server);
+            int sh = primary ? primary->box.height : server->screen_height;
+            int top = u.y, bottom = sh - (u.y + u.height);
             /* A bar taller than the screen would leave the floor above the
              * ceiling and Box2D solving an impossible world. */
-            if (top >= 0 && bottom >= 0 && top + bottom < server->screen_height) {
+            if (top >= 0 && bottom >= 0 && top + bottom < sh) {
                 server->physics.inset_top = top;
                 server->physics.inset_bottom = bottom;
             }
@@ -1254,6 +1258,15 @@ static int physics_tick_cb(void *data) {
     }
 
     if (expo_active(server)) steps = 0;
+    
+    for (int d = 0; d < FWM_DESKTOPS; d++) {
+        FwmOutput *mon = server_output_showing(server, d);
+        if (mon && mon->box.height > 0) {
+            server->physics.desktop_h[d] = mon->box.height;
+        } else {
+            server->physics.desktop_h[d] = server->screen_height;
+        }
+    }
 
     /* Physics steps: as many whole 1/60 steps as the real time since the last
      * tick paid for (see the accumulator at the top). Usually one. */
@@ -1267,17 +1280,20 @@ static int physics_tick_cb(void *data) {
         const float *bar_lvl = cava_levels(server->cava, &bar_n);
         if (bar_lvl && bar_n > 0) {
             int bar_desk = server_active_desktop(server);
+            FwmOutput *mon = server_output_showing(server, bar_desk);
+            int sh = mon ? mon->box.height : server->screen_height;
+            int sw = mon ? mon->box.width : server->screen_width;
             physics_set_bars(&server->physics, bar_lvl, bar_n,
                              (double)bar_desk * server->screen_width,
-                             (double)server->screen_width,
+                             (double)sw,
                              server->config.cava.height * server->config.cava.push,
                              /* The row rises out of the FLOOR, wherever that
                               * currently is: with solid_bars on and a dock at
                               * the bottom, the floor is the top of the dock and
                               * a visualiser sunk below it would never show. */
-                             server->screen_height - server->physics.inset_bottom,
+                             sh - server->physics.inset_bottom,
                              BAR_MAX_RISE_SPEED * server->config.cava.push, dt);
-        }
+                }
 
         physics_step(&server->physics, server->screen_width, server->screen_height,
                      drag_win, resize_win, dragged_win, dt);

@@ -65,11 +65,12 @@ struct BodySlot {
 struct Engine {
     b2WorldId world;
     struct BodySlot slots[MAX_WINDOWS];
-    b2BodyId walls[4];
+    b2BodyId walls[2 + 2 * FWM_DESKTOPS];
     bool walls_built;
     int wall_w, wall_h;      /* screen dims the walls were built for */
     int wall_wrap;           /* and whether the world was a ring at the time */
     int wall_top, wall_bottom; /* and the insets bars had reserved */
+    int wall_desk_h[FWM_DESKTOPS];
 
     /* Visualiser bars (physics_set_bars). Shapes are built once at a fixed
      * size and then only ever slid vertically, so a bar changing height costs
@@ -276,6 +277,10 @@ void physics_init(PhysicsWorld *world) {
     /* And the screen is the whole of it until a bar reserves part of it. */
     world->inset_top = world->inset_bottom = 0;
     world->impact_count = 0;
+
+    for (int i = 0; i < FWM_DESKTOPS; i++) {
+        world->desktop_h[i] = 0;
+    }
 
     // Set system defaults just in case config doesn't overwrite them.
     // Tuned for a "real object" feel: earth gravity at 100 px/m, a dull bounce
@@ -609,41 +614,46 @@ static void rebuild_walls(struct Engine *eng, PhysicsWorld *world, int screen_w,
     /* The floor and ceiling stand at the edges of the space bars left free,
      * which is the whole screen unless [physics] solid_bars says otherwise. */
     int top = world->inset_top, bottom = world->inset_bottom;
-    if (eng->walls_built && eng->wall_w == screen_w && eng->wall_h == screen_h
+    bool match = eng->walls_built && eng->wall_w == screen_w && eng->wall_h == screen_h
         && eng->wall_wrap == world->wrap
-        && eng->wall_top == top && eng->wall_bottom == bottom) {
-        return;
+        && eng->wall_top == top && eng->wall_bottom == bottom;
+    if (match) {
+        for (int i = 0; i < FWM_DESKTOPS; i++) {
+            if (eng->wall_desk_h[i] != world->desktop_h[i]) {
+                match = false;
+                break;
+            }
+        }
     }
+    if (match) return;
+
     if (eng->walls_built) {
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 2 + 2 * FWM_DESKTOPS; i++) {
             if (B2_IS_NON_NULL(eng->walls[i])) b2DestroyBody(eng->walls[i]);
+            eng->walls[i] = b2_nullBodyId;
         }
     }
 
     double W = 10.0 * screen_w; // full virtual-desktop span
-    double T = top;             // ceiling y: 0, or below a bar anchored up there
-    double H = screen_h - bottom; // floor y: the screen, or on top of a bar
     double t = WALL_THICK_PX;
 
-    // {center_x, center_y, half_w, half_h} in px; inner faces flush with [0,W]x[T,H]
-    double specs[4][4] = {
-        {-t / 2.0,     (T + H) / 2.0, t / 2.0, (H - T) / 2.0 + t}, // left
-        {W + t / 2.0,  (T + H) / 2.0, t / 2.0, (H - T) / 2.0 + t}, // right
-        {W / 2.0,      T - t / 2.0,   W / 2.0 + t, t / 2.0},       // top
-        {W / 2.0,      H + t / 2.0,   W / 2.0 + t, t / 2.0},       // bottom
+    // Left and right boundary walls
+    double lr_specs[2][4] = {
+        {-t / 2.0,     screen_h / 2.0, t / 2.0, screen_h / 2.0 + t}, // left
+        {W + t / 2.0,  screen_h / 2.0, t / 2.0, screen_h / 2.0 + t}, // right
     };
 
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 2; i++) {
         /* A ring has no ends, so it has no end walls: a window thrown off the
          * left of the first desktop must fly on and arrive at the right of the
          * last, not bounce. The floor and ceiling stay whatever happens. */
-        if (world->wrap && i < 2) {
+        if (world->wrap) {
             eng->walls[i] = b2_nullBodyId;
             continue;
         }
         b2BodyDef bd = b2DefaultBodyDef();
         bd.type = b2_staticBody;
-        bd.position = (b2Vec2){px2m(specs[i][0]), px2m(specs[i][1])};
+        bd.position = (b2Vec2){px2m(lr_specs[i][0]), px2m(lr_specs[i][1])};
         eng->walls[i] = b2CreateBody(eng->world, &bd);
 
         b2ShapeDef sd = b2DefaultShapeDef();
@@ -654,8 +664,45 @@ static void rebuild_walls(struct Engine *eng, PhysicsWorld *world, int screen_w,
         sd.material.friction = 0.35f;
         sd.enableHitEvents = true;       // hitting the floor counts as an impact
         sd.filter = filter_for_wall();
-        b2Polygon box = b2MakeBox(px2m(specs[i][2]), px2m(specs[i][3]));
+        b2Polygon box = b2MakeBox(px2m(lr_specs[i][2]), px2m(lr_specs[i][3]));
         b2CreatePolygonShape(eng->walls[i], &sd, &box);
+    }
+
+    // Per-desktop floors and ceilings
+    for (int i = 0; i < FWM_DESKTOPS; i++) {
+        double dW = screen_w; // desktop width is the global column width
+        double dX = i * screen_w;
+        double T = top;
+        double H = world->desktop_h[i] > 0 ? world->desktop_h[i] - bottom : screen_h - bottom;
+        if (H <= T) H = T + 100;
+
+        // Floor
+        b2BodyDef bd_f = b2DefaultBodyDef();
+        bd_f.type = b2_staticBody;
+        bd_f.position = (b2Vec2){px2m(dX + dW / 2.0), px2m(H + t / 2.0)};
+        eng->walls[2 + i] = b2CreateBody(eng->world, &bd_f);
+        b2ShapeDef sd_f = b2DefaultShapeDef();
+        sd_f.material.restitution = (float)world->restitution;
+        sd_f.material.friction = 0.35f;
+        sd_f.enableHitEvents = true;
+        sd_f.filter = filter_for_wall();
+        b2Polygon box_f = b2MakeBox(px2m(dW / 2.0), px2m(t / 2.0));
+        b2CreatePolygonShape(eng->walls[2 + i], &sd_f, &box_f);
+
+        // Ceiling
+        b2BodyDef bd_c = b2DefaultBodyDef();
+        bd_c.type = b2_staticBody;
+        bd_c.position = (b2Vec2){px2m(dX + dW / 2.0), px2m(T - t / 2.0)};
+        eng->walls[2 + FWM_DESKTOPS + i] = b2CreateBody(eng->world, &bd_c);
+        b2ShapeDef sd_c = b2DefaultShapeDef();
+        sd_c.material.restitution = (float)world->restitution;
+        sd_c.material.friction = 0.35f;
+        sd_c.enableHitEvents = true;
+        sd_c.filter = filter_for_wall();
+        b2Polygon box_c = b2MakeBox(px2m(dW / 2.0), px2m(t / 2.0));
+        b2CreatePolygonShape(eng->walls[2 + FWM_DESKTOPS + i], &sd_c, &box_c);
+
+        eng->wall_desk_h[i] = world->desktop_h[i];
     }
 
     eng->walls_built = true;
@@ -1190,7 +1237,9 @@ void physics_step(PhysicsWorld *world, int screen_width, int screen_height,
             // to Box2D so restitution can bounce them; clamping/zeroing here would
             // kill the bounce and make windows slide along the wall. On a real
             // escape, reflect (don't zero) so the window springs back into view.
-            double W = 10.0 * screen_width, H = (double)screen_height;
+            double W = 10.0 * screen_width;
+            int d = m->desktop_id;
+            double H = world->desktop_h[d] > 0 ? world->desktop_h[d] : screen_height;
             double max_x = W - m->width;  if (max_x < 0) max_x = 0;
             double max_y = H - m->height; if (max_y < 0) max_y = 0;
             double r = world->restitution;
