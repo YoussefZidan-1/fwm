@@ -698,6 +698,62 @@ void server_dispatch_action(FwmServer *server, const char *action) {
         int seam = 0;
         int desktop = resolve_desktop_ex(server, action + 5, &seam);
         if (desktop >= 0) server_goto_desktop(server, desktop, seam);
+    } else if (strcmp(action, "toggle_sun") == 0) {
+        server->config.sun.enabled = !server->config.sun.enabled;
+        server_sun_apply(server);
+        wlr_log(WLR_INFO, "sun %s", server->config.sun.enabled ? "up" : "off");
+    } else if (strcmp(action, "sun_mode") == 0) {
+        /* Taking hold of the sun means taking it off the clock — and where it
+         * is now is where the hand starts from, so grabbing it at four in the
+         * afternoon does not jump every shadow across the desktop. */
+        SunConfig *sc = &server->config.sun;
+        if (sc->mode == SUN_MODE_CLOCK) {
+            sc->mode      = SUN_MODE_MANUAL;
+            sc->azimuth   = server->sun_light.azimuth;
+            sc->elevation = server->sun_light.elevation;
+        } else {
+            sc->mode = SUN_MODE_CLOCK;
+        }
+        server_sun_apply(server);
+        wlr_log(WLR_INFO, "sun follows %s",
+                sc->mode == SUN_MODE_CLOCK ? "the clock" : "your hand");
+    } else if (strncmp(action, "sun_azimuth:", 12) == 0 ||
+               strncmp(action, "sun_elevation:", 14) == 0) {
+        /* "sun_azimuth:+15" turns the light a step clockwise, "-15" back; a
+         * bare number is where to put it outright. Moving the sun by hand
+         * means it is no longer following the clock — saying so with a second
+         * bind would be a bind nobody remembers to press. */
+        int azim = action[4] == 'a';
+        const char *arg = action + (azim ? 12 : 14);
+        int relative = (*arg == '+' || *arg == '-');
+        char *end;
+        double v = strtod(arg, &end);
+        if (end == arg) {
+            wlr_log(WLR_ERROR, "%s: expects a number, got \"%s\"", action, arg);
+        } else {
+            SunConfig *sc = &server->config.sun;
+            if (sc->mode == SUN_MODE_CLOCK) {
+                sc->mode      = SUN_MODE_MANUAL;
+                sc->azimuth   = server->sun_light.azimuth;
+                sc->elevation = server->sun_light.elevation;
+            }
+            double *knob = azim ? &sc->azimuth : &sc->elevation;
+            *knob = relative ? *knob + v : v;
+            if (azim) {
+                /* Keep it in a turn, so holding the bind down does not walk the
+                 * number off toward the end of a double. */
+                while (sc->azimuth >= 360.0) sc->azimuth -= 360.0;
+                while (sc->azimuth < 0.0)    sc->azimuth += 360.0;
+            } else {
+                /* Below the horizon is night, which is a legal place to put the
+                 * sun — it is how you turn the shadows off by hand. Straight
+                 * overhead is not: the shadow would be exactly under the window
+                 * and there would be nothing to see either way. */
+                if (sc->elevation < -1.0) sc->elevation = -1.0;
+                if (sc->elevation > 89.0) sc->elevation = 89.0;
+            }
+            server_sun_apply(server);
+        }
     } else if (strcmp(action, "toggle_wrap") == 0) {
         server->config.camera.wrap = !server->config.camera.wrap;
         wlr_log(WLR_INFO, "desktop strip is %s",

@@ -77,6 +77,15 @@ void server_sound_sync(FwmServer *server);
  * timer of its own while mass = "ram" — so the tick can call it unconditionally.
  * Called from the tick, so the menu, `fwmctl set` and a reload all land here. */
 void server_mass_sync(FwmServer *server);
+/* Move the sun, and the shadows with it. Called from the tick: in clock mode
+ * it re-reads the wall clock on a timer of its own, and in manual mode it
+ * notices that an action or `fwmctl set` moved the light. Either way the
+ * windows are only walked when the answer actually changed. */
+void server_sun_sync(FwmServer *server);
+/* Recompute the light NOW and push it at every window, whatever it was doing.
+ * The path a config reload and the sun_* actions take, so that turning [sun]
+ * on or off, or nudging it by a key, lands on screen in the same frame. */
+void server_sun_apply(FwmServer *server);
 void server_reclaim_memory(void);
 void server_dispatch_action(FwmServer *server, const char *action);
 FwmView *server_find_view(FwmServer *server, uint32_t id);

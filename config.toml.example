@@ -165,6 +165,69 @@ color_source     = "config"
 # 0..1: how far the islands move toward the wallpaper hue. 0 = untinted
 # (accent only), 1 = as far as the palette allows.
 tint_strength    = 0.4
+# How much of itself an unfocused window keeps, and how long it takes to get
+# there. The window you are working in comes forward without the border having
+# to shout about it. 1.0 is the old behaviour — every window at full strength —
+# and dim_ms 0 makes the change a cut instead of a fade.
+inactive_opacity = 0.92
+dim_ms           = 140.0
+
+# ── the sun ─────────────────────────────────────────────────────────────
+# There is one light over the desktop and every window casts a shadow from it.
+# A window floats over the wallpaper parallel to it, so its shadow is the same
+# rectangle moved — which is why this section has no shape in it, only a
+# direction and a distance. Nothing is drawn where the window is standing, so a
+# terminal at 80% opacity shows the wallpaper through itself and not its own
+# shadow.
+#
+# Two ways to say where the light is:
+#
+#   "manual"  azimuth/elevation are exactly what is written here, and the
+#             sun_azimuth: / sun_elevation: actions move them by hand.
+#   "clock"   the light comes up at `sunrise`, crosses to `dusk_azimuth` by
+#             `sunset`, and is under the horizon in between. At night there is
+#             no shadow at all — nothing is darkened, the shadows simply go
+#             out, which is what a room with no sun in it looks like. Dusk is
+#             a fade, not a switch: the shadows lengthen, thin out, and are
+#             gone.
+#
+# Angles: azimuth is degrees clockwise from the top of the screen, so 0 is a
+# light above the desktop that drops every shadow straight down, and 90 lights
+# it from the right. Elevation is degrees above the horizon — high sun, short
+# shadow; at or below 0 it is night, which is also how you turn the shadows off
+# by hand.
+#
+# `length` is the length of a shadow at 45 degrees, so it reads as plain pixels
+# and the low sun stretches it from there, up to `length_max`. `blur` is the
+# penumbra; 0 gives a hard-edged cast shadow, which suits the sharp corners the
+# rest of fwm is drawn with. A blur much wider than the shadow is long has
+# little left to show, since the part under the window is not drawn.
+#
+# Live: every key here is a `fwmctl set sun.*`, and the actions are `toggle_sun`,
+# `sun_mode` (hand or clock), `sun_azimuth:+15` and `sun_elevation:-5`. Moving
+# the sun by hand takes it off the clock where it stands, so grabbing it at
+# four in the afternoon does not jump every shadow across the desktop.
+[sun]
+enabled        = true
+mode           = "clock"
+# clock
+sunrise        = 7.0
+sunset         = 21.0
+dawn_azimuth   = -70.0
+dusk_azimuth   = 70.0
+noon_elevation = 65.0
+# manual — also where the clock leaves the sun when you take hold of it
+#azimuth       = 20.0
+#elevation     = 55.0
+# the shadow itself
+length         = 22.0
+length_max     = 90.0
+opacity        = 0.5
+blur           = 10.0
+color          = "#000000"
+# Draw the shadow in the part of itself the window is standing on. Off, because
+# a window is not necessarily opaque; on, it is one fewer surface to composite.
+#under_window  = true
 
 # Hyprland-style tiling: gaps and the tile-glide animation.
 # anim_speed is 1/s (12 ~ 250ms glide); 0 disables the animation.
@@ -574,6 +637,18 @@ tap = true
 #"c"   = "calm_all"
 #"r"   = "spin_all"
 #"n"   = "toggle_nocollide_all"
+#
+# The sun is the other thing worth a sticky mode: pointing a light is aiming,
+# and aiming is never one keypress.
+#[mode.sun]
+#enter   = "super+shift+s"
+#sticky  = true
+#"Left"  = "sun_azimuth:-15"
+#"Right" = "sun_azimuth:+15"
+#"Up"    = "sun_elevation:+5"
+#"Down"  = "sun_elevation:-5"
+#"c"     = "sun_mode"          # back on the clock
+#"0"     = "toggle_sun"
 #
 #[mode.resize]
 #enter  = "super+shift+e"

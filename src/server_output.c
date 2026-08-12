@@ -245,6 +245,7 @@ static void server_animate(FwmServer *server) {
                 if (!fv->open_cover) {   /* no cover: just show the window */
                     fv->open_anim = 0;
                     wlr_scene_node_set_enabled(&fv->scene_tree->node, true);
+                    view_dim_apply(fv);
                     continue;
                 }
                 wlr_scene_node_raise_to_top(&fv->open_cover->node);
@@ -275,6 +276,11 @@ static void server_animate(FwmServer *server) {
                 fv->open_cover = NULL;
                 fv->open_anim = 0;
                 server_place_node(server, &fv->scene_tree->node, fv->x, fv->y);
+                /* The dim held off while the window was opening (view_dim_apply
+                 * refuses to blend a client's first frames). If it arrived at
+                 * its target meanwhile, this is the only moment left to put it
+                 * on screen. */
+                view_dim_apply(fv);
             }
         }
 

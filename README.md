@@ -179,6 +179,8 @@ rate your hand was turning it.
 
 ### Visuals
 - **Focus borders** — accent color on the focused window, muted on the rest; colors and width in the config.
+- **A sun, and shadows that follow it** — one light over the whole desktop, and every window casts from it. `mode = "clock"` puts it on the wall clock: it comes up in the morning, crosses the sky, and at night there are simply no shadows — nothing is darkened, the light has gone. `mode = "manual"` leaves it where you point it, and `sun_azimuth:+15` / `sun_elevation:-5` are keys that move it (taking hold of it lifts it off the clock where it stands). A window floating over the wallpaper is lit from far away, so its shadow is the same rectangle moved: `length` is what it measures at 45°, a low sun stretches it, and `blur` from 0 upward goes from a hard-edged cast shadow to a soft one. Nothing is drawn where the window is standing, so a terminal at 80% opacity shows the wallpaper through itself rather than its own shadow. See [`[sun]`](docs/configuration.md#sun).
+- **Unfocused windows fall back** — `inactive_opacity` dims everything that is not the window you are working in, so focus reads without the border having to shout. Off with `1.0`.
 - **Window fade-in** — new windows ease in over ~260 ms (configurable, 0 disables).
 - **Impact effects** — windows squash and stretch where they hit; optional camera shake on hard landings.
 - **Wobbly windows** — a dragged window goes soft and bends, the way KDE's do. See below.
@@ -780,6 +782,24 @@ icon_theme   = ""          # launcher icons; "" = auto (gtk settings, hicolor)
 #                 its contrast whatever the image looks like.
 color_source  = "config"
 tint_strength = 0.4        # 0..1: how far the islands move toward that hue
+inactive_opacity = 0.92    # unfocused windows fall back a step; 1.0 = off
+dim_ms           = 140.0   # how long that takes; 0 = a cut
+
+# One light over the desktop; every window casts a shadow from it. On the clock
+# it rises, crosses, and sets — after which there are simply no shadows. By hand
+# it stays where you point it, and the sun_* actions move it.
+[sun]
+enabled        = true
+mode           = "clock"   # or "manual"
+sunrise        = 7.0       # clock: local hours
+sunset         = 21.0
+noon_elevation = 65.0      # how high it gets at midday, degrees
+#azimuth       = 20.0      # manual: degrees clockwise from the top of the screen
+#elevation     = 55.0      # manual: degrees above the horizon; <= 0 is night
+length         = 22.0      # shadow length at 45 degrees, px
+length_max     = 90.0      # however low the sun gets
+opacity        = 0.5
+blur           = 10.0      # penumbra px; 0 = a hard-edged cast shadow
 
 # Where the built-in wallpaper picker (super+shift+p) looks for images and
 # videos (a video's icon is a random frame). The choice is remembered in
@@ -874,6 +894,8 @@ fit  = "pan"
 | `toggle_split` | flip split orientation of the focused tile |
 | `toggle_tray` | hide/show the tray — it stops reserving its strip, so windows fill the top |
 | `pin_window`, `toggle_nocollide`, `calm_all`, `cycle_gravity` | physics toggles |
+| `toggle_sun` / `sun_mode` | shadows on or off / the sun follows the clock or your hand, taking hold of it where it stands |
+| `sun_azimuth:<deg>` / `sun_elevation:<deg>` | move the light: `+15` / `-15` steps, a bare number points it there. Below the horizon is night |
 | `spin_window` / `spin_all` | **experimental:** set the focused window (or every window) spinning, picture and collision box alike; press again to settle |
 | `toggle_nocollide_all` / `toggle_tiling_all` / `toggle_floating_all` | same, but every window / every desktop at once |
 | `group_toggle`, `group_add`, `group_next`, `group_prev` | tab-stacks: make a stack, join it, cycle tabs |

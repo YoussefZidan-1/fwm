@@ -528,10 +528,11 @@ static void test_every_dispatchable_action_binds(void) {
         "terminal", "launcher", "expo", "toggle_tray", "toggle_wrap",
         "modes_menu", "show_hints", "show_errors", "reload_config",
         "wallpaper_picker", "screenshot", "screenshot_region",
-        "output_off", "outputs_on",
+        "output_off", "outputs_on", "toggle_sun", "sun_mode",
         "toggle_internal_output", "EXIT",
         "view:3", "move_to:7", "move_to_view:next", "move_camera:-50",
         "tile_focus:l", "tile_move:d", "spawn:true", "mode:default",
+        "sun_azimuth:+15", "sun_elevation:-5",
         NULL,
     };
 

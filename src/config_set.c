@@ -57,6 +57,26 @@ static const ConfigOption config_option_table[] = {
     { "decor.tray_yield",               CFG_OPT_INT,    offsetof(FwmConfig, decor.tray_yield),                0.0,     1.0,    "hide the strip on a screen where a bar reserved the top" },
     { "decor.launcher_opacity",         CFG_OPT_DOUBLE, offsetof(FwmConfig, decor.launcher_opacity),          0.0,     1.0,    "launcher island fill alpha" },
     { "decor.tint_strength",            CFG_OPT_DOUBLE, offsetof(FwmConfig, decor.tint_strength),             0.0,     1.0,    "island tint toward the wallpaper hue" },
+    { "decor.inactive_opacity",         CFG_OPT_DOUBLE, offsetof(FwmConfig, decor.inactive_opacity),          0.0,     1.0,    "how much of itself an unfocused window keeps" },
+    { "decor.dim_ms",                   CFG_OPT_DOUBLE, offsetof(FwmConfig, decor.dim_ms),                    0.0, 10000.0,    "how long the unfocused dim takes, ms" },
+
+    /* Numeric like cava.mode and physics.mass, and for the same reason — the
+     * table is typed. 0 = manual, 1 = clock. */
+    { "sun.enabled",                    CFG_OPT_INT,    offsetof(FwmConfig, sun.enabled),                     0.0,     1.0,    "1 = windows cast shadows" },
+    { "sun.mode",                       CFG_OPT_INT,    offsetof(FwmConfig, sun.mode),                        0.0,     1.0,    "0 the sun is where you put it, 1 it follows the clock" },
+    { "sun.azimuth",                    CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.azimuth),                  -360.0,   360.0,    "where the light comes from, deg clockwise from the top" },
+    { "sun.elevation",                  CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.elevation),                 -90.0,    89.0,    "how high it is, deg; at or below 0 it is night" },
+    { "sun.sunrise",                    CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.sunrise),                     0.0,    24.0,    "clock mode: when the light comes up" },
+    { "sun.sunset",                     CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.sunset),                      0.0,    24.0,    "clock mode: when it goes down" },
+    { "sun.dawn_azimuth",               CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.dawn_azimuth),             -360.0,   360.0,    "clock mode: azimuth at sunrise" },
+    { "sun.dusk_azimuth",               CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.dusk_azimuth),             -360.0,   360.0,    "clock mode: azimuth at sunset" },
+    { "sun.noon_elevation",             CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.noon_elevation),              0.0,    89.0,    "clock mode: how high it gets at midday" },
+    { "sun.length",                     CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.length),                      0.0,  1000.0,    "shadow length at 45 deg, px" },
+    { "sun.length_max",                 CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.length_max),                  0.0,  1000.0,    "longest a shadow may get, px" },
+    { "sun.opacity",                    CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.opacity),                     0.0,     1.0,    "how dark a shadow is" },
+    { "sun.blur",                       CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.blur),                        0.0,    64.0,    "penumbra, px; 0 = a hard-edged shadow" },
+    { "sun.under_window",               CFG_OPT_INT,    offsetof(FwmConfig, sun.under_window),                0.0,     1.0,    "1 = draw the shadow under the window too" },
+    { "sun.color",                      CFG_OPT_COLOR,  offsetof(FwmConfig, sun.color),                       0.0,     0.0,    "shadow colour" },
 
     { "effects.camera_shake",           CFG_OPT_DOUBLE, offsetof(FwmConfig, effects.camera_shake),            0.0,     4.0,    "impact shake; 0 disables" },
     { "effects.squash",                 CFG_OPT_DOUBLE, offsetof(FwmConfig, effects.squash),                  0.0,     4.0,    "impact squash & stretch; 0 disables" },

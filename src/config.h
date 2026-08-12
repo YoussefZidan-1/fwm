@@ -207,12 +207,75 @@ typedef struct {
     int    color_source;     /* COLOR_SOURCE_* — where the UI palette comes from */
     double tint_strength;    /* 0..1: how far the island fill moves toward the
                               * wallpaper hue when color_source = wallpaper */
+    /* How much of itself an unfocused window keeps. 1.0 = the old behaviour,
+     * every window drawn at full strength; below that the windows you are not
+     * working in fall back a step and the focused one comes forward without
+     * the border having to shout. Applies to the window's own content, so it
+     * is the client's pixels that dim, not fwm's chrome. */
+    double inactive_opacity;
+    double dim_ms;           /* how long that dim takes to fade in/out */
 } DecorConfig;
 
 enum {
     COLOR_SOURCE_CONFIG    = 0, /* col_active/col_inactive + built-in dark scheme */
     COLOR_SOURCE_WALLPAPER = 1, /* tint + accent derived from the wallpaper image */
 };
+
+/* ── the sun ─────────────────────────────────────────────────────────────
+ *
+ * There is one light over the desktop and every window casts a shadow from it.
+ * A window floating over the wallpaper is lit by a distant source, so its
+ * shadow is the same rectangle translated — which is why this needs no shape,
+ * only a direction and a distance.
+ *
+ * Two ways to say where the light is:
+ *
+ *   "manual"  azimuth/elevation are exactly what is written here, and the
+ *             sun_* actions move them by hand.
+ *   "clock"   the sun rises at `sunrise`, crosses to `dusk_azimuth` by
+ *             `sunset`, and is under the horizon between them — at night
+ *             there is no shadow at all. Nothing is darkened; the shadows
+ *             simply go out, which is what a room with no sun in it looks
+ *             like.
+ *
+ * Angles: azimuth is degrees clockwise from the top of the screen, so 0 puts
+ * the light above the desktop and drops every shadow straight down, and +90
+ * lights it from the right. Elevation is degrees above the horizon: high sun,
+ * short shadow; at or below 0 it is night.
+ */
+enum { SUN_MODE_MANUAL = 0, SUN_MODE_CLOCK = 1 };
+
+typedef struct {
+    int    enabled;        /* 0 = no shadows, and none of this runs */
+    int    mode;           /* SUN_MODE_* */
+
+    /* manual, and the live position in clock mode */
+    double azimuth;        /* deg clockwise from the top of the screen */
+    double elevation;      /* deg above the horizon; <= 0 is night */
+
+    /* clock */
+    double sunrise, sunset;          /* local hours, 0..24 */
+    double dawn_azimuth, dusk_azimuth; /* where the light comes from at each end */
+    double noon_elevation;           /* how high it gets at the middle of the day */
+
+    /* the shadow itself */
+    double length;         /* px cast at 45 degrees — the reference length */
+    double length_max;     /* px it may never exceed, however low the sun */
+    double opacity;        /* 0..1 at full strength */
+    double blur;           /* px of penumbra; 0 = a hard-edged cast shadow */
+    /* RGBA as parse_hex_color leaves it: premultiplied, four floats, the same
+     * shape as every other colour in the file so `fwmctl set sun.color` can
+     * write it through the same typed path. The alpha is NOT a second opacity
+     * — `opacity` is the one knob for how dark a shadow is — so what is drawn
+     * is this colour undone back to straight RGB. */
+    float  color[4];
+    /* Whether the shadow is drawn in the part of itself the window is standing
+     * on. Off, because a window is not necessarily opaque: a terminal at 80%
+     * would otherwise have its own shadow showing through it as a dark panel
+     * rather than the wallpaper. The part you can actually see — everything
+     * the window is not covering — is unaffected either way. */
+    int    under_window;
+} SunConfig;
 
 /* ── input ───────────────────────────────────────────────────────────── */
 
@@ -823,6 +886,7 @@ typedef struct {
     TilingConfig    tiling;
     CameraConfig    camera;
     DecorConfig     decor;
+    SunConfig       sun;
     InputConfig     input;
     FocusConfig     focus;
     EffectsConfig   effects;

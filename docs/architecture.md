@@ -88,6 +88,7 @@ price to pay for turning a feature *off*.
 | State & IPC | `session.c`, `ipc.c`, `ipc_events.c`, `server_config.c` (paths, reload, remembered choices) |
 | Wallpaper | `wallpaper.c`, `video.c` |
 | Audio | `audio.c` (capture), `cava.c` (FFT + bars), `sound.c` (mixer), `wav.c` |
+| Light | `sun.c` (where the sun is — arithmetic, no scene), `shadow.c` (what it draws: one shared nine-patch image, nine slices per window) |
 | Extras | `ram.c` (memory footprints), `theme.c` (palette), `lock.c`, `layer.c`, `foreign.c` |
 | UI | `ui/*.c` — see below |
 
@@ -157,6 +158,7 @@ exists because its subject cannot be checked by hand in a running session.
 | `test_ipc_events` | the event name/bit vocabulary |
 | `test_wobble` | the drag lattice, which only runs while a button is held |
 | `test_gestures` | what a swipe means, without a touchpad |
+| `test_sun` | where the sun is at each hour, and what dusk does — half of it only happens at sunset |
 | `test_ram` | `/proc` parsing and the process-tree sum |
 | `test_wav` | the WAV reader, fed truncated and lying headers |
 

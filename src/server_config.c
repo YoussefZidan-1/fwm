@@ -376,6 +376,11 @@ void server_apply_config(FwmServer *server, int rebuild_wallpaper) {
                                     : theme_get()->border_inactive);
     }
 
+    /* The sun: a new [sun] may have turned the shadows on, off, or moved them,
+     * and this is also what gives every window its nodes the first time it is
+     * switched on at runtime. */
+    server_sun_apply(server);
+
     /* Wallpaper layers are baked at load time, so rebuild them wholesale. */
     if (rebuild_wallpaper) {
         FwmOutput *out;

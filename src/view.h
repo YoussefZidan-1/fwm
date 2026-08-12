@@ -91,6 +91,20 @@ typedef struct FwmView {
      * so they move with the window for free. NULL when borders are disabled. */
     struct wlr_scene_rect *border[4];
 
+    /* The shadow this window casts from wherever the sun is, as nodes at the
+     * bottom of the same tree and for the same reason. NULL when [sun] is off
+     * at map time, or when the nodes could not be created. */
+    struct FwmShadow *shadow;
+
+    /* Unfocused windows fall back a step ([decor] inactive_opacity). `dim` is
+     * what is on screen and `dim_target` what focus says it should be; the
+     * tick walks one to the other so that clicking between windows is a fade
+     * rather than a flick.
+     *
+     * Zero-initialised to 0, which is not a valid opacity — view_map sets both
+     * to the right value once the window knows whether it has the focus. */
+    double dim, dim_target;
+
     /* Open animation.
      *
      * The client's surface is NEVER blended at partial opacity: ramping it was
@@ -357,6 +371,25 @@ bool view_is_spinning(FwmView *view);
 void view_set_border_color(FwmView *view, const float color[4]);
 void view_set_border_enabled(FwmView *view, int enabled);
 
-/* Set opacity (0..1) on every surface buffer of the view (fade-in). */
+/* ── the unfocused dim ────────────────────────────────────────────────────
+ *
+ * view_dim_set says where the dim should end up — focus moved, or the config
+ * was reloaded — and view_dim_tick walks it there, returning true while it is
+ * still on the way so the compositor knows to keep the frames coming. The
+ * apply is separate because a client that adds a subsurface hands us a scene
+ * buffer at full strength that has to be brought down to the rest.
+ *
+ * suspend/restore put the window back to full strength for the length of a
+ * snapshot: what a picture of the window is taken FOR (the spin, expo's cards)
+ * is the window, not the state of the keyboard focus while it was taken. */
+void view_dim_set(FwmView *view, double target, bool immediate);
+bool view_dim_tick(FwmView *view, double dt);
+void view_dim_apply(FwmView *view);
+void view_dim_suspend(FwmView *view);
+void view_dim_restore(FwmView *view);
+
+/* Put the shadow where the light says, at the window's current size. Called on
+ * every geometry change and whenever the sun has moved far enough to matter. */
+void view_shadow_update(FwmView *view);
 
 #endif /* FWM_VIEW_H */

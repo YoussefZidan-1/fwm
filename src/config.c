@@ -84,12 +84,14 @@ int action_is_known(const char *a) {
         "calm_all", "fake_fullscreen", "real_fullscreen",
         "launcher", "toggle_tray", "spin_window", "spin_all", "terminal",
         "expo", "toggle_wrap", "modes_menu", "stats_menu",
+        "toggle_sun", "sun_mode",
         "screenshot", "screenshot_region",
         "output_off", "toggle_internal_output", "outputs_on", NULL
     };
     static const char *prefixes[] = {
         "spawn:", "view:", "move_camera:", "tile_focus:", "tile_move:",
-        "move_to:", "move_to_view:", "global:", FWM_MODE_ACTION, NULL
+        "move_to:", "move_to_view:", "global:",
+        "sun_azimuth:", "sun_elevation:", FWM_MODE_ACTION, NULL
     };
     for (int i = 0; exact[i]; i++)
         if (strcmp(a, exact[i]) == 0) return 1;
@@ -375,6 +377,8 @@ static void load_decor(toml_table_t *root, FwmConfig *cfg) {
     dc->icon_theme[0] = '\0';
     dc->color_source = COLOR_SOURCE_CONFIG;
     dc->tint_strength = 0.4;
+    dc->inactive_opacity = 0.92;
+    dc->dim_ms = 140.0;
 
     toml_table_t *tbl = toml_table_in(root, "decor");
     if (!tbl) return;
@@ -419,6 +423,87 @@ static void load_decor(toml_table_t *root, FwmConfig *cfg) {
     if (dc->tray_opacity > 1.0) dc->tray_opacity = 1.0;
     if (dc->launcher_opacity < 0.0) dc->launcher_opacity = 0.0;
     if (dc->launcher_opacity > 1.0) dc->launcher_opacity = 1.0;
+    LOAD_DOUBLE(tbl, "inactive_opacity", dc->inactive_opacity);
+    if (dc->inactive_opacity < 0.0) dc->inactive_opacity = 0.0;
+    if (dc->inactive_opacity > 1.0) dc->inactive_opacity = 1.0;
+    LOAD_DOUBLE(tbl, "dim_ms", dc->dim_ms);
+    if (dc->dim_ms < 0.0) dc->dim_ms = 0.0;
+}
+
+/* ── sun section ─────────────────────────────────────────────────────── */
+
+static void load_sun(toml_table_t *root, FwmConfig *cfg) {
+    SunConfig *sc = &cfg->sun;
+    sc->enabled        = 1;
+    sc->mode           = SUN_MODE_CLOCK;
+    sc->azimuth        = 20.0;
+    sc->elevation      = 55.0;
+    sc->sunrise        = 7.0;
+    sc->sunset         = 21.0;
+    sc->dawn_azimuth   = -70.0;
+    sc->dusk_azimuth   = 70.0;
+    sc->noon_elevation = 65.0;
+    sc->length         = 22.0;
+    sc->length_max     = 90.0;
+    sc->opacity        = 0.5;
+    sc->blur           = 10.0;
+    sc->under_window   = 0;
+    parse_hex_color("#000000", sc->color);
+
+    /* `root` is NULL on the no-config and syntax-error paths, which still have
+     * to come out with a sun in the sky — the defaults above are the whole
+     * point of getting called then. */
+    toml_table_t *tbl = root ? toml_table_in(root, "sun") : NULL;
+    if (!tbl) return;
+
+    toml_datum_t d = toml_bool_in(tbl, "enabled");
+    if (d.ok) sc->enabled = d.u.b ? 1 : 0;
+
+    d = toml_string_in(tbl, "mode");
+    if (d.ok) {
+        if (strcmp(d.u.s, "clock") == 0)       sc->mode = SUN_MODE_CLOCK;
+        else if (strcmp(d.u.s, "manual") == 0) sc->mode = SUN_MODE_MANUAL;
+        else config_report_error(cfg, "[sun] mode: unknown value \"%s\" "
+                                      "(use \"manual\" or \"clock\")", d.u.s);
+        free(d.u.s);
+    }
+
+    LOAD_DOUBLE(tbl, "azimuth",        sc->azimuth);
+    LOAD_DOUBLE(tbl, "elevation",      sc->elevation);
+    LOAD_DOUBLE(tbl, "sunrise",        sc->sunrise);
+    LOAD_DOUBLE(tbl, "sunset",         sc->sunset);
+    LOAD_DOUBLE(tbl, "dawn_azimuth",   sc->dawn_azimuth);
+    LOAD_DOUBLE(tbl, "dusk_azimuth",   sc->dusk_azimuth);
+    LOAD_DOUBLE(tbl, "noon_elevation", sc->noon_elevation);
+    LOAD_DOUBLE(tbl, "length",         sc->length);
+    LOAD_DOUBLE(tbl, "length_max",     sc->length_max);
+    LOAD_DOUBLE(tbl, "opacity",        sc->opacity);
+    LOAD_DOUBLE(tbl, "blur",           sc->blur);
+
+    toml_datum_t uw = toml_bool_in(tbl, "under_window");
+    if (uw.ok) sc->under_window = uw.u.b ? 1 : 0;
+
+    d = toml_string_in(tbl, "color");
+    if (d.ok) {
+        if (!parse_hex_color(d.u.s, sc->color))
+            config_report_error(cfg, "[sun] color: \"%s\" is not #RRGGBB[AA]", d.u.s);
+        free(d.u.s);
+    }
+
+    /* A day that ends before it starts has no daylight in it at all, which is
+     * a config someone wrote by accident rather than a night they wanted. */
+    if (sc->mode == SUN_MODE_CLOCK && sc->sunset <= sc->sunrise)
+        config_report_error(cfg, "[sun] sunset (%.2f) is not after sunrise (%.2f): "
+                                 "there is no daylight, so nothing casts a shadow",
+                            sc->sunset, sc->sunrise);
+
+    if (sc->opacity < 0.0)    sc->opacity = 0.0;
+    if (sc->opacity > 1.0)    sc->opacity = 1.0;
+    if (sc->blur < 0.0)       sc->blur = 0.0;
+    if (sc->length < 0.0)     sc->length = 0.0;
+    if (sc->length_max < 0.0) sc->length_max = 0.0;
+    if (sc->noon_elevation > 89.0) sc->noon_elevation = 89.0;
+    if (sc->elevation > 89.0)      sc->elevation = 89.0;
 }
 
 /* ── input section ───────────────────────────────────────────────────── */
@@ -1274,6 +1359,8 @@ void config_load(FwmConfig *cfg, const char *path) {
     cfg->decor.icon_theme[0] = '\0';
     cfg->decor.color_source = COLOR_SOURCE_CONFIG;
     cfg->decor.tint_strength = 0.4;
+    cfg->decor.inactive_opacity = 0.92;
+    cfg->decor.dim_ms = 140.0;
     cfg->keys            = NULL;
     cfg->key_count       = 0;
     cfg->mode_count      = 0;
@@ -1294,6 +1381,7 @@ void config_load(FwmConfig *cfg, const char *path) {
     load_sound(NULL, cfg);
     load_stats(NULL, cfg);
     load_mouse(NULL, cfg);   /* the built-in drag verbs, for every early-out below */
+    load_sun(NULL, cfg);     /* likewise: a sun in the sky before anything is read */
 
     FILE *f = fopen(path, "r");
     if (!f) {
@@ -1322,6 +1410,7 @@ void config_load(FwmConfig *cfg, const char *path) {
     load_tiling(root, &cfg->tiling);
     load_camera(root, &cfg->camera);
     load_decor(root, cfg);
+    load_sun(root, cfg);
     load_input(root, cfg);
     load_focus(root, &cfg->focus, cfg);
     load_effects(root, &cfg->effects);

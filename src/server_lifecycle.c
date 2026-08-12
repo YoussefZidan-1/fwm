@@ -18,6 +18,7 @@
 #include "server.h"
 #include "view.h"
 #include "rotate.h"
+#include "shadow.h"
 #include "physics.h"
 #include "theme.h"
 #include "layer.h"
@@ -608,6 +609,10 @@ void server_destroy(FwmServer *server) {
     /* The rotation shaders belong to the renderer's GL context; they have to go
      * while that context still exists. */
     rotate_shutdown(server->wlr_renderer);
+
+    /* The one image every window's shadow was cut from. The windows are gone
+     * by now, so nothing is left holding a lock on it. */
+    shadow_atlas_finish();
 
     if (server->video_timer) {
         wl_event_source_remove(server->video_timer);

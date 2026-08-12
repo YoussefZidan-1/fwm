@@ -108,6 +108,10 @@ action is reported when the config loads rather than doing nothing when pressed.
 | Action | Does |
 |---|---|
 | `cycle_gravity` | walk `[physics] gravity_steps` |
+| `toggle_sun` | shadows on or off outright |
+| `sun_mode` | swap the clock for your hand and back; taking hold leaves the sun where it stood |
+| `sun_azimuth:<deg>` | turn the light. `+15` / `-15` step, a bare number points it there |
+| `sun_elevation:<deg>` | raise or lower it, same two forms. Below the horizon is night |
 
 ### Interface
 

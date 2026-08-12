@@ -107,6 +107,8 @@ set(SOURCES
     src/config_binds.c
     src/config_set.c
     src/theme.c
+    src/sun.c
+    src/shadow.c
     src/wallpaper.c
     src/video.c
     src/audio.c
@@ -339,6 +341,14 @@ if(FWM_TESTS)
     target_include_directories(test_gestures PRIVATE src tests ${XKBCOMMON_INCLUDE_DIRS})
     target_link_libraries(test_gestures PRIVATE m)
 
+    # Where the sun is, which is a question about the hour of the day: half of
+    # what it does only happens at dusk, and none of it can be watched on
+    # demand. sun.c reaches no further than config.h's types, so the day is
+    # walked here instead of waited for.
+    add_executable(test_sun tests/test_sun.c src/sun.c)
+    target_include_directories(test_sun PRIVATE src tests ${XKBCOMMON_INCLUDE_DIRS})
+    target_link_libraries(test_sun PRIVATE m)
+
     # Application memory footprints come out of /proc, which cannot be faked
     # and is easy to misparse. The suite forks its own child to check the tree
     # walk, so it needs nothing of the machine but a working /proc.
@@ -373,6 +383,7 @@ if(FWM_TESTS)
     add_test(NAME wobble     COMMAND test_wobble)
     add_test(NAME droplet    COMMAND test_droplet)
     add_test(NAME gestures   COMMAND test_gestures)
+    add_test(NAME sun        COMMAND test_sun)
     add_test(NAME ram        COMMAND test_ram)
     add_test(NAME wav        COMMAND test_wav)
     add_test(NAME stats      COMMAND test_stats)

@@ -33,6 +33,7 @@
 #include "physics.h"
 #include "bsp.h"
 #include "config.h"
+#include "sun.h"
 #include "gestures.h"
 /* For TrayStrip: each monitor owns the geometry of the status strip drawn on
  * it, so a click is answered by the strip it landed on. */
@@ -350,6 +351,19 @@ typedef struct FwmServer {
     struct wl_list groups; /* FwmGroup tab-stacks */
     struct wl_list ghosts; /* FwmGhost close-animation snapshots */ /* FwmView list */
     struct FwmView *focused_view;
+
+    /* Where the light is this frame, and when the clock was last asked. One
+     * light for the whole compositor: every window's shadow is cut from it, so
+     * they all agree about where the sun is without any of them working it out
+     * for itself.
+     *
+     * In clock mode the position is recomputed on a timer rather than every
+     * tick — a day of sun moves about four thousandths of a degree per frame,
+     * and trigonometry sixty times a second to find that out is the definition
+     * of work nobody asked for. */
+    FwmSunLight sun_light;
+    double sun_checked_at;
+
     /* An override-redirect X11 surface currently holding the keyboard. It has
      * no view — that is what unmanaged means — so it cannot be focused_view,
      * yet it is where the keys are going: a Wine game's own fullscreen window,

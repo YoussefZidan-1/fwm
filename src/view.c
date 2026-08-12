@@ -13,6 +13,7 @@
  */
 
 #include "view_internal.h"
+#include "shadow.h"
 #include "rotate.h"
 #include "snapshot.h"
 #include "expo.h"
@@ -66,6 +67,10 @@ static void handle_commit(struct wl_listener *listener, void *data) {
 
     // Track the actual committed surface size so borders hug the real window.
     view_update_border_geometry(view);
+    view_shadow_update(view);
+    /* A client that has just added a subsurface handed us a scene buffer at
+     * full strength; bring it down to whatever the rest of the window is at. */
+    view_dim_apply(view);
 
     /* A tiled client that commits a size other than the one it was given
      * shifts where its neighbours belong — terminals do this on every resize,
@@ -291,6 +296,100 @@ void view_set_border_enabled(FwmView *view, int enabled) {
     for (int i = 0; i < 4; i++) {
         wlr_scene_node_set_enabled(&view->border[i]->node, enabled);
     }
+}
+
+/* ── the shadow ───────────────────────────────────────────────────────── */
+
+void view_shadow_update(FwmView *view) {
+    if (!view->shadow) return;
+
+    /* A window filling the screen has nothing to cast onto — and a real
+     * fullscreen client is entitled to every pixel of it. */
+    PhysicsBody *body = physics_find_body(&view->server->physics, view->id);
+    if (body && body->fullscreen) {
+        shadow_set_enabled(view->shadow, false);
+        return;
+    }
+    /* The effects that replace the window with a picture of itself (the spin,
+     * the wobble, the squash) draw it somewhere other than its own box, and a
+     * shadow left behind at the old one would be a rectangle the window is no
+     * longer standing in. They put it out for their duration. */
+    if (view->spin_buf || view->jelly || view->squash_buf) {
+        shadow_set_enabled(view->shadow, false);
+        return;
+    }
+
+    int w, h;
+    view_border_box(view, &w, &h);
+    shadow_update(view->shadow, w, h, &view->server->config.sun,
+                  &view->server->sun_light);
+}
+
+/* ── the unfocused dim ────────────────────────────────────────────────── */
+
+struct dim_ctx {
+    FwmView *view;
+    float    opacity;
+};
+
+static void dim_iter(struct wlr_scene_buffer *buffer, int sx, int sy, void *data) {
+    (void)sx; (void)sy;
+    struct dim_ctx *ctx = data;
+    /* The shadow is in this tree too, and its strength is the sun's business:
+     * fading a window's shadow along with the window would make the light
+     * follow the keyboard around. */
+    if (shadow_owns_buffer(ctx->view->shadow, buffer)) return;
+    wlr_scene_buffer_set_opacity(buffer, ctx->opacity);
+}
+
+void view_dim_apply(FwmView *view) {
+    if (!view->scene_tree) return;
+    /* While the window is opening it is covered by our own fade rect and must
+     * stay fully opaque underneath — blending a client's first frames is
+     * exactly what the open animation exists to avoid. The dim lands when the
+     * animation lets go. */
+    if (view->open_anim) return;
+    struct dim_ctx ctx = { .view = view, .opacity = (float)view->dim };
+    wlr_scene_node_for_each_buffer(&view->scene_tree->node, dim_iter, &ctx);
+}
+
+void view_dim_set(FwmView *view, double target, bool immediate) {
+    if (target < 0.0) target = 0.0;
+    if (target > 1.0) target = 1.0;
+    view->dim_target = target;
+    if (immediate) {
+        view->dim = target;
+        view_dim_apply(view);
+    }
+}
+
+bool view_dim_tick(FwmView *view, double dt) {
+    if (view->dim == view->dim_target) return false;
+
+    double ms = view->server->config.decor.dim_ms;
+    if (ms <= 0.0) {
+        view->dim = view->dim_target;
+    } else {
+        /* Framerate-independent exponential chase, the same form the tile
+         * glide and the camera use. `ms` reads as the time to cover most of
+         * the distance, not all of it, so the tail is cut off below. */
+        double k = 1.0 - exp(-dt * 3000.0 / ms);
+        view->dim += (view->dim_target - view->dim) * k;
+        if (fabs(view->dim_target - view->dim) < 0.004) view->dim = view->dim_target;
+    }
+    view_dim_apply(view);
+    return true;
+}
+
+void view_dim_suspend(FwmView *view) {
+    if (!view->scene_tree || view->dim >= 1.0) return;
+    struct dim_ctx ctx = { .view = view, .opacity = 1.0f };
+    wlr_scene_node_for_each_buffer(&view->scene_tree->node, dim_iter, &ctx);
+}
+
+void view_dim_restore(FwmView *view) {
+    if (!view->scene_tree || view->dim >= 1.0) return;
+    view_dim_apply(view);
 }
 
 /* ── fade-in ──────────────────────────────────────────────────────────── */
@@ -596,6 +695,16 @@ void view_map(FwmView *view) {
         }
     }
 
+    /* The shadow, under both. Created for every window while [sun] is on,
+     * whatever the light is doing at the time: night is nine hidden nodes, and
+     * building them at sunrise instead would mean walking every window on the
+     * system at the one moment the user is watching the light change. */
+    if (view->server->config.sun.enabled) view->shadow = shadow_create(view->scene_tree);
+
+    /* Full strength until focus says otherwise — which server_focus_view does
+     * a few lines after the window is mapped, through view_dim_set. */
+    view->dim = view->dim_target = 1.0;
+
     // Open animation: hide the window outright until the client has painted
     // something real. Disabling the node is absolute — unlike opacity 0 it
     // cannot be undone by a new scene node appearing on a client commit.
@@ -650,6 +759,7 @@ void view_map(FwmView *view) {
     view_set_size(view, view->width, view->height);
     server_place_node(view->server, &view->scene_tree->node, view->x, view->y);
     view_update_border_geometry(view);
+    view_shadow_update(view);
 
     PhysicsBody *body = physics_sync_body(&view->server->physics, view->id, view->x, view->y, view->width, view->height, view->server->screen_width);
 
@@ -824,6 +934,11 @@ void view_unmap(FwmView *view) {
         wlr_buffer_unlock(view->last_buffer);
         view->last_buffer = NULL;
     }
+
+    /* Before the tree: the shadow owns nodes inside it AND a struct of its
+     * own, and destroying the tree first would leave the second to leak. */
+    shadow_destroy(view->shadow);
+    view->shadow = NULL;
 
     if (view->scene_tree) {
         wlr_scene_node_destroy(&view->scene_tree->node);

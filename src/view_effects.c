@@ -16,6 +16,7 @@
 #include "view_internal.h"
 #include "server.h"
 #include "physics.h"
+#include "shadow.h"
 #include "rotate.h"
 #include "snapshot.h"
 #include "theme.h"
@@ -81,11 +82,23 @@ bool view_snapshot_into(FwmView *view, struct wlr_buffer *buf) {
             wlr_scene_node_set_enabled(&view->border[i]->node, false);
         }
     }
+    /* And the shadow, for a stronger reason than the borders: what the picture
+     * is taken for is a window that is about to be drawn somewhere else — spun,
+     * bent, or shrinking into a ghost — and a shadow baked into it would travel
+     * with the window instead of being cast by it.
+     *
+     * The dim comes off for the same length of time. A picture of a window is
+     * of the window, not of which one had the keyboard when it was taken:
+     * baking it in would leave expo's cards remembering an old focus. */
+    shadow_set_enabled(view->shadow, false);
+    view_dim_suspend(view);
 
     int lx = 0, ly = 0;
     wlr_scene_node_coords(&view->scene_tree->node, &lx, &ly);
     bool ok = snapshot_subtree(server, buf, &view->scene_tree->node, lx, ly, 1.0);
 
+    view_dim_restore(view);
+    view_shadow_update(view);
     for (int i = 0; i < 4; i++) {
         if (view->border[i])
             wlr_scene_node_set_enabled(&view->border[i]->node, border_was_enabled[i]);
@@ -241,8 +254,21 @@ void view_set_content_enabled(FwmView *view, bool enabled) {
         if (view->squash_buf && node == &view->squash_buf->node) ours = true;
         if (view->spin_buf && node == &view->spin_buf->node) ours = true;
         if (view->jelly_buf && node == &view->jelly_buf->node) ours = true;
+        /* The shadow is nine nodes of ours whose state belongs to the sun and
+         * not to this call: half of them are deliberately dark at any moment,
+         * and switching the lot back on would paint the whole image where a
+         * zero-width strip belongs. */
+        if (shadow_owns_node(view->shadow, node)) ours = true;
         if (!ours) wlr_scene_node_set_enabled(node, enabled);
     }
+    /* Every effect passes through here twice — once on the way in, having just
+     * created the node that stands in for the window, and once on the way out,
+     * having just destroyed it. Both are exactly when the shadow has to be
+     * reconsidered: a window being drawn somewhere other than its own box (spun,
+     * bent, dented) casts nothing, and gets its shadow back when it lands. One
+     * call here rather than six at the sites, because a site that forgets is a
+     * shadow left behind at an empty rectangle. */
+    view_shadow_update(view);
 }
 
 void view_stop_squash(FwmView *view) {

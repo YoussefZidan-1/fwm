@@ -259,6 +259,8 @@ launcher_opacity  = 0.92
 icon_theme        = ""            # launcher icons; "" = auto (gtk3, then hicolor)
 color_source      = "config"      # or "wallpaper"
 tint_strength     = 0.4           # 0..1, only with color_source = "wallpaper"
+inactive_opacity  = 0.92          # how much of itself an unfocused window keeps
+dim_ms            = 140.0         # how long the dim takes; 0 = a cut
 ```
 
 `tray_yield` is what lets an external bar **replace** the status strip rather
@@ -271,6 +273,66 @@ on its own. See [the interface](interface.md#the-tray).
 text — from the current wallpaper image, so the tray belongs to the desktop
 behind it. `tint_strength` is how far the fill moves toward the wallpaper's hue.
 Colours are premultiplied internally; write them as plain hex.
+
+`inactive_opacity` is the unfocused dim: the window you are working in stays at
+full strength and the rest fall back a step, so focus reads without the border
+having to shout. It applies to the client's own pixels, never to fwm's chrome,
+and it is taken off again for anything that photographs a window — a spinning
+window and an expo card show the window, not which one had the keyboard when
+the picture was taken. Set it to `1.0` for the old behaviour.
+
+## sun
+
+```toml
+[sun]
+enabled        = true
+mode           = "clock"          # or "manual"
+sunrise        = 7.0              # clock: local hours
+sunset         = 21.0
+dawn_azimuth   = -70.0            # where the light comes from at each end
+dusk_azimuth   = 70.0
+noon_elevation = 65.0             # how high it gets at midday
+azimuth        = 20.0             # manual: deg clockwise from the top
+elevation      = 55.0             # manual: deg above the horizon
+length         = 22.0             # shadow length at 45 deg, px
+length_max     = 90.0             # however low the sun gets
+opacity        = 0.5
+blur           = 10.0             # penumbra px; 0 = a hard-edged shadow
+color          = "#000000"
+under_window   = false
+```
+
+One light over the whole desktop, and every window casts a shadow from it. A
+window floats over the wallpaper parallel to it, so its shadow is the same
+rectangle moved — there is no shape here, only a direction and a distance.
+
+**Angles.** `azimuth` is degrees clockwise from the top of the screen: 0 is a
+light directly above the desktop, which drops every shadow straight down, and
+90 lights it from the right. `elevation` is degrees above the horizon — high
+sun, short shadow. At or below 0 it is night.
+
+**`mode = "clock"`** puts the sun on the wall clock: up at `sunrise`, across to
+`dusk_azimuth` by `sunset`, under the horizon in between. At night nothing is
+darkened and nothing is dimmed — the shadows simply go out, which is what a
+room with no sun in it looks like. Dusk is a fade rather than a switch: over the
+last degrees above the horizon the shadows reach their limit, thin out, and are
+gone. The clock is re-read four times a second, not sixty.
+
+**`mode = "manual"`** leaves the sun exactly where `azimuth` and `elevation` put
+it. Both are live: `fwmctl set sun.azimuth 120`, or bind the actions —
+`sun_azimuth:+15` turns the light a step, `sun_elevation:-5` lowers it,
+`sun_mode` swaps hand for clock and back, `toggle_sun` puts the whole thing out.
+Moving the sun by hand takes it off the clock **where it stands**, so grabbing
+it at four in the afternoon does not jump every shadow across the desktop.
+
+**The shadow.** `length` is what a shadow measures at 45 degrees, so the number
+reads as pixels; a lower sun stretches it from there, up to `length_max`. `blur`
+is the penumbra — 0 gives a hard-edged cast shadow, which is what the sharp
+corners everything else is drawn with would ask for. `under_window` is off
+because a window is not necessarily opaque: a terminal at 80% would otherwise
+show its own shadow through itself instead of the wallpaper. That also means a
+blur much wider than the shadow is long has little left to show — if you want it
+softer, make it longer too.
 
 ## input
 
