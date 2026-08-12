@@ -48,5 +48,8 @@ void ipc_emit_desktop(FwmIpc *ipc, int desktop);
 void ipc_emit_mode(FwmIpc *ipc, int desktop, int mode);
 void ipc_emit_gravity(FwmIpc *ipc, double gravity_scale);
 void ipc_emit_config_reload(FwmIpc *ipc);
+/* One runtime option changed; `saved` if it also went into the state overlay
+ * (see the settings section of server_config.c). */
+void ipc_emit_setting(FwmIpc *ipc, const char *name, const char *value, bool saved);
 
 #endif /* FWM_IPC_H */

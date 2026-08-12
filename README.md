@@ -513,6 +513,11 @@ fwmctl reload                   # reload the config
 fwmctl config                   # every settable option, with values and ranges
 fwmctl get physics.gravity      # read one option
 fwmctl set physics.gravity 200  # change it, live
+fwmctl set sun.blur=14 sun.length=40   # several at once, together or not at all
+fwmctl save --all               # keep what this session changed, across restarts
+fwmctl saved                    # what is kept, and what it is worth now
+fwmctl unsave --all             # forget it; the configured values are back at once
+fwmctl window 7 desktop=4 pin=on       # act on ONE window, by id
 fwmctl subscribe                # stream events as they happen
 fwmctl version                  # release, and which binary is answering: path, mtime, pid
 fwmctl memory                   # fwm's own memory, split into its parts
@@ -537,7 +542,28 @@ fwmctl set decor.col_active "#ff0000"
 `set` is **runtime-only** — `config.toml` stays the source of truth and is never
 rewritten, so `fwmctl reload` (or `Super+Shift+R`) puts everything back. Values
 outside an option's range are refused rather than clamped, because over a socket
-a silent clamp is indistinguishable from the value having been accepted.
+a silent clamp is indistinguishable from the value having been accepted. Several
+settings in one command are checked before *any* of them is applied and land in a
+single re-apply, so a typo cannot leave half of them standing and three related
+knobs cannot produce a frame of the half-changed world.
+
+That default is right and, on its own, a dead end: whatever you found by trying
+it is gone at the next reload unless you go and edit the file by hand. `save`
+writes it down instead — not into your `config.toml`, but into an overlay fwm
+owns and lays over the config after every load (`~/.local/state/fwm/settings`):
+
+```sh
+fwmctl set sun.blur 18       # try it
+fwmctl save sun.blur         # keep it — a bare name saves what it is worth now
+fwmctl save --all            # or keep everything this session has changed
+fwmctl unsave sun.blur       # and take it back, without a reload
+```
+
+`fwmctl window <id> k=v` is the same idea for windows. `dispatch` acts on
+whatever has the focus, because that is what a keybind means; a script has an id
+out of `windows` instead, and `desktop=`, `x=`/`y=`, `pin=`, `nocollide=`,
+`focus=` and `close=` act on that one window without disturbing the session
+around it.
 
 Replies are JSON, so `jq` does the rest:
 
@@ -552,6 +578,10 @@ fwmctl dispatch view:$(fwmctl windows | jq -r '
 # turn gravity on from a script, a panel button, a hotkey daemon…
 fwmctl dispatch cycle_gravity
 ```
+
+There is a `setting` event too, and it fires whichever hand moved the knob — the
+socket, a keybind, the modes menu — so a bar can follow the compositor's state
+instead of polling it.
 
 `dispatch` takes exactly the action names the `[keys]` section uses, so
 anything you can bind you can also script. Commands that change state are

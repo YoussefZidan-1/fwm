@@ -25,6 +25,12 @@ at it explicitly or you will be talking to the outer session.
 | `fwmctl config` | every settable option with its value, range and one-line help |
 | `fwmctl get <name>` | read one option |
 | `fwmctl set <name> <value>` | change one option, this session only |
+| `fwmctl set <a>=<v> <b>=<v> …` | several at once, applied together or not at all |
+| `fwmctl save <name> [value]` | ...and remember it across reloads and restarts |
+| `fwmctl save --all` | remember everything this session has changed |
+| `fwmctl unsave <name>` / `--all` | forget it, and put the configured value back now |
+| `fwmctl saved` | what is remembered, and what each of those is worth right now |
+| `fwmctl window <id> k=v …` | change one window: desktop, position, pin, collision, focus, close |
 | `fwmctl dispatch <action>` | run any keybind action |
 | `fwmctl reload` | reload `config.toml`, discarding every `set` |
 | `fwmctl version` | the running fwm's release, which binary is answering (path, mtime, pid) and the IPC version |
@@ -99,10 +105,95 @@ Not settable, on purpose:
 - **`sound.path`** — the sample is loaded once; a reload picks up a new one.
 - **Strings** (`icon_theme`, the `kbd_*` keys) — re-read only by a full reload.
 
-**Writes are runtime-only.** `config.toml` is never rewritten; `fwmctl reload` (or
+**`set` is runtime-only.** `config.toml` is never rewritten; `fwmctl reload` (or
 `Super+Shift+R`) puts everything back to what the file says. Enumerated options
 are numbers here because the table is typed: `physics.mass` is 0 for `size` and 1
 for `ram`, `cava.mode` is 0–3.
+
+Several settings in one command are checked **before any of them is applied**, so
+a typo in the third pair leaves the first two alone — and they land in a single
+re-apply, which is what keeps a script changing three related knobs from
+producing a frame of the half-changed world:
+
+```console
+$ fwmctl set sun.azimuth=120 sun.elevation=25 sun.length=40
+{"ok":true,"set":[{"name":"sun.azimuth","value":"120.000"}, …]}
+
+$ fwmctl set sun.blur=4 sun.nonsense=1
+{"ok":false,"error":"unknown option \"sun.nonsense\" (try: config)"}   # blur unchanged
+```
+
+## Keeping what you found — `save`
+
+`set` is the right default and, on its own, a dead end: everything found by
+trying it is lost at the next reload unless you go and edit the file by hand.
+`save` writes it down instead — not into `config.toml`, which stays yours, but
+into an overlay fwm owns and applies over the config after every load:
+
+```
+~/.local/state/fwm/settings      # one `name = value` per line
+```
+
+```console
+$ fwmctl set sun.blur 18          # try it
+$ fwmctl save sun.blur            # keep it — a bare name saves what it is worth now
+{"ok":true,"name":"sun.blur","value":"18.000","saved":[…]}
+
+$ fwmctl save sun.opacity 0.6     # or set and keep in one go
+$ fwmctl save --all               # everything this session has changed
+{"ok":true,"count":3}
+
+$ fwmctl saved
+{"ok":true,"saved":[{"name":"sun.blur","value":"18.000","live":"4.000"}]}
+
+$ fwmctl unsave sun.blur          # forget it, and the configured value is back now
+$ fwmctl unsave --all
+```
+
+`saved` reports both what is written down and what the option is worth **now**;
+they differ whenever a later `set` has moved one, which is exactly the state
+somebody asking the question is trying to see. `unsave` does not need a reload —
+a reload would also discard every other `set` the session is standing on, which
+is a heavy price for taking back one line.
+
+Three things worth knowing:
+
+- Editing `config.toml` still works and still wins for anything the overlay does
+  not name. The overlay is a diff, not a copy.
+- The modes menu's two switches (`physics.mass`, `sound.collisions`) are applied
+  **after** the overlay, so the menu keeps the last word on them. Saving one is
+  legal and a later click will overrule it — the pill on screen shows what the
+  menu chose, and a saved value that quietly beat it would make the pill a liar.
+- A name this fwm does not have is skipped in silence, so a file written by a
+  newer build never stops an older one from starting. A name it *does* have with
+  a value it will not accept is reported through the tray's ⚠ pill, like any
+  other config problem.
+
+## One window
+
+`dispatch` acts on whatever has the focus, because that is what a keybind means.
+A script has an id out of `windows` and something it wants done to that window:
+
+```console
+$ fwmctl window 7 desktop=4 pin=on
+{"ok":true,"window":{"id":7,"title":"~/fwm", …,"desktop":4,"pinned":true}}
+```
+
+| Key | Does |
+|---|---|
+| `desktop=0-9` | send it there |
+| `x=`, `y=` | put it down, in the same coordinates `windows` reports |
+| `pin=on\|off\|toggle` | hold it still |
+| `nocollide=on\|off\|toggle` | let everything pass through it |
+| `focus=on` | give it the keyboard |
+| `close=on` | ask it to close — it may decline and put up a save dialog |
+
+Parsed in full before anything is applied, like `output`, and answered with the
+window as it now stands. A window is *dropped* where you put it rather than
+thrown: it arrives with no velocity, whatever it had before. Position is refused
+while the window's desktop is tiling, because there the geometry belongs to the
+layout, which would put it straight back — saying so beats appearing to work for
+one frame.
 
 ## Monitors
 
@@ -134,13 +225,22 @@ $ fwmctl subscribe
 {"event":"mode","desktop":3,"mode":"tiling"}
 {"event":"gravity","gravity":1.000}
 {"event":"config_reload"}
+{"event":"setting","name":"sun.blur","value":"18.000","saved":true}
 ```
 
 Subscribe to everything, or a comma-separated subset:
 `window_open`, `window_close`, `window_focus`, `window_title`, `desktop`, `mode`,
-`gravity`, `config_reload`. The reply names what was actually subscribed, so a
+`gravity`, `config_reload`, `setting`. The reply names what was actually subscribed, so a
 client can log it rather than assume its request was understood. Subscribing twice
 widens the set rather than replacing it.
+
+`setting` fires whichever hand moved the knob — the socket, a keybind, the modes
+menu — because a subscriber cannot tell them apart and should not have to. It is
+emitted by comparing what the options are worth against what was last announced,
+rather than from each place that changes one, so a route added later is covered
+by construction. `saved` says whether the value is also in the overlay, which is
+the difference between a bar redrawing itself and one that can expect the change
+to outlive a reload.
 
 `"id":null` on a focus event is not "window 0": focus genuinely goes nowhere when
 the last window on a desktop closes, and a subscriber has to be able to tell the

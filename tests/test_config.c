@@ -771,6 +771,44 @@ static void test_option_table(void) {
     CHECK_NULL(config_option_find(""));
 }
 
+/* config_option_check answers the same question config_option_set does and
+ * writes nothing. It is what lets `fwmctl set a=1 b=2 c=nonsense` be refused
+ * whole instead of leaving the first two applied, so the property that matters
+ * is not "it validates" but "it validates IDENTICALLY and touches nothing". */
+static void test_option_check(void) {
+    CASE("checking a value without storing it");
+    FwmConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    config_load(&cfg, "/nonexistent/fwm-test.toml");
+
+    const ConfigOption *grav = config_option_find("physics.gravity");
+    const ConfigOption *blur = config_option_find("sun.blur");
+    const ConfigOption *col  = config_option_find("decor.col_active");
+    CHECK_NOT_NULL(grav);
+    CHECK_NOT_NULL(blur);
+    CHECK_NOT_NULL(col);
+
+    char err[192];
+    double before = cfg.physics.gravity;
+    CHECK(config_option_check(grav, "123.5", err, sizeof(err)));
+    CHECK_DBL(cfg.physics.gravity, before, 1e-12);   /* checked, not stored */
+
+    /* The same three refusals `set` makes, in the same words. */
+    CHECK(!config_option_check(blur, "banana", err, sizeof(err)));
+    CHECK(!config_option_check(blur, "-1", err, sizeof(err)));       /* below min */
+    CHECK(!config_option_check(blur, "999", err, sizeof(err)));      /* above max */
+    CHECK(!config_option_check(blur, "", err, sizeof(err)));
+    CHECK(!config_option_check(col, "not-a-colour", err, sizeof(err)));
+    CHECK(config_option_check(col, "#ff8800", err, sizeof(err)));
+
+    /* And a value that passes the check is one set then accepts — the two must
+     * never be able to disagree about the same string. */
+    CHECK(config_option_set(&cfg, blur, "12", err, sizeof(err)));
+    CHECK_DBL(cfg.sun.blur, 12.0, 1e-12);
+
+    config_free(&cfg);
+}
+
 /* Mode and transform strings. The file and `fwmctl output` share these two
  * parsers precisely so both take the same spelling, which makes them the one
  * place a typo in either has to be caught. */
@@ -980,6 +1018,7 @@ int main(void) {
     test_mouse();
     test_modes();
     test_option_table();
+    test_option_check();
     test_output_spellings();
     test_outputs();
     test_stats();

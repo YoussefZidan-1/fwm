@@ -945,6 +945,14 @@ const ConfigOption *config_option_find(const char *name);
 int config_option_set(FwmConfig *cfg, const ConfigOption *opt,
                       const char *value, char *err, size_t errcap);
 
+/* The same parse and the same rules, storing nothing. What lets a request that
+ * carries several settings be answered before ANY of them is applied: a
+ * command with a typo in its third pair must not leave the first two standing,
+ * and the alternative — checking by hand alongside config_option_set — is two
+ * readings of one rule waiting to disagree. */
+int config_option_check(const ConfigOption *opt, const char *value,
+                        char *err, size_t errcap);
+
 /* Format the current value into out (never fails for a valid opt). */
 void config_option_get(const FwmConfig *cfg, const ConfigOption *opt,
                        char *out, size_t cap);

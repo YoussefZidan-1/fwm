@@ -768,6 +768,13 @@ void server_dispatch_action(FwmServer *server, const char *action) {
         if (desktop >= 0)
             server_move_view_to_desktop(server, server->focused_view, desktop, 1);
     }
+
+    /* Several of the actions above write a runtime setting directly (the sun's
+     * angle, the strip's wrap) without going through server_apply_config, and a
+     * subscriber has no way to tell a key from a socket — nor should it have
+     * to. One comparison pass here and the event goes out whichever hand moved
+     * the knob. Nothing is sent when nothing changed, which is nearly always. */
+    server_settings_notify(server);
 }
 
 /* Run a config action on behalf of something that is not the keyboard (the

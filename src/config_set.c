@@ -126,13 +126,16 @@ const ConfigOption *config_option_find(const char *name) {
     return NULL;
 }
 
-int config_option_set(FwmConfig *cfg, const ConfigOption *opt,
-                      const char *value, char *err, size_t errcap) {
+/* Parse one value without storing it. `cfg` may be NULL, and is where the
+ * result goes when it is not — which is what makes checking and setting the
+ * same code rather than two readings of the same rules that drift apart. */
+static int option_apply(FwmConfig *cfg, const ConfigOption *opt,
+                        const char *value, char *err, size_t errcap) {
     if (!value || !*value) {
         snprintf(err, errcap, "%s needs a value", opt->name);
         return 0;
     }
-    char *field = (char *)cfg + opt->offset;
+    char *field = cfg ? (char *)cfg + opt->offset : NULL;
 
     if (opt->type == CFG_OPT_COLOR) {
         float rgba[4];
@@ -141,7 +144,7 @@ int config_option_set(FwmConfig *cfg, const ConfigOption *opt,
                      opt->name, value);
             return 0;
         }
-        memcpy(field, rgba, sizeof(rgba));
+        if (field) memcpy(field, rgba, sizeof(rgba));
         return 1;
     }
 
@@ -159,9 +162,20 @@ int config_option_set(FwmConfig *cfg, const ConfigOption *opt,
         return 0;
     }
 
+    if (!field) return 1;
     if (opt->type == CFG_OPT_INT) *(int *)field = (int)v;
     else                          *(double *)field = v;
     return 1;
+}
+
+int config_option_set(FwmConfig *cfg, const ConfigOption *opt,
+                      const char *value, char *err, size_t errcap) {
+    return option_apply(cfg, opt, value, err, errcap);
+}
+
+int config_option_check(const ConfigOption *opt, const char *value,
+                        char *err, size_t errcap) {
+    return option_apply(NULL, opt, value, err, errcap);
 }
 
 void config_option_get(const FwmConfig *cfg, const ConfigOption *opt,

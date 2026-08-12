@@ -20,6 +20,9 @@
 #include "server.h"
 #include "view.h"
 #include "physics.h"
+/* For the settings overlay and the window verbs: acting on one window by id is
+ * the same work a keybind does, and it goes through the same functions. */
+#include "server_internal.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -205,6 +208,27 @@ static const char *mode_name(int m) {
     return (m >= 0 && m <= 2) ? names[m] : "?";
 }
 
+/* One window, in full. Shared by `windows` and by the reply to a `window`
+ * change, so a script can see the result of what it just asked for without a
+ * round trip — the same bargain `output` and `outputs` make. */
+static void buf_window(struct Buf *b, FwmServer *server, FwmView *view) {
+    buf_printf(b, "{\"id\":%u,\"title\":", view->id);
+    buf_json_string(b, view_title(view));
+    buf_puts(b, ",\"app_id\":");
+    buf_json_string(b, view_app_id(view));
+    buf_printf(b, ",\"x\":%d,\"y\":%d,\"width\":%d,\"height\":%d",
+               view->x, view->y, view->width, view->height);
+    buf_printf(b, ",\"desktop\":%d", server->screen_width > 0
+                                     ? view->x / server->screen_width : 0);
+    buf_printf(b, ",\"focused\":%s", view == server->focused_view ? "true" : "false");
+    /* Physics flags: the only way to see whether a [[rule]] (or a manual
+     * toggle) actually took hold on this window. */
+    PhysicsBody *body = physics_find_body(&server->physics, view->id);
+    buf_printf(b, ",\"pinned\":%s", body && body->pinned ? "true" : "false");
+    buf_printf(b, ",\"nocollide\":%s", body && body->no_collide ? "true" : "false");
+    buf_printf(b, ",\"xwayland\":%s}", view->type == FWM_VIEW_XDG ? "false" : "true");
+}
+
 static void cmd_windows(FwmServer *server, struct Buf *b) {
     buf_puts(b, "{\"ok\":true,\"windows\":[");
     FwmView *view;
@@ -212,21 +236,7 @@ static void cmd_windows(FwmServer *server, struct Buf *b) {
     wl_list_for_each(view, &server->views, link) {
         if (!first) buf_puts(b, ",");
         first = false;
-        buf_printf(b, "{\"id\":%u,\"title\":", view->id);
-        buf_json_string(b, view_title(view));
-        buf_puts(b, ",\"app_id\":");
-        buf_json_string(b, view_app_id(view));
-        buf_printf(b, ",\"x\":%d,\"y\":%d,\"width\":%d,\"height\":%d",
-                   view->x, view->y, view->width, view->height);
-        buf_printf(b, ",\"desktop\":%d", server->screen_width > 0
-                                         ? view->x / server->screen_width : 0);
-        buf_printf(b, ",\"focused\":%s", view == server->focused_view ? "true" : "false");
-        /* Physics flags: the only way to see whether a [[rule]] (or a manual
-         * toggle) actually took hold on this window. */
-        PhysicsBody *body = physics_find_body(&server->physics, view->id);
-        buf_printf(b, ",\"pinned\":%s", body && body->pinned ? "true" : "false");
-        buf_printf(b, ",\"nocollide\":%s", body && body->no_collide ? "true" : "false");
-        buf_printf(b, ",\"xwayland\":%s}", view->type == FWM_VIEW_XDG ? "false" : "true");
+        buf_window(b, server, view);
     }
     buf_puts(b, "]}\n");
 }
@@ -359,37 +369,430 @@ static void cmd_get(FwmServer *server, const char *name, struct Buf *b) {
     buf_puts(b, "}\n");
 }
 
-/* `set <name> <value>` — runtime only. config.toml is never rewritten, so
- * reload_config (super+shift+r) is the documented way back to the file. */
-static void cmd_set(FwmServer *server, const char *arg, struct Buf *b) {
-    const char *sep = arg ? strchr(arg, ' ') : NULL;
-    if (!sep) { reply_error(b, "set needs <name> <value>"); return; }
+/* ── settings ─────────────────────────────────────────────────────────────
+ *
+ * `set` is this session only; `save` is the same change written to the
+ * overlay in ~/.local/state/fwm/settings, which is applied over config.toml
+ * after every load. config.toml itself is never rewritten either way: the file
+ * is the user's, and a compositor that reformats it once has broken a promise
+ * it cannot make again. See server_config.c for the overlay's contract. */
 
-    char name[64];
-    size_t namelen = (size_t)(sep - arg);
-    if (namelen >= sizeof(name)) { reply_error(b, "option name too long"); return; }
-    memcpy(name, arg, namelen);
-    name[namelen] = '\0';
+#define IPC_MAX_PAIRS 32
 
-    while (*sep == ' ') sep++;
+struct SettingPair {
+    const ConfigOption *opt;
+    const char *value;   /* into the caller's copy of the request line */
+};
 
-    const ConfigOption *opt = config_option_find(name);
-    if (!opt) { reply_error(b, "unknown option (try: config)"); return; }
+/* Split `name=value name=value ...`, or the older `name value`, into pairs and
+ * check every one of them against the option table. Nothing is applied here:
+ * a request that carries several settings must be answered before any of them
+ * lands, because a typo in the third one leaving the first two in place is the
+ * failure a script cannot see and cannot undo.
+ *
+ * `line` is written into (the values are pointers into it). Returns how many
+ * pairs were found, or -1 with the reason in `err`. */
+static int parse_settings(char *line, struct SettingPair *out, int max,
+                          char *err, size_t errcap) {
+    /* The old form, kept because it is what every script and every page of the
+     * docs has been saying for as long as there has been a socket. One name,
+     * one value, and the value may be anything short of a space. */
+    if (!strchr(line, '=')) {
+        char *sep = strchr(line, ' ');
+        if (!sep) { snprintf(err, errcap, "set needs <name> <value>"); return -1; }
+        *sep++ = '\0';
+        while (*sep == ' ') sep++;
+        const ConfigOption *opt = config_option_find(line);
+        if (!opt) { snprintf(err, errcap, "unknown option \"%s\" (try: config)", line); return -1; }
+        if (!config_option_check(opt, sep, err, errcap)) return -1;
+        out[0].opt = opt;
+        out[0].value = sep;
+        return 1;
+    }
 
-    char err[192];
-    if (!config_option_set(&server->config, opt, sep, err, sizeof(err))) {
-        reply_error(b, err);
-        return;
+    int n = 0;
+    char *save = NULL;
+    for (char *tok = strtok_r(line, " ", &save); tok; tok = strtok_r(NULL, " ", &save)) {
+        if (n >= max) { snprintf(err, errcap, "at most %d settings at once", max); return -1; }
+        char *eq = strchr(tok, '=');
+        if (!eq || eq == tok) {
+            snprintf(err, errcap, "\"%s\" is not name=value", tok);
+            return -1;
+        }
+        *eq = '\0';
+        const ConfigOption *opt = config_option_find(tok);
+        if (!opt) { snprintf(err, errcap, "unknown option \"%s\" (try: config)", tok); return -1; }
+        if (!config_option_check(opt, eq + 1, err, errcap)) return -1;
+        out[n].opt = opt;
+        out[n].value = eq + 1;
+        n++;
+    }
+    if (n == 0) { snprintf(err, errcap, "set needs <name>=<value>"); return -1; }
+    return n;
+}
+
+/* The reply every settings command sends: the options it touched and what they
+ * are worth now. `name`/`value` are repeated at the top level for a single
+ * option, because that is the shape every script that already speaks to this
+ * socket is reading. */
+static void reply_settings(FwmServer *server, struct SettingPair *pairs, int n,
+                           const char *array, struct Buf *b) {
+    buf_puts(b, "{\"ok\":true");
+    if (n == 1) {
+        char value[64];
+        config_option_get(&server->config, pairs[0].opt, value, sizeof(value));
+        buf_puts(b, ",\"name\":");
+        buf_json_string(b, pairs[0].opt->name);
+        buf_puts(b, ",\"value\":");
+        buf_json_string(b, value);
+    }
+    buf_printf(b, ",\"%s\":[", array);
+    for (int i = 0; i < n; i++) {
+        char value[64];
+        config_option_get(&server->config, pairs[i].opt, value, sizeof(value));
+        if (i) buf_puts(b, ",");
+        buf_puts(b, "{\"name\":");
+        buf_json_string(b, pairs[i].opt->name);
+        buf_puts(b, ",\"value\":");
+        buf_json_string(b, value);
+        buf_puts(b, "}");
+    }
+    buf_puts(b, "]}\n");
+}
+
+/* Apply the checked pairs. One re-apply for the lot: a script changing three
+ * related settings (a sun's angle, height and length) should not produce two
+ * frames of the half-changed world.
+ *
+ * Nothing is emitted here. server_apply_config ends by announcing whatever
+ * moved, which is the only way an option changed by a KEY gets announced too —
+ * see server_settings_notify. */
+static void settings_commit(FwmServer *server, struct SettingPair *pairs, int n) {
+    for (int i = 0; i < n; i++) {
+        char err[192];
+        config_option_set(&server->config, pairs[i].opt, pairs[i].value, err, sizeof(err));
     }
     /* Same re-apply path a reload uses, minus the wallpaper image decode. */
     server_apply_config(server, 0);
+}
 
-    char value[64];
-    config_option_get(&server->config, opt, value, sizeof(value));
-    buf_puts(b, "{\"ok\":true,\"name\":");
-    buf_json_string(b, opt->name);
-    buf_puts(b, ",\"value\":");
-    buf_json_string(b, value);
+/* `set <name> <value>` or `set <name>=<value> ...` — runtime only.
+ * reload (super+shift+r) is the documented way back to the file. */
+static void cmd_set(FwmServer *server, const char *arg, struct Buf *b) {
+    if (!arg) { reply_error(b, "set needs <name> <value>"); return; }
+
+    char line[1024];
+    if (snprintf(line, sizeof line, "%s", arg) >= (int)sizeof line) {
+        reply_error(b, "set command too long");
+        return;
+    }
+
+    struct SettingPair pairs[IPC_MAX_PAIRS];
+    char err[256];
+    int n = parse_settings(line, pairs, IPC_MAX_PAIRS, err, sizeof err);
+    if (n < 0) { reply_error(b, err); return; }
+
+    settings_commit(server, pairs, n);
+    reply_settings(server, pairs, n, "set", b);
+}
+
+/* `save` — the same change, and remembered.
+ *
+ *   save <name> <value>        set it and write it down
+ *   save <name>=<v> ...        several, together
+ *   save <name>                write down whatever it is worth right now,
+ *                              which is how a session tuned with `set` is kept
+ *   save --all                 everything this session has changed
+ */
+static void cmd_save(FwmServer *server, const char *arg, struct Buf *b) {
+    if (!arg) { reply_error(b, "save needs <name> [value], or --all"); return; }
+
+    if (strcmp(arg, "--all") == 0 || strcmp(arg, "-a") == 0) {
+        int n = server_settings_save_all(server);
+        if (n < 0) { reply_error(b, "cannot write the settings file"); return; }
+        buf_printf(b, "{\"ok\":true,\"count\":%d}\n", n);
+        return;
+    }
+
+    char line[1024];
+    if (snprintf(line, sizeof line, "%s", arg) >= (int)sizeof line) {
+        reply_error(b, "save command too long");
+        return;
+    }
+
+    /* A bare name saves what the option is worth now. Deliberately the same
+     * verb: turning a knob with `set` until it looks right and then keeping it
+     * is the way this gets used, and it should not need a second word for the
+     * value you have just been looking at. */
+    struct SettingPair pairs[IPC_MAX_PAIRS];
+    char err[256];
+    int n;
+    char current[64];
+    const ConfigOption *bare = strchr(line, ' ') || strchr(line, '=')
+                               ? NULL : config_option_find(line);
+    if (bare) {
+        config_option_get(&server->config, bare, current, sizeof(current));
+        pairs[0].opt = bare;
+        pairs[0].value = current;
+        n = 1;
+    } else {
+        n = parse_settings(line, pairs, IPC_MAX_PAIRS, err, sizeof err);
+        if (n < 0) { reply_error(b, err); return; }
+    }
+
+    /* Written down BEFORE it is applied, so that the `setting` event the apply
+     * produces already says saved:true. A subscriber seeing the change and the
+     * word "saved" in two different events would have to guess whether a third
+     * was coming. */
+    for (int i = 0; i < n; i++) {
+        if (!server_settings_write(pairs[i].opt->name, pairs[i].value)) {
+            reply_error(b, "cannot write the settings file");
+            return;
+        }
+    }
+    if (!bare) settings_commit(server, pairs, n);
+    reply_settings(server, pairs, n, "saved", b);
+}
+
+/* `unsave <name> ...` / `unsave --all` — take it out of the overlay AND put
+ * the configured value back now. The alternative would be to ask for a reload,
+ * which also throws away every other `set` the session is standing on: a heavy
+ * price for taking back one line. */
+static void cmd_unsave(FwmServer *server, const char *arg, struct Buf *b) {
+    if (!arg) { reply_error(b, "unsave needs <name>, or --all"); return; }
+
+    bool all = strcmp(arg, "--all") == 0 || strcmp(arg, "-a") == 0;
+
+    struct SettingPair pairs[IPC_MAX_PAIRS];
+    char values[IPC_MAX_PAIRS][64];   /* pairs[].value points in here */
+    int n = 0;
+
+    if (all) {
+        char names[SETTINGS_MAX][64], vals[SETTINGS_MAX][64];
+        int have = server_settings_read(names, vals, SETTINGS_MAX);
+        for (int i = 0; i < have && n < IPC_MAX_PAIRS; i++) {
+            const ConfigOption *opt = config_option_find(names[i]);
+            if (!opt) continue;
+            if (!server_settings_file_value(opt, values[n], sizeof(values[n]))) continue;
+            pairs[n].opt = opt;
+            pairs[n].value = values[n];
+            n++;
+        }
+    } else {
+        char line[1024];
+        if (snprintf(line, sizeof line, "%s", arg) >= (int)sizeof line) {
+            reply_error(b, "unsave command too long");
+            return;
+        }
+        char *save = NULL;
+        for (char *tok = strtok_r(line, " ", &save); tok; tok = strtok_r(NULL, " ", &save)) {
+            if (n >= IPC_MAX_PAIRS) break;
+            const ConfigOption *opt = config_option_find(tok);
+            if (!opt) {
+                char err[128];
+                snprintf(err, sizeof err, "unknown option \"%s\" (try: config)", tok);
+                reply_error(b, err);
+                return;
+            }
+            if (!server_settings_file_value(opt, values[n], sizeof(values[n]))) continue;
+            pairs[n].opt = opt;
+            pairs[n].value = values[n];
+            n++;
+        }
+    }
+
+    for (int i = 0; i < n; i++) {
+        if (!server_settings_write(pairs[i].opt->name, NULL)) {
+            reply_error(b, "cannot write the settings file");
+            return;
+        }
+    }
+    if (n > 0) settings_commit(server, pairs, n);
+    reply_settings(server, pairs, n, "unsaved", b);
+}
+
+/* `saved` — what is in the overlay, and what each of those options is worth
+ * right now. The two differ whenever a `set` has moved one since, which is
+ * exactly the state somebody asking this question is trying to see. */
+static void cmd_saved(FwmServer *server, struct Buf *b) {
+    char names[SETTINGS_MAX][64], values[SETTINGS_MAX][64];
+    int n = server_settings_read(names, values, SETTINGS_MAX);
+
+    buf_puts(b, "{\"ok\":true,\"saved\":[");
+    for (int i = 0; i < n; i++) {
+        if (i) buf_puts(b, ",");
+        buf_puts(b, "{\"name\":");
+        buf_json_string(b, names[i]);
+        buf_puts(b, ",\"value\":");
+        buf_json_string(b, values[i]);
+        const ConfigOption *opt = config_option_find(names[i]);
+        if (opt) {
+            char now[64];
+            config_option_get(&server->config, opt, now, sizeof(now));
+            buf_puts(b, ",\"live\":");
+            buf_json_string(b, now);
+        } else {
+            /* A name this build does not have: written by a newer fwm, kept
+             * rather than dropped, and reported so it does not look lost. */
+            buf_puts(b, ",\"live\":null,\"known\":false");
+        }
+        buf_puts(b, "}");
+    }
+    buf_puts(b, "]}\n");
+}
+
+/* ── one window ───────────────────────────────────────────────────────────
+ *
+ * `dispatch` acts on whatever has the focus, because that is what a keybind
+ * means. A script has no hands and no focus to speak of: it has an id out of
+ * `windows` and something it wants done to that window, and every way of
+ * expressing that through `dispatch` goes through focusing the window first —
+ * which is itself a visible change to the session nobody asked for.
+ *
+ * So: `window <id> key=value ...`, in the same shape as `output`, parsed in
+ * full before anything is applied. */
+
+/* on|off|true|false|1|0|toggle. Returns the new value, or -1 if the word is
+ * not one of those. `now` is what makes toggle mean anything. */
+static int parse_switch(const char *val, int now) {
+    if (strcmp(val, "toggle") == 0) return !now;
+    if (strcmp(val, "on") == 0 || strcmp(val, "true") == 0 || strcmp(val, "1") == 0) return 1;
+    if (strcmp(val, "off") == 0 || strcmp(val, "false") == 0 || strcmp(val, "0") == 0) return 0;
+    return -1;
+}
+
+static void cmd_window(FwmServer *server, const char *arg, struct Buf *b) {
+    if (!arg) {
+        reply_error(b, "window needs <id> <key>=<value>... "
+                       "(desktop, x, y, pin, nocollide, focus, close)");
+        return;
+    }
+
+    char args[512];
+    if (snprintf(args, sizeof args, "%s", arg) >= (int)sizeof args) {
+        reply_error(b, "window command too long");
+        return;
+    }
+
+    char *save = NULL;
+    char *id_tok = strtok_r(args, " ", &save);
+    if (!id_tok) { reply_error(b, "window needs an id"); return; }
+
+    char *end;
+    unsigned long id = strtoul(id_tok, &end, 10);
+    if (end == id_tok || *end) { reply_error(b, "window id must be a number (try: windows)"); return; }
+
+    FwmView *view = server_find_view(server, (uint32_t)id);
+    if (!view) {
+        char err[96];
+        snprintf(err, sizeof err, "no window with id %lu (try: windows)", id);
+        reply_error(b, err);
+        return;
+    }
+    PhysicsBody *body = physics_find_body(&server->physics, view->id);
+
+    /* Everything is decided here and applied below, so a typo in the third
+     * setting cannot leave the first two standing. */
+    int want_desktop = -1, want_pin = -1, want_nocollide = -1;
+    int want_focus = 0, want_close = 0;
+    int want_x = 0, want_y = 0;
+    bool have_x = false, have_y = false;
+    char err[256];
+
+    for (char *tok = strtok_r(NULL, " ", &save); tok; tok = strtok_r(NULL, " ", &save)) {
+        char *eq = strchr(tok, '=');
+        if (!eq || eq == tok) {
+            snprintf(err, sizeof err, "\"%s\" is not key=value", tok);
+            reply_error(b, err);
+            return;
+        }
+        *eq = '\0';
+        const char *key = tok, *val = eq + 1;
+
+        if (strcmp(key, "desktop") == 0) {
+            long d = strtol(val, &end, 10);
+            if (end == val || *end || d < 0 || d >= FWM_DESKTOPS) {
+                snprintf(err, sizeof err, "desktop must be 0..%d", FWM_DESKTOPS - 1);
+                reply_error(b, err);
+                return;
+            }
+            want_desktop = (int)d;
+        } else if (strcmp(key, "x") == 0 || strcmp(key, "y") == 0) {
+            long v = strtol(val, &end, 10);
+            if (end == val || *end) { reply_error(b, "x and y must be whole numbers"); return; }
+            if (*key == 'x') { want_x = (int)v; have_x = true; }
+            else             { want_y = (int)v; have_y = true; }
+        } else if (strcmp(key, "pin") == 0) {
+            want_pin = parse_switch(val, body && body->pinned);
+            if (want_pin < 0) { reply_error(b, "pin must be on, off or toggle"); return; }
+        } else if (strcmp(key, "nocollide") == 0) {
+            want_nocollide = parse_switch(val, body && body->no_collide);
+            if (want_nocollide < 0) { reply_error(b, "nocollide must be on, off or toggle"); return; }
+        } else if (strcmp(key, "focus") == 0) {
+            int on = parse_switch(val, view == server->focused_view);
+            if (on < 0) { reply_error(b, "focus must be on or off"); return; }
+            if (on) want_focus = 1;
+        } else if (strcmp(key, "close") == 0) {
+            int on = parse_switch(val, 0);
+            if (on < 0) { reply_error(b, "close must be on"); return; }
+            want_close = on;
+        } else {
+            snprintf(err, sizeof err, "unknown key \"%s\" "
+                     "(desktop, x, y, pin, nocollide, focus, close)", key);
+            reply_error(b, err);
+            return;
+        }
+    }
+
+    /* A tiled window's geometry belongs to the layout, which would put it
+     * straight back — refusing says so instead of appearing to work for one
+     * frame. Moving it to another desktop is a different thing and stays
+     * allowed: that is how a window leaves a layout. */
+    if ((have_x || have_y) && body &&
+        server->desktop_mode[body->desktop_id] == DESKTOP_MODE_TILING) {
+        reply_error(b, "this window is tiled: its position belongs to the layout "
+                       "(move it off the desktop, or turn tiling off)");
+        return;
+    }
+
+    if (want_desktop >= 0)
+        server_move_view_to_desktop(server, view, want_desktop, 0);
+    if (body && want_pin >= 0) {
+        body->pinned = want_pin;
+        body->vx = body->vy = 0;
+        body->flying = 0;
+    }
+    if (body && want_nocollide >= 0) body->no_collide = want_nocollide;
+    if (have_x || have_y) {
+        /* Straight into the mirror: physics_step notices a position that no
+         * longer matches its shadow and pushes it into Box2D, which is the
+         * same path a drag takes. Dropped rather than carried, so a window put
+         * somewhere does not then slide off under the momentum it had. */
+        if (body) {
+            if (have_x) body->x = want_x;
+            if (have_y) body->y = want_y;
+            body->vx = body->vy = 0;
+            body->flying = 0;
+        }
+        /* And the window itself, rather than waiting for the tick to notice.
+         * Not merely for a truthful reply: the tick does not carry a PINNED
+         * body back to its view at all — being pinned is what "the simulation
+         * does not move this" means — so a pinned window put somewhere by a
+         * script would never arrive. */
+        if (have_x) view->x = want_x;
+        if (have_y) view->y = want_y;
+        if (view->scene_tree)
+            server_place_node(server, &view->scene_tree->node, view->x, view->y);
+    }
+    if (want_focus) server_focus_view(server, view);
+    if (want_close) {
+        view_send_close(view);
+        /* The window is being ASKED to close and may decline, so it is still
+         * here to be reported — which is the honest answer either way. */
+    }
+
+    buf_puts(b, "{\"ok\":true,\"window\":");
+    buf_window(b, server, view);
     buf_puts(b, "}\n");
 }
 
@@ -708,6 +1111,7 @@ static void ipc_handle_command(struct IpcClient *client, const char *line, struc
         cmd_get(server, arg, out);
         return;
     }
+    if (IS("saved")) { cmd_saved(server, out); return; }
     /* Read-only, so it sits with the commands above the lock check: a
      * subscriber learns nothing a `windows` poll would not already tell it. */
     if (IS("subscribe")) { cmd_subscribe(client, arg, out); return; }
@@ -730,6 +1134,18 @@ static void ipc_handle_command(struct IpcClient *client, const char *line, struc
         cmd_set(server, arg, out);
         return;
     }
+    if (IS("save")) {
+        cmd_save(server, arg, out);
+        return;
+    }
+    if (IS("unsave")) {
+        cmd_unsave(server, arg, out);
+        return;
+    }
+    if (IS("window")) {
+        cmd_window(server, arg, out);
+        return;
+    }
     if (IS("output")) {
         cmd_output(server, arg, out);
         return;
@@ -740,8 +1156,9 @@ static void ipc_handle_command(struct IpcClient *client, const char *line, struc
         return;
     }
 
-    reply_error(out, "unknown command (try: version, state, windows, outputs, output, "
-                     "config, get, set, dispatch, reload, subscribe)");
+    reply_error(out, "unknown command (try: version, state, windows, window, outputs, "
+                     "output, config, get, set, save, unsave, saved, dispatch, reload, "
+                     "subscribe)");
     #undef IS
 }
 
@@ -830,6 +1247,23 @@ void ipc_emit_gravity(FwmIpc *ipc, double gravity_scale) {
     struct Buf b = {0};
     buf_printf(&b, "{\"event\":\"gravity\",\"gravity\":%.3f}\n", gravity_scale);
     ipc_broadcast(ipc, FWM_EV_GRAVITY, &b);
+    free(b.data);
+}
+
+/* One option changed, by whatever route — a key, the socket, or the modes
+ * menu underneath. `saved` says whether it also went into the overlay, which
+ * is the difference between a bar redrawing itself and a bar that should also
+ * expect the change to survive the next reload. */
+void ipc_emit_setting(FwmIpc *ipc, const char *name, const char *value, bool saved) {
+    if (!ipc_wants(ipc, FWM_EV_SETTING)) return;
+
+    struct Buf b = {0};
+    buf_puts(&b, "{\"event\":\"setting\",\"name\":");
+    buf_json_string(&b, name);
+    buf_puts(&b, ",\"value\":");
+    buf_json_string(&b, value);
+    buf_printf(&b, ",\"saved\":%s}\n", saved ? "true" : "false");
+    ipc_broadcast(ipc, FWM_EV_SETTING, &b);
     free(b.data);
 }
 

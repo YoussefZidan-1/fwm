@@ -156,6 +156,54 @@ void server_state_apply_wallpaper(FwmServer *server);
 void server_state_apply_modes(FwmServer *server);
 void server_state_save_modes(FwmServer *server);
 
+/* ── the settings overlay (server_config.c) ───────────────────────────────
+ *
+ * `fwmctl save` writes runtime settings to ~/.local/state/fwm/settings, which
+ * is applied over config.toml after every load — a dynamic config the socket
+ * owns, next to the file the user owns. config.toml is still never written.
+ *
+ * The largest overlay we will read or write. Nothing sensible reaches it: it
+ * is more lines than there are settable options, so a file that hits the cap
+ * is one somebody built by hand out of names fwm does not have. */
+#define SETTINGS_MAX 256
+
+/* Applied after every config load, before the modes file — see the comment on
+ * the implementation for why that order and not the other one. */
+void server_state_apply_settings(FwmServer *server);
+
+/* Save one setting, replacing any line already naming it; `value` NULL forgets
+ * it instead. Returns 0 if the file could not be written. */
+int server_settings_write(const char *name, const char *value);
+
+/* Replace the overlay with every option that differs from what config.toml
+ * alone would have given. Returns how many were written, or -1 if the file
+ * could not be written (or the baseline is missing, which cannot happen after
+ * a normal load). */
+int server_settings_save_all(FwmServer *server);
+
+/* Read the overlay back, in file order: what `fwmctl saved` answers with.
+ * Returns how many pairs were written to the arrays. */
+int server_settings_read(char (*names)[64], char (*values)[64], int max);
+
+/* What every option was worth with the config file ALONE. Called once per load,
+ * between parsing the file and applying anything over it — save_all is a
+ * question about the difference, and after the overlay nothing else can tell. */
+void server_settings_baseline(FwmServer *server);
+void server_settings_finish(void);   /* shutdown; frees the baseline */
+
+/* Emit a `setting` event for every option that has moved since the last call.
+ * The ONE place the event comes from: an option changes through the socket,
+ * through a keybind and through the modes menu, and a per-site emit is two
+ * chances to add a fourth route and forget. Called at the end of
+ * server_apply_config and after every dispatched action. */
+void server_settings_notify(FwmServer *server);
+
+/* What config.toml alone said this option was. What lets `unsave` put a
+ * setting back in the same frame instead of asking for a reload — a reload
+ * would also throw away every other `set` the session is standing on, which is
+ * a heavy price for taking back one line. 0 if there is no baseline. */
+int server_settings_file_value(const ConfigOption *opt, char *out, size_t cap);
+
 /* ── server_desktop.c ─────────────────────────────────────────────────── */
 void server_toggle_desktop_tiling(FwmServer *server, int d);
 void server_toggle_desktop_floating(FwmServer *server, int d);
