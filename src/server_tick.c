@@ -784,10 +784,8 @@ void server_cava_sync(FwmServer *server) {
     CavaConfig cfg = server->config.cava;
     cfg.mode = want;
 
-    FwmOutput *primary = server_primary_output(server);
-    int cw = primary ? primary->box.width : server->screen_width;
-    int ch = primary ? primary->box.height : server->screen_height;
-    server->cava = cava_create(server->layer_background, &cfg, cw, ch);
+    server->cava = cava_create(server->layer_background, &cfg,
+                               server->screen_width, server->screen_height);
     if (server->cava) {
         server->cava_reported = 0;
     } else if (!server->cava_reported) {
@@ -1299,28 +1297,33 @@ static int physics_tick_cb(void *data) {
     if (server->config.physics.solid_bars) {
         struct wlr_box u = server->usable_area;
         if (u.width > 0 && u.height > 0) {
-            FwmOutput *primary = server_primary_output(server);
-            int sh = primary ? primary->box.height : server->screen_height;
-            int top = u.y, bottom = sh - (u.y + u.height);
+            int top = u.y, bottom = server->screen_height - (u.y + u.height);
             /* A bar taller than the screen would leave the floor above the
              * ceiling and Box2D solving an impossible world. */
-            if (top >= 0 && bottom >= 0 && top + bottom < sh) {
+            if (top >= 0 && bottom >= 0 && top + bottom < server->screen_height) {
                 server->physics.inset_top = top;
                 server->physics.inset_bottom = bottom;
             }
         }
     }
 
-    if (expo_active(server)) steps = 0;
-    
+    /* And so does the height of the glass each desktop is being shown on. The
+     * floor belongs to the monitor, not to the strip: on a 1080p screen beside
+     * a 1440p one, a floor at the strip's height is 360px below the bottom of
+     * the smaller screen and windows settle out of sight. Read every tick, so a
+     * hotplug or a mode change moves the floor under whatever is resting on it.
+     *
+     * Only the height. A desktop's WIDTH is the strip's stride and cannot vary
+     * per monitor: a window has to be able to be carried from desktop d to
+     * d+1, so there is nothing solid to put at the edge of a column. A monitor
+     * narrower than the stride still has dead space along its right — that half
+     * of #20 needs the strip itself to change shape, not another wall. */
     for (int d = 0; d < FWM_DESKTOPS; d++) {
         FwmOutput *mon = server_output_showing(server, d);
-        if (mon && mon->box.height > 0) {
-            server->physics.desktop_h[d] = mon->box.height;
-        } else {
-            server->physics.desktop_h[d] = server->screen_height;
-        }
+        server->physics.desktop_h[d] = (mon && mon->box.height > 0) ? mon->box.height : 0;
     }
+
+    if (expo_active(server)) steps = 0;
 
     /* Physics steps: as many whole 1/60 steps as the real time since the last
      * tick paid for (see the accumulator at the top). Usually one. */
@@ -1334,20 +1337,26 @@ static int physics_tick_cb(void *data) {
         const float *bar_lvl = cava_levels(server->cava, &bar_n);
         if (bar_lvl && bar_n > 0) {
             int bar_desk = server_active_desktop(server);
-            FwmOutput *mon = server_output_showing(server, bar_desk);
-            int sh = mon ? mon->box.height : server->screen_height;
-            int sw = mon ? mon->box.width : server->screen_width;
+            /* A monitor that is off carries desktop -1, and the active output
+             * is only ever an enabled one — but this now indexes an array, so
+             * "in practice" is no longer a good enough reason not to check. */
+            if (bar_desk < 0 || bar_desk >= FWM_DESKTOPS) bar_desk = 0;
+            int bar_h = server->physics.desktop_h[bar_desk] > 0
+                      ? server->physics.desktop_h[bar_desk] : server->screen_height;
             physics_set_bars(&server->physics, bar_lvl, bar_n,
                              (double)bar_desk * server->screen_width,
-                             (double)sw,
+                             (double)server->screen_width,
                              server->config.cava.height * server->config.cava.push,
                              /* The row rises out of the FLOOR, wherever that
                               * currently is: with solid_bars on and a dock at
                               * the bottom, the floor is the top of the dock and
-                              * a visualiser sunk below it would never show. */
-                             sh - server->physics.inset_bottom,
+                              * a visualiser sunk below it would never show. And
+                              * the floor is now that desktop's monitor, so a
+                              * row on a short screen rises out of the short
+                              * screen rather than from under it. */
+                             bar_h - server->physics.inset_bottom,
                              BAR_MAX_RISE_SPEED * server->config.cava.push, dt);
-                }
+        }
 
         physics_step(&server->physics, server->screen_width, server->screen_height,
                      drag_win, resize_win, dragged_win, dt);

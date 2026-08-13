@@ -727,28 +727,18 @@ static void server_output_layout_update(FwmServer *server) {
         wlr_output_layout_get_box(server->output_layout, o->wlr_output, &o->box);
     }
 
-    int max_w = 0, max_h = 0;
-        FwmOutput *o_max;
-        wl_list_for_each(o_max, &server->outputs, link) {
-            if (o_max->enabled && o_max->box.width > 0 && o_max->box.height > 0) {
-                if (o_max->box.width > max_w) max_w = o_max->box.width;
-                if (o_max->box.height > max_h) max_h = o_max->box.height;
-            }
-        }
-        
-        FwmOutput *primary = server_primary_output(server);
-        
-        /* The last monitor going away leaves nothing to size a desktop against.
-         * Keep the world as it was: its windows are still alive, and a size of zero
-         * would divide by zero in half the compositor. */
-        if (max_w <= 0 || max_h <= 0) return;
-    
-        int first = server->screen_width == 0;
-        int old_w = server->screen_width, old_h = server->screen_height;
-        int resized = max_w != old_w || max_h != old_h;
-    
-        server->screen_width = max_w;
-        server->screen_height = max_h;
+    FwmOutput *primary = server_primary_output(server);
+    /* The last monitor going away leaves nothing to size a desktop against.
+     * Keep the world as it was: its windows are still alive, and a size of zero
+     * would divide by zero in half the compositor. */
+    if (!primary || primary->box.width <= 0 || primary->box.height <= 0) return;
+
+    int first = server->screen_width == 0;
+    int old_w = server->screen_width, old_h = server->screen_height;
+    int resized = primary->box.width != old_w || primary->box.height != old_h;
+
+    server->screen_width = primary->box.width;
+    server->screen_height = primary->box.height;
 
     if (first) {
         const ConfigOutput *pc = config_find_output(&server->config,
