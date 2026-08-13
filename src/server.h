@@ -33,6 +33,7 @@
 #include "physics.h"
 #include "bsp.h"
 #include "config.h"
+#include "sun.h"
 #include "gestures.h"
 /* For TrayStrip: each monitor owns the geometry of the status strip drawn on
  * it, so a click is answered by the strip it landed on. */
@@ -343,9 +344,34 @@ typedef struct FwmServer {
     struct wlr_seat *seat;
     
     struct wl_list views;
+    /* Override-redirect X11 surfaces (FwmXwlUnmanaged.link, server_shell.c).
+     * Not views and never in `views`, but they are on a desktop and they move
+     * with it, so the camera and the focus have to be able to find them. */
+    struct wl_list xwl_unmanaged;
     struct wl_list groups; /* FwmGroup tab-stacks */
     struct wl_list ghosts; /* FwmGhost close-animation snapshots */ /* FwmView list */
     struct FwmView *focused_view;
+
+    /* Where the light is this frame, and when the clock was last asked. One
+     * light for the whole compositor: every window's shadow is cut from it, so
+     * they all agree about where the sun is without any of them working it out
+     * for itself.
+     *
+     * In clock mode the position is recomputed on a timer rather than every
+     * tick — a day of sun moves about four thousandths of a degree per frame,
+     * and trigonometry sixty times a second to find that out is the definition
+     * of work nobody asked for. */
+    FwmSunLight sun_light;
+    double sun_checked_at;
+
+    /* An override-redirect X11 surface currently holding the keyboard. It has
+     * no view — that is what unmanaged means — so it cannot be focused_view,
+     * yet it is where the keys are going: a Wine game's own fullscreen window,
+     * or a menu that asked for input focus. Remembered so the keyboard can be
+     * handed back to focused_view when it goes away, and so any focus change
+     * elsewhere knows to take it back (server_focus_view). NULL the rest of
+     * the time, which is nearly always. */
+    struct wlr_xwayland_surface *focused_unmanaged;
     struct FwmView *last_touched_view;
     
     struct wl_list outputs;
@@ -613,6 +639,23 @@ void server_focus_view(FwmServer *server, struct FwmView *view);
  * wlr_seat_keyboard_notify_enter: it leaves out the keys a bind has swallowed,
  * whose release the new client will never be told about. */
 void server_keyboard_enter(FwmServer *server, struct wlr_surface *surface);
+/* The surface the keyboard belongs to right now — focused_unmanaged if one
+ * holds it, otherwise the focused window's. NULL when there is neither. */
+struct wlr_surface *server_keyboard_target(FwmServer *server);
+/* Take an override-redirect X11 surface as an unmanaged one: a bare scene
+ * surface, no body, no borders. Public because a window can stop being a
+ * managed one while it is alive (see xwl_handle_set_override_redirect), and
+ * the surface then has to be handed over here. */
+void server_xwl_unmanaged_create(FwmServer *server, struct wlr_xwayland_surface *xs);
+/* Every mapped unmanaged surface put back where its desktop is on screen, or
+ * parked if that desktop is not being shown. The unmanaged half of
+ * server_views_place, and called from it. */
+void server_xwl_unmanaged_place(FwmServer *server);
+/* Give the keyboard to an unmanaged surface on `desktop` that wants it, if
+ * there is one. Arriving on the desktop a fullscreen X11 game is on has to put
+ * the keys back in the game; nothing else would, since it is not a view and so
+ * never a candidate in the scan server_refocus does. */
+bool server_xwl_unmanaged_refocus(FwmServer *server, int desktop);
 /* ── monitors ─────────────────────────────────────────────────────────────
  * The world is a strip of FWM_DESKTOPS columns of screen_width; each monitor
  * shows one column. These are how the rest of the compositor asks "which

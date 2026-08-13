@@ -212,7 +212,22 @@ There is deliberately no per-window "float": tiling on fwm is a property of the
 gaps_in    = 6      # px between adjacent tiles
 gaps_out   = 14     # px between tiles and the screen edge
 anim_speed = 12.0   # tile-glide rate, 1/s; 0 = snap into place
+pickup     = 0.28   # size a window leaves the layout at, fraction of the screen
 ```
+
+`pickup` is what you get in your hand when you drag a window out of the tree.
+Every window comes off at the same size, on purpose: a tile is whatever shape
+its column happened to be, and being handed a full-height sliver — or most of
+the screen — to carry around is the thing this replaces.
+
+Setting it to `0` restores the older behaviour, which was to give the window
+back the geometry it had before the desktop was tiled. That answer was only
+ever available to a window that had been there first; one that opened onto an
+already-tiled desktop had no pre-tiling size to return to and came off the tree
+still wearing its slot.
+
+See `droplet` under [effects](#effects) for what the window *looks* like on the
+way out and back.
 
 ## camera
 
@@ -244,6 +259,8 @@ launcher_opacity  = 0.92
 icon_theme        = ""            # launcher icons; "" = auto (gtk3, then hicolor)
 color_source      = "config"      # or "wallpaper"
 tint_strength     = 0.4           # 0..1, only with color_source = "wallpaper"
+inactive_opacity  = 0.92          # how much of itself an unfocused window keeps
+dim_ms            = 140.0         # how long the dim takes; 0 = a cut
 ```
 
 `tray_yield` is what lets an external bar **replace** the status strip rather
@@ -256,6 +273,66 @@ on its own. See [the interface](interface.md#the-tray).
 text — from the current wallpaper image, so the tray belongs to the desktop
 behind it. `tint_strength` is how far the fill moves toward the wallpaper's hue.
 Colours are premultiplied internally; write them as plain hex.
+
+`inactive_opacity` is the unfocused dim: the window you are working in stays at
+full strength and the rest fall back a step, so focus reads without the border
+having to shout. It applies to the client's own pixels, never to fwm's chrome,
+and it is taken off again for anything that photographs a window — a spinning
+window and an expo card show the window, not which one had the keyboard when
+the picture was taken. Set it to `1.0` for the old behaviour.
+
+## sun
+
+```toml
+[sun]
+enabled        = true
+mode           = "clock"          # or "manual"
+sunrise        = 7.0              # clock: local hours
+sunset         = 21.0
+dawn_azimuth   = -70.0            # where the light comes from at each end
+dusk_azimuth   = 70.0
+noon_elevation = 65.0             # how high it gets at midday
+azimuth        = 20.0             # manual: deg clockwise from the top
+elevation      = 55.0             # manual: deg above the horizon
+length         = 22.0             # shadow length at 45 deg, px
+length_max     = 90.0             # however low the sun gets
+opacity        = 0.5
+blur           = 10.0             # penumbra px; 0 = a hard-edged shadow
+color          = "#000000"
+under_window   = false
+```
+
+One light over the whole desktop, and every window casts a shadow from it. A
+window floats over the wallpaper parallel to it, so its shadow is the same
+rectangle moved — there is no shape here, only a direction and a distance.
+
+**Angles.** `azimuth` is degrees clockwise from the top of the screen: 0 is a
+light directly above the desktop, which drops every shadow straight down, and
+90 lights it from the right. `elevation` is degrees above the horizon — high
+sun, short shadow. At or below 0 it is night.
+
+**`mode = "clock"`** puts the sun on the wall clock: up at `sunrise`, across to
+`dusk_azimuth` by `sunset`, under the horizon in between. At night nothing is
+darkened and nothing is dimmed — the shadows simply go out, which is what a
+room with no sun in it looks like. Dusk is a fade rather than a switch: over the
+last degrees above the horizon the shadows reach their limit, thin out, and are
+gone. The clock is re-read four times a second, not sixty.
+
+**`mode = "manual"`** leaves the sun exactly where `azimuth` and `elevation` put
+it. Both are live: `fwmctl set sun.azimuth 120`, or bind the actions —
+`sun_azimuth:+15` turns the light a step, `sun_elevation:-5` lowers it,
+`sun_mode` swaps hand for clock and back, `toggle_sun` puts the whole thing out.
+Moving the sun by hand takes it off the clock **where it stands**, so grabbing
+it at four in the afternoon does not jump every shadow across the desktop.
+
+**The shadow.** `length` is what a shadow measures at 45 degrees, so the number
+reads as pixels; a lower sun stretches it from there, up to `length_max`. `blur`
+is the penumbra — 0 gives a hard-edged cast shadow, which is what the sharp
+corners everything else is drawn with would ask for. `under_window` is off
+because a window is not necessarily opaque: a terminal at 80% would otherwise
+show its own shadow through itself instead of the wallpaper. That also means a
+blur much wider than the shadow is long has little left to show — if you want it
+softer, make it longer too.
 
 ## input
 
@@ -310,6 +387,7 @@ already on the visible desktop.
 camera_shake = 1.0   # screen shake on impact; 0 disables
 squash       = 1.0   # squash & stretch on impact; 0 disables
 jelly        = 1.0   # wobble while dragging; 0 disables
+droplet      = 1.0   # carry a window out of a tiling layout as a drop; 0 disables
 spin         = 1.0   # strength of the spin_window kick (experimental)
 live         = 1.0   # live window content under spin/wobble; 0 = still frame
 shot_fly     = 1.0   # region screenshot peels off and flies away; 0 disables
@@ -336,6 +414,21 @@ it saturates: shake a window as hard as you like and the wobble grows exactly as
 it always did up to the point it would have torn, then simply stops growing. A
 higher `jelly` scales the deformation, so it reaches that ceiling proportionally
 sooner.
+
+`droplet` is the shape a window takes when it leaves a tiling layout. Dragged
+out of the tree it shrinks to [`tiling.pickup`](#tiling) and rounds off at the
+corners into a drop, still wobbling on the drag springs if `jelly` is on. Put
+back into a layout it does not glide into its slot — it lands where the cursor
+let go and spreads out to the slot's edges, the near corners arriving before the
+far ones and squaring off as they get there. `1` is as round as it goes — a true
+circle, the one inscribed in the window, with the picture squeezed along its
+longer side to fit it. Lower values merely pull the corners in; `0` disables the
+shape entirely and leaves the resize, which is `tiling.pickup`'s doing and
+happens either way.
+
+It rides the same mesh the wobble does, so it needs the GLES2 renderer for the
+same reason — but not the same setting. `droplet = 1` with `jelly = 0` is a drop
+that holds its shape while you carry it.
 
 ## session
 

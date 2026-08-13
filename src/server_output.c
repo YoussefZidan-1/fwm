@@ -245,6 +245,7 @@ static void server_animate(FwmServer *server) {
                 if (!fv->open_cover) {   /* no cover: just show the window */
                     fv->open_anim = 0;
                     wlr_scene_node_set_enabled(&fv->scene_tree->node, true);
+                    view_dim_apply(fv);
                     continue;
                 }
                 wlr_scene_node_raise_to_top(&fv->open_cover->node);
@@ -275,6 +276,11 @@ static void server_animate(FwmServer *server) {
                 fv->open_cover = NULL;
                 fv->open_anim = 0;
                 server_place_node(server, &fv->scene_tree->node, fv->x, fv->y);
+                /* The dim held off while the window was opening (view_dim_apply
+                 * refuses to blend a client's first frames). If it arrived at
+                 * its target meanwhile, this is the only moment left to put it
+                 * on screen. */
+                view_dim_apply(fv);
             }
         }
 
@@ -623,6 +629,9 @@ void server_views_place(FwmServer *server) {
             server_place_node(server, &g->scene_buffer->node,
                               g->x + g->draw_dx, g->y + g->draw_dy);
     }
+    /* Override-redirect X11 surfaces are not views, but they sit on a desktop
+     * like everything else and have to travel with it. */
+    server_xwl_unmanaged_place(server);
 }
 
 /* A world whose columns just changed size keeps every window where it was ON

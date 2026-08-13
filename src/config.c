@@ -84,12 +84,14 @@ int action_is_known(const char *a) {
         "calm_all", "fake_fullscreen", "real_fullscreen",
         "launcher", "toggle_tray", "spin_window", "spin_all", "terminal",
         "expo", "toggle_wrap", "modes_menu", "stats_menu",
+        "toggle_sun", "sun_mode",
         "screenshot", "screenshot_region",
         "output_off", "toggle_internal_output", "outputs_on", NULL
     };
     static const char *prefixes[] = {
         "spawn:", "view:", "move_camera:", "tile_focus:", "tile_move:",
-        "move_to:", "move_to_view:", "global:", FWM_MODE_ACTION, NULL
+        "move_to:", "move_to_view:", "global:",
+        "sun_azimuth:", "sun_elevation:", FWM_MODE_ACTION, NULL
     };
     for (int i = 0; exact[i]; i++)
         if (strcmp(a, exact[i]) == 0) return 1;
@@ -304,6 +306,7 @@ static void load_tiling(toml_table_t *root, TilingConfig *t) {
     t->gaps_in    = 6;
     t->gaps_out   = 14;
     t->anim_speed = 12.0; /* ~250 ms glide */
+    t->pickup     = 0.28; /* big enough to still be the window you picked up */
 
     toml_table_t *tbl = toml_table_in(root, "tiling");
     if (!tbl) return;
@@ -314,9 +317,14 @@ static void load_tiling(toml_table_t *root, TilingConfig *t) {
     d = toml_int_in(tbl, "gaps_out");
     if (d.ok) t->gaps_out = (int)d.u.i;
     LOAD_DOUBLE(tbl, "anim_speed", t->anim_speed);
+    LOAD_DOUBLE(tbl, "pickup", t->pickup);
 
     if (t->gaps_in < 0) t->gaps_in = 0;
     if (t->gaps_out < 0) t->gaps_out = 0;
+    /* Past most of the screen it is not a window in the hand any more, it is
+     * the layout you were trying to leave. */
+    if (t->pickup < 0.0) t->pickup = 0.0;
+    if (t->pickup > 0.9) t->pickup = 0.9;
 }
 
 /* ── camera section ──────────────────────────────────────────────────── */
@@ -369,6 +377,8 @@ static void load_decor(toml_table_t *root, FwmConfig *cfg) {
     dc->icon_theme[0] = '\0';
     dc->color_source = COLOR_SOURCE_CONFIG;
     dc->tint_strength = 0.4;
+    dc->inactive_opacity = 0.92;
+    dc->dim_ms = 140.0;
 
     toml_table_t *tbl = toml_table_in(root, "decor");
     if (!tbl) return;
@@ -413,6 +423,87 @@ static void load_decor(toml_table_t *root, FwmConfig *cfg) {
     if (dc->tray_opacity > 1.0) dc->tray_opacity = 1.0;
     if (dc->launcher_opacity < 0.0) dc->launcher_opacity = 0.0;
     if (dc->launcher_opacity > 1.0) dc->launcher_opacity = 1.0;
+    LOAD_DOUBLE(tbl, "inactive_opacity", dc->inactive_opacity);
+    if (dc->inactive_opacity < 0.0) dc->inactive_opacity = 0.0;
+    if (dc->inactive_opacity > 1.0) dc->inactive_opacity = 1.0;
+    LOAD_DOUBLE(tbl, "dim_ms", dc->dim_ms);
+    if (dc->dim_ms < 0.0) dc->dim_ms = 0.0;
+}
+
+/* ── sun section ─────────────────────────────────────────────────────── */
+
+static void load_sun(toml_table_t *root, FwmConfig *cfg) {
+    SunConfig *sc = &cfg->sun;
+    sc->enabled        = 1;
+    sc->mode           = SUN_MODE_CLOCK;
+    sc->azimuth        = 20.0;
+    sc->elevation      = 55.0;
+    sc->sunrise        = 7.0;
+    sc->sunset         = 21.0;
+    sc->dawn_azimuth   = -70.0;
+    sc->dusk_azimuth   = 70.0;
+    sc->noon_elevation = 65.0;
+    sc->length         = 22.0;
+    sc->length_max     = 90.0;
+    sc->opacity        = 0.5;
+    sc->blur           = 10.0;
+    sc->under_window   = 0;
+    parse_hex_color("#000000", sc->color);
+
+    /* `root` is NULL on the no-config and syntax-error paths, which still have
+     * to come out with a sun in the sky — the defaults above are the whole
+     * point of getting called then. */
+    toml_table_t *tbl = root ? toml_table_in(root, "sun") : NULL;
+    if (!tbl) return;
+
+    toml_datum_t d = toml_bool_in(tbl, "enabled");
+    if (d.ok) sc->enabled = d.u.b ? 1 : 0;
+
+    d = toml_string_in(tbl, "mode");
+    if (d.ok) {
+        if (strcmp(d.u.s, "clock") == 0)       sc->mode = SUN_MODE_CLOCK;
+        else if (strcmp(d.u.s, "manual") == 0) sc->mode = SUN_MODE_MANUAL;
+        else config_report_error(cfg, "[sun] mode: unknown value \"%s\" "
+                                      "(use \"manual\" or \"clock\")", d.u.s);
+        free(d.u.s);
+    }
+
+    LOAD_DOUBLE(tbl, "azimuth",        sc->azimuth);
+    LOAD_DOUBLE(tbl, "elevation",      sc->elevation);
+    LOAD_DOUBLE(tbl, "sunrise",        sc->sunrise);
+    LOAD_DOUBLE(tbl, "sunset",         sc->sunset);
+    LOAD_DOUBLE(tbl, "dawn_azimuth",   sc->dawn_azimuth);
+    LOAD_DOUBLE(tbl, "dusk_azimuth",   sc->dusk_azimuth);
+    LOAD_DOUBLE(tbl, "noon_elevation", sc->noon_elevation);
+    LOAD_DOUBLE(tbl, "length",         sc->length);
+    LOAD_DOUBLE(tbl, "length_max",     sc->length_max);
+    LOAD_DOUBLE(tbl, "opacity",        sc->opacity);
+    LOAD_DOUBLE(tbl, "blur",           sc->blur);
+
+    toml_datum_t uw = toml_bool_in(tbl, "under_window");
+    if (uw.ok) sc->under_window = uw.u.b ? 1 : 0;
+
+    d = toml_string_in(tbl, "color");
+    if (d.ok) {
+        if (!parse_hex_color(d.u.s, sc->color))
+            config_report_error(cfg, "[sun] color: \"%s\" is not #RRGGBB[AA]", d.u.s);
+        free(d.u.s);
+    }
+
+    /* A day that ends before it starts has no daylight in it at all, which is
+     * a config someone wrote by accident rather than a night they wanted. */
+    if (sc->mode == SUN_MODE_CLOCK && sc->sunset <= sc->sunrise)
+        config_report_error(cfg, "[sun] sunset (%.2f) is not after sunrise (%.2f): "
+                                 "there is no daylight, so nothing casts a shadow",
+                            sc->sunset, sc->sunrise);
+
+    if (sc->opacity < 0.0)    sc->opacity = 0.0;
+    if (sc->opacity > 1.0)    sc->opacity = 1.0;
+    if (sc->blur < 0.0)       sc->blur = 0.0;
+    if (sc->length < 0.0)     sc->length = 0.0;
+    if (sc->length_max < 0.0) sc->length_max = 0.0;
+    if (sc->noon_elevation > 89.0) sc->noon_elevation = 89.0;
+    if (sc->elevation > 89.0)      sc->elevation = 89.0;
 }
 
 /* ── input section ───────────────────────────────────────────────────── */
@@ -539,6 +630,7 @@ static void load_effects(toml_table_t *root, EffectsConfig *e) {
     e->camera_shake = 0.0;
     e->squash = 1.0;
     e->jelly = 1.0;
+    e->droplet = 1.0;
     e->spin = 1.0;
     e->live = 1.0;
     e->shot_fly = 1.0;
@@ -554,6 +646,11 @@ static void load_effects(toml_table_t *root, EffectsConfig *e) {
     LOAD_DOUBLE(tbl, "jelly", e->jelly);
     if (e->jelly < 0.0) e->jelly = 0.0;
     if (e->jelly > 2.0) e->jelly = 2.0;
+    LOAD_DOUBLE(tbl, "droplet", e->droplet);
+    if (e->droplet < 0.0) e->droplet = 0.0;
+    /* At 1 the corners are already on the ellipse; past that the mesh folds
+     * through itself and the drop turns inside out. */
+    if (e->droplet > 1.0) e->droplet = 1.0;
     LOAD_DOUBLE(tbl, "live", e->live);
     if (e->live < 0.0) e->live = 0.0;
     if (e->live > 1.0) e->live = 1.0;
@@ -1247,7 +1344,8 @@ int config_match_rules(const FwmConfig *cfg, const char *app_id, const char *tit
 
 void config_load(FwmConfig *cfg, const char *path) {
     cfg->physics         = physics_defaults;
-    cfg->tiling          = (TilingConfig){ .gaps_in = 6, .gaps_out = 14, .anim_speed = 12.0 };
+    cfg->tiling          = (TilingConfig){ .gaps_in = 6, .gaps_out = 14, .anim_speed = 12.0,
+                                           .pickup = 0.28 };
     cfg->camera          = (CameraConfig){ .anim_ms = 350.0, .free_speed = 14.0 };
     // Defaults for the no-config-file path; load_decor re-applies them anyway.
     cfg->decor.border_width = 2;
@@ -1261,6 +1359,8 @@ void config_load(FwmConfig *cfg, const char *path) {
     cfg->decor.icon_theme[0] = '\0';
     cfg->decor.color_source = COLOR_SOURCE_CONFIG;
     cfg->decor.tint_strength = 0.4;
+    cfg->decor.inactive_opacity = 0.92;
+    cfg->decor.dim_ms = 140.0;
     cfg->keys            = NULL;
     cfg->key_count       = 0;
     cfg->mode_count      = 0;
@@ -1281,6 +1381,7 @@ void config_load(FwmConfig *cfg, const char *path) {
     load_sound(NULL, cfg);
     load_stats(NULL, cfg);
     load_mouse(NULL, cfg);   /* the built-in drag verbs, for every early-out below */
+    load_sun(NULL, cfg);     /* likewise: a sun in the sky before anything is read */
 
     FILE *f = fopen(path, "r");
     if (!f) {
@@ -1309,6 +1410,7 @@ void config_load(FwmConfig *cfg, const char *path) {
     load_tiling(root, &cfg->tiling);
     load_camera(root, &cfg->camera);
     load_decor(root, cfg);
+    load_sun(root, cfg);
     load_input(root, cfg);
     load_focus(root, &cfg->focus, cfg);
     load_effects(root, &cfg->effects);

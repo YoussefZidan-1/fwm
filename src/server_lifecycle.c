@@ -18,6 +18,7 @@
 #include "server.h"
 #include "view.h"
 #include "rotate.h"
+#include "shadow.h"
 #include "physics.h"
 #include "theme.h"
 #include "layer.h"
@@ -379,6 +380,7 @@ bool server_init(FwmServer *server) {
     server->launcher = launcher_create(server);
 
     wl_list_init(&server->views);
+    wl_list_init(&server->xwl_unmanaged);
     wl_list_init(&server->groups);
     wl_list_init(&server->ghosts);
     wl_list_init(&server->outputs);
@@ -482,8 +484,16 @@ bool server_init(FwmServer *server) {
     char path[512];
     server_config_path(path, sizeof(path));
     config_load(&server->config, path);
+    /* Between the file and everything that goes over it: what save --all
+     * later means by "changed". */
+    server_settings_baseline(server);
+    server_state_apply_settings(server);
     server_state_apply_wallpaper(server);
     server_state_apply_modes(server);
+    /* Prime the `setting` event's memory with what the session is starting
+     * from. Without it the first change of the session is the call that fills
+     * the snapshot in, and so is the one change nobody is told about. */
+    server_settings_notify(server);
     // Palette for every overlay and window border; may sample the wallpaper.
     theme_build(&server->config);
 
@@ -607,6 +617,11 @@ void server_destroy(FwmServer *server) {
     /* The rotation shaders belong to the renderer's GL context; they have to go
      * while that context still exists. */
     rotate_shutdown(server->wlr_renderer);
+
+    /* The one image every window's shadow was cut from. The windows are gone
+     * by now, so nothing is left holding a lock on it. */
+    shadow_atlas_finish();
+    server_settings_finish();
 
     if (server->video_timer) {
         wl_event_source_remove(server->video_timer);

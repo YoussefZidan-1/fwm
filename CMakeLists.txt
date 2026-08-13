@@ -56,6 +56,7 @@ pkg_check_modules(LIBINPUT REQUIRED libinput)
 # context (see the header for why). Nothing else in fwm touches GL.
 pkg_check_modules(EGL REQUIRED egl)
 pkg_check_modules(GLESV2 REQUIRED glesv2)
+pkg_check_modules(DRM REQUIRED libdrm)
 # Video wallpaper decode. ffmpeg 6 on Void is the split libav* set + headers in
 # ffmpeg6-devel; the runtime is libav*6. Software decode only, so no libva pin.
 pkg_check_modules(LIBAV REQUIRED libavformat libavcodec libavutil libswscale)
@@ -106,6 +107,8 @@ set(SOURCES
     src/config_binds.c
     src/config_set.c
     src/theme.c
+    src/sun.c
+    src/shadow.c
     src/wallpaper.c
     src/video.c
     src/audio.c
@@ -125,6 +128,7 @@ set(SOURCES
     src/expo_draw.c
     src/expo_input.c
     src/wobble.c
+    src/droplet.c
     src/layer.c
     src/lock.c
     src/foreign.c
@@ -224,6 +228,7 @@ target_include_directories(fwm PRIVATE
         ${EGL_INCLUDE_DIRS}
         ${GLESV2_INCLUDE_DIRS}
         ${LIBAV_INCLUDE_DIRS}
+        ${DRM_INCLUDE_DIRS}
         src
         ${CMAKE_BINARY_DIR}
         src/ui
@@ -321,12 +326,28 @@ if(FWM_TESTS)
     target_include_directories(test_wobble PRIVATE src tests)
     target_link_libraries(test_wobble PRIVATE m)
 
+    # The drop, for the same reason as the wobble and one more: the fill is a
+    # mesh that has to stay inside the buffer it is drawn into, and a lattice
+    # that folded through itself would show up as a window turning inside out
+    # for a fifth of a second rather than as anything a stack trace could find.
+    add_executable(test_droplet tests/test_droplet.c src/droplet.c)
+    target_include_directories(test_droplet PRIVATE src tests)
+    target_link_libraries(test_droplet PRIVATE m)
+
     # Touchpad gestures are decided in gestures.c, which reaches no further
     # than config.h's types — the wlroots half is server_gestures.c and stays
     # out of it, so what a swipe means can be asserted without a touchpad.
     add_executable(test_gestures tests/test_gestures.c src/gestures.c)
     target_include_directories(test_gestures PRIVATE src tests ${XKBCOMMON_INCLUDE_DIRS})
     target_link_libraries(test_gestures PRIVATE m)
+
+    # Where the sun is, which is a question about the hour of the day: half of
+    # what it does only happens at dusk, and none of it can be watched on
+    # demand. sun.c reaches no further than config.h's types, so the day is
+    # walked here instead of waited for.
+    add_executable(test_sun tests/test_sun.c src/sun.c)
+    target_include_directories(test_sun PRIVATE src tests ${XKBCOMMON_INCLUDE_DIRS})
+    target_link_libraries(test_sun PRIVATE m)
 
     # Application memory footprints come out of /proc, which cannot be faked
     # and is easy to misparse. The suite forks its own child to check the tree
@@ -360,7 +381,9 @@ if(FWM_TESTS)
     add_test(NAME physics_speed COMMAND test_physics_speed)
     add_test(NAME ipc_events COMMAND test_ipc_events)
     add_test(NAME wobble     COMMAND test_wobble)
+    add_test(NAME droplet    COMMAND test_droplet)
     add_test(NAME gestures   COMMAND test_gestures)
+    add_test(NAME sun        COMMAND test_sun)
     add_test(NAME ram        COMMAND test_ram)
     add_test(NAME wav        COMMAND test_wav)
     add_test(NAME stats      COMMAND test_stats)

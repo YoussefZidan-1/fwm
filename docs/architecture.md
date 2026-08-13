@@ -88,6 +88,7 @@ price to pay for turning a feature *off*.
 | State & IPC | `session.c`, `ipc.c`, `ipc_events.c`, `server_config.c` (paths, reload, remembered choices) |
 | Wallpaper | `wallpaper.c`, `video.c` |
 | Audio | `audio.c` (capture), `cava.c` (FFT + bars), `sound.c` (mixer), `wav.c` |
+| Light | `sun.c` (where the sun is — arithmetic, no scene), `shadow.c` (what it draws: one shared nine-patch image, nine slices per window) |
 | Extras | `ram.c` (memory footprints), `theme.c` (palette), `lock.c`, `layer.c`, `foreign.c` |
 | UI | `ui/*.c` — see below |
 
@@ -132,11 +133,29 @@ Two hand-kept lists have to agree with the code:
 
 `config_set.c` is the runtime-settable table: `{name, type, offset, min, max,
 help}` into `FwmConfig`, which is how `fwmctl get`/`set`/`config` work without a
-line of code per option. Writes never touch the file.
+line of code per option. Writes never touch the file. `config_option_check` is
+the same parse storing nothing, which is what lets a request carrying several
+settings be refused whole rather than half-applied.
 
 Choices the UI makes (the picked wallpaper, the modes menu) live in
 `~/.local/state/fwm/` and are applied *over* the config after every load — see
 `server_config.c`. The user's file is never rewritten.
+
+`~/.local/state/fwm/settings` is the same idea opened up to the socket: what
+`fwmctl save` writes, applied over the config on every load. Three things hang
+together there and are easy to break separately:
+
+- The **baseline** — every option's value with the config file alone, captured
+  between parsing it and applying anything over it. `save --all` and `unsave`
+  are both questions about the difference, and after the overlay is on, nothing
+  else can tell the two apart.
+- The **order**: settings overlay first, modes file second, so the two switches
+  the modes menu owns still answer to the menu.
+- `server_settings_notify` is the ONE place the `setting` event comes from. It
+  compares every option against what was last announced, at the end of
+  `server_apply_config` and after every dispatched action — because an option
+  changes through the socket, through a keybind and through the modes menu, and
+  a per-site emit is two chances to add a fourth route and forget.
 
 ## Tests
 
@@ -157,6 +176,7 @@ exists because its subject cannot be checked by hand in a running session.
 | `test_ipc_events` | the event name/bit vocabulary |
 | `test_wobble` | the drag lattice, which only runs while a button is held |
 | `test_gestures` | what a swipe means, without a touchpad |
+| `test_sun` | where the sun is at each hour, and what dusk does — half of it only happens at sunset |
 | `test_ram` | `/proc` parsing and the process-tree sum |
 | `test_wav` | the WAV reader, fed truncated and lying headers |
 

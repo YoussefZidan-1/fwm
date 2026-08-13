@@ -179,6 +179,8 @@ rate your hand was turning it.
 
 ### Visuals
 - **Focus borders** — accent color on the focused window, muted on the rest; colors and width in the config.
+- **A sun, and shadows that follow it** — one light over the whole desktop, and every window casts from it. `mode = "clock"` puts it on the wall clock: it comes up in the morning, crosses the sky, and at night there are simply no shadows — nothing is darkened, the light has gone. `mode = "manual"` leaves it where you point it, and `sun_azimuth:+15` / `sun_elevation:-5` are keys that move it (taking hold of it lifts it off the clock where it stands). A window floating over the wallpaper is lit from far away, so its shadow is the same rectangle moved: `length` is what it measures at 45°, a low sun stretches it, and `blur` from 0 upward goes from a hard-edged cast shadow to a soft one. Nothing is drawn where the window is standing, so a terminal at 80% opacity shows the wallpaper through itself rather than its own shadow. See [`[sun]`](docs/configuration.md#sun).
+- **Unfocused windows fall back** — `inactive_opacity` dims everything that is not the window you are working in, so focus reads without the border having to shout. Off with `1.0`.
 - **Window fade-in** — new windows ease in over ~260 ms (configurable, 0 disables).
 - **Impact effects** — windows squash and stretch where they hit; optional camera shake on hard landings.
 - **Wobbly windows** — a dragged window goes soft and bends, the way KDE's do. See below.
@@ -329,6 +331,24 @@ The desktop's size is the primary monitor's, so a second monitor of a different 
 
 Known gaps: output scale is applied to the monitor and to client surfaces, but fwm's own chrome (status strip, launcher, expo) is still drawn at logical size and scaled up, so it is soft rather than crisp on a HiDPI screen. No IME (xkb layouts do work).
 
+### Games under Wine and Proton: use borderless, not exclusive fullscreen
+
+A Windows game running under Proton that is set to **exclusive fullscreen** can go black and deaf the first time it stops being the focused window — switch to another desktop, come back, and the screen is black, the game takes no input, and the process sits there burning a core. Clicking it does not bring it back. Elite Dangerous with `FullScreen=1` does exactly this.
+
+It is worth writing down what that is, because it looks like a compositor bug and is not one. Two things meet:
+
+- Wine gives its game windows the ICCCM **globally active** input model — `WM_HINTS.input = False` plus `WM_TAKE_FOCUS`. A window manager must not hand such a window the X input focus; it may only *offer* it, and the client decides. fwm focuses the window, wlroots advertises it in `_NET_ACTIVE_WINDOW` and sends the offer — and a game whose Direct3D device has gone dormant declines it.
+- In exclusive fullscreen the swapchain is lost when the game stops being the foreground application, and a game that will not take the focus back never re-acquires it. What fwm then puts on screen is the game's own frame, which is black.
+
+Borderless avoids the whole exchange: the game stays an ordinary window, keeps drawing, and comes back with the desktop. In Elite Dangerous it is Graphics → Display mode → Borderless, or in
+`.../compatdata/<appid>/pfx/drive_c/users/steamuser/AppData/Local/Frontier Developments/Elite Dangerous/Options/Graphics/DisplaySettings.xml`:
+
+```xml
+<FullScreen>2</FullScreen>   <!-- 0 windowed, 1 exclusive fullscreen, 2 borderless -->
+```
+
+Edit it with the game closed — it rewrites the file on exit. Nothing is lost by the change: fwm composites a borderless window that covers the output the same way it composites an exclusive one, and windows fwm considers whole-output fullscreen already get the screen to themselves, status strip included.
+
 ---
 
 ## Requirements
@@ -345,6 +365,7 @@ Known gaps: output scale is applied to the monitor and to client surfaces, but f
 | PipeWire and/or PulseAudio — *optional*, `[cava]` visualiser and `[sound]` knocks | `libpipewire`, `libpulse` |
 | CMake + pkg-config | `cmake`, `pkgconf` |
 | Xwayland (runtime) | `xorg-xwayland` |
+| libdrm — DRM format headers | `libdrm` |
 
 The sound libraries are the only optional ones: build without them and
 everything else works, minus the audio visualiser and the collision knocks
@@ -413,6 +434,31 @@ WLR_BACKENDS=x11 ./build/fwm      # nested X11 window
 WLR_BACKENDS=wayland ./build/fwm  # nested Wayland window
 ```
 
+## NixOS
+This project comes with flake.nix file that exposes a package and module. To use it:
+
+- Add this to your system `flake.nix`:
+
+```nix
+inputs = {
+    fwm.url = "github:iluaii/fwm";
+};
+```
+
+- Import the module:
+
+```nix
+modules = [
+    inputs.fwm.nixosModules.default
+];
+```
+
+- And enable it somewhere in your configuration
+
+```nix
+programs.fwm.enable = true;
+```
+
 ---
 
 ## Development
@@ -467,6 +513,11 @@ fwmctl reload                   # reload the config
 fwmctl config                   # every settable option, with values and ranges
 fwmctl get physics.gravity      # read one option
 fwmctl set physics.gravity 200  # change it, live
+fwmctl set sun.blur=14 sun.length=40   # several at once, together or not at all
+fwmctl save --all               # keep what this session changed, across restarts
+fwmctl saved                    # what is kept, and what it is worth now
+fwmctl unsave --all             # forget it; the configured values are back at once
+fwmctl window 7 desktop=4 pin=on       # act on ONE window, by id
 fwmctl subscribe                # stream events as they happen
 fwmctl version                  # release, and which binary is answering: path, mtime, pid
 fwmctl memory                   # fwm's own memory, split into its parts
@@ -491,7 +542,28 @@ fwmctl set decor.col_active "#ff0000"
 `set` is **runtime-only** — `config.toml` stays the source of truth and is never
 rewritten, so `fwmctl reload` (or `Super+Shift+R`) puts everything back. Values
 outside an option's range are refused rather than clamped, because over a socket
-a silent clamp is indistinguishable from the value having been accepted.
+a silent clamp is indistinguishable from the value having been accepted. Several
+settings in one command are checked before *any* of them is applied and land in a
+single re-apply, so a typo cannot leave half of them standing and three related
+knobs cannot produce a frame of the half-changed world.
+
+That default is right and, on its own, a dead end: whatever you found by trying
+it is gone at the next reload unless you go and edit the file by hand. `save`
+writes it down instead — not into your `config.toml`, but into an overlay fwm
+owns and lays over the config after every load (`~/.local/state/fwm/settings`):
+
+```sh
+fwmctl set sun.blur 18       # try it
+fwmctl save sun.blur         # keep it — a bare name saves what it is worth now
+fwmctl save --all            # or keep everything this session has changed
+fwmctl unsave sun.blur       # and take it back, without a reload
+```
+
+`fwmctl window <id> k=v` is the same idea for windows. `dispatch` acts on
+whatever has the focus, because that is what a keybind means; a script has an id
+out of `windows` instead, and `desktop=`, `x=`/`y=`, `pin=`, `nocollide=`,
+`focus=` and `close=` act on that one window without disturbing the session
+around it.
 
 Replies are JSON, so `jq` does the rest:
 
@@ -506,6 +578,10 @@ fwmctl dispatch view:$(fwmctl windows | jq -r '
 # turn gravity on from a script, a panel button, a hotkey daemon…
 fwmctl dispatch cycle_gravity
 ```
+
+There is a `setting` event too, and it fires whichever hand moved the knob — the
+socket, a keybind, the modes menu — so a bar can follow the compositor's state
+instead of polling it.
 
 `dispatch` takes exactly the action names the `[keys]` section uses, so
 anything you can bind you can also script. Commands that change state are
@@ -736,6 +812,24 @@ icon_theme   = ""          # launcher icons; "" = auto (gtk settings, hicolor)
 #                 its contrast whatever the image looks like.
 color_source  = "config"
 tint_strength = 0.4        # 0..1: how far the islands move toward that hue
+inactive_opacity = 0.92    # unfocused windows fall back a step; 1.0 = off
+dim_ms           = 140.0   # how long that takes; 0 = a cut
+
+# One light over the desktop; every window casts a shadow from it. On the clock
+# it rises, crosses, and sets — after which there are simply no shadows. By hand
+# it stays where you point it, and the sun_* actions move it.
+[sun]
+enabled        = true
+mode           = "clock"   # or "manual"
+sunrise        = 7.0       # clock: local hours
+sunset         = 21.0
+noon_elevation = 65.0      # how high it gets at midday, degrees
+#azimuth       = 20.0      # manual: degrees clockwise from the top of the screen
+#elevation     = 55.0      # manual: degrees above the horizon; <= 0 is night
+length         = 22.0      # shadow length at 45 degrees, px
+length_max     = 90.0      # however low the sun gets
+opacity        = 0.5
+blur           = 10.0      # penumbra px; 0 = a hard-edged cast shadow
 
 # Where the built-in wallpaper picker (super+shift+p) looks for images and
 # videos (a video's icon is a random frame). The choice is remembered in
@@ -830,6 +924,8 @@ fit  = "pan"
 | `toggle_split` | flip split orientation of the focused tile |
 | `toggle_tray` | hide/show the tray — it stops reserving its strip, so windows fill the top |
 | `pin_window`, `toggle_nocollide`, `calm_all`, `cycle_gravity` | physics toggles |
+| `toggle_sun` / `sun_mode` | shadows on or off / the sun follows the clock or your hand, taking hold of it where it stands |
+| `sun_azimuth:<deg>` / `sun_elevation:<deg>` | move the light: `+15` / `-15` steps, a bare number points it there. Below the horizon is night |
 | `spin_window` / `spin_all` | **experimental:** set the focused window (or every window) spinning, picture and collision box alike; press again to settle |
 | `toggle_nocollide_all` / `toggle_tiling_all` / `toggle_floating_all` | same, but every window / every desktop at once |
 | `group_toggle`, `group_add`, `group_next`, `group_prev` | tab-stacks: make a stack, join it, cycle tabs |

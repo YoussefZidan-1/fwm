@@ -42,6 +42,7 @@ static const ConfigOption config_option_table[] = {
     { "tiling.gaps_in",                 CFG_OPT_INT,    offsetof(FwmConfig, tiling.gaps_in),                  0.0,   500.0,    "gap between tiles, px" },
     { "tiling.gaps_out",                CFG_OPT_INT,    offsetof(FwmConfig, tiling.gaps_out),                 0.0,   500.0,    "gap to the screen edge, px" },
     { "tiling.anim_speed",              CFG_OPT_DOUBLE, offsetof(FwmConfig, tiling.anim_speed),               0.0,  1000.0,    "tile-glide rate, 1/s; 0 disables" },
+    { "tiling.pickup",                  CFG_OPT_DOUBLE, offsetof(FwmConfig, tiling.pickup),                   0.0,     0.9,    "size a window leaves the layout at, fraction of the screen" },
 
     { "camera.anim_ms",                 CFG_OPT_DOUBLE, offsetof(FwmConfig, camera.anim_ms),                  0.0, 10000.0,    "desktop-switch slide, ms" },
     { "camera.free_speed",              CFG_OPT_DOUBLE, offsetof(FwmConfig, camera.free_speed),               0.0,  1000.0,    "held move_camera chase rate, 1/s" },
@@ -56,10 +57,31 @@ static const ConfigOption config_option_table[] = {
     { "decor.tray_yield",               CFG_OPT_INT,    offsetof(FwmConfig, decor.tray_yield),                0.0,     1.0,    "hide the strip on a screen where a bar reserved the top" },
     { "decor.launcher_opacity",         CFG_OPT_DOUBLE, offsetof(FwmConfig, decor.launcher_opacity),          0.0,     1.0,    "launcher island fill alpha" },
     { "decor.tint_strength",            CFG_OPT_DOUBLE, offsetof(FwmConfig, decor.tint_strength),             0.0,     1.0,    "island tint toward the wallpaper hue" },
+    { "decor.inactive_opacity",         CFG_OPT_DOUBLE, offsetof(FwmConfig, decor.inactive_opacity),          0.0,     1.0,    "how much of itself an unfocused window keeps" },
+    { "decor.dim_ms",                   CFG_OPT_DOUBLE, offsetof(FwmConfig, decor.dim_ms),                    0.0, 10000.0,    "how long the unfocused dim takes, ms" },
+
+    /* Numeric like cava.mode and physics.mass, and for the same reason — the
+     * table is typed. 0 = manual, 1 = clock. */
+    { "sun.enabled",                    CFG_OPT_INT,    offsetof(FwmConfig, sun.enabled),                     0.0,     1.0,    "1 = windows cast shadows" },
+    { "sun.mode",                       CFG_OPT_INT,    offsetof(FwmConfig, sun.mode),                        0.0,     1.0,    "0 the sun is where you put it, 1 it follows the clock" },
+    { "sun.azimuth",                    CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.azimuth),                  -360.0,   360.0,    "where the light comes from, deg clockwise from the top" },
+    { "sun.elevation",                  CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.elevation),                 -90.0,    89.0,    "how high it is, deg; at or below 0 it is night" },
+    { "sun.sunrise",                    CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.sunrise),                     0.0,    24.0,    "clock mode: when the light comes up" },
+    { "sun.sunset",                     CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.sunset),                      0.0,    24.0,    "clock mode: when it goes down" },
+    { "sun.dawn_azimuth",               CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.dawn_azimuth),             -360.0,   360.0,    "clock mode: azimuth at sunrise" },
+    { "sun.dusk_azimuth",               CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.dusk_azimuth),             -360.0,   360.0,    "clock mode: azimuth at sunset" },
+    { "sun.noon_elevation",             CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.noon_elevation),              0.0,    89.0,    "clock mode: how high it gets at midday" },
+    { "sun.length",                     CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.length),                      0.0,  1000.0,    "shadow length at 45 deg, px" },
+    { "sun.length_max",                 CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.length_max),                  0.0,  1000.0,    "longest a shadow may get, px" },
+    { "sun.opacity",                    CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.opacity),                     0.0,     1.0,    "how dark a shadow is" },
+    { "sun.blur",                       CFG_OPT_DOUBLE, offsetof(FwmConfig, sun.blur),                        0.0,    64.0,    "penumbra, px; 0 = a hard-edged shadow" },
+    { "sun.under_window",               CFG_OPT_INT,    offsetof(FwmConfig, sun.under_window),                0.0,     1.0,    "1 = draw the shadow under the window too" },
+    { "sun.color",                      CFG_OPT_COLOR,  offsetof(FwmConfig, sun.color),                       0.0,     0.0,    "shadow colour" },
 
     { "effects.camera_shake",           CFG_OPT_DOUBLE, offsetof(FwmConfig, effects.camera_shake),            0.0,     4.0,    "impact shake; 0 disables" },
     { "effects.squash",                 CFG_OPT_DOUBLE, offsetof(FwmConfig, effects.squash),                  0.0,     4.0,    "impact squash & stretch; 0 disables" },
     { "effects.jelly",                  CFG_OPT_DOUBLE, offsetof(FwmConfig, effects.jelly),                   0.0,     4.0,    "drag wobble; 0 disables" },
+    { "effects.droplet",                CFG_OPT_DOUBLE, offsetof(FwmConfig, effects.droplet),                 0.0,     1.0,    "a window carried off a tiling layout is a drop; 0 disables" },
     { "effects.spin",              CFG_OPT_DOUBLE, offsetof(FwmConfig, effects.spin),                    0.0,     4.0,    "free rotation kick (experimental); 0 disables" },
     { "effects.live",              CFG_OPT_DOUBLE, offsetof(FwmConfig, effects.live),                    0.0,     1.0,    "live content under spin/wobble; 0 = still frame" },
 
@@ -104,13 +126,16 @@ const ConfigOption *config_option_find(const char *name) {
     return NULL;
 }
 
-int config_option_set(FwmConfig *cfg, const ConfigOption *opt,
-                      const char *value, char *err, size_t errcap) {
+/* Parse one value without storing it. `cfg` may be NULL, and is where the
+ * result goes when it is not — which is what makes checking and setting the
+ * same code rather than two readings of the same rules that drift apart. */
+static int option_apply(FwmConfig *cfg, const ConfigOption *opt,
+                        const char *value, char *err, size_t errcap) {
     if (!value || !*value) {
         snprintf(err, errcap, "%s needs a value", opt->name);
         return 0;
     }
-    char *field = (char *)cfg + opt->offset;
+    char *field = cfg ? (char *)cfg + opt->offset : NULL;
 
     if (opt->type == CFG_OPT_COLOR) {
         float rgba[4];
@@ -119,7 +144,7 @@ int config_option_set(FwmConfig *cfg, const ConfigOption *opt,
                      opt->name, value);
             return 0;
         }
-        memcpy(field, rgba, sizeof(rgba));
+        if (field) memcpy(field, rgba, sizeof(rgba));
         return 1;
     }
 
@@ -137,9 +162,20 @@ int config_option_set(FwmConfig *cfg, const ConfigOption *opt,
         return 0;
     }
 
+    if (!field) return 1;
     if (opt->type == CFG_OPT_INT) *(int *)field = (int)v;
     else                          *(double *)field = v;
     return 1;
+}
+
+int config_option_set(FwmConfig *cfg, const ConfigOption *opt,
+                      const char *value, char *err, size_t errcap) {
+    return option_apply(cfg, opt, value, err, errcap);
+}
+
+int config_option_check(const ConfigOption *opt, const char *value,
+                        char *err, size_t errcap) {
+    return option_apply(NULL, opt, value, err, errcap);
 }
 
 void config_option_get(const FwmConfig *cfg, const ConfigOption *opt,

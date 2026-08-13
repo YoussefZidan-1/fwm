@@ -208,6 +208,244 @@ void server_state_apply_modes(FwmServer *server) {
     fclose(f);
 }
 
+/* ── the settings overlay ────────────────────────────────────────────────
+ *
+ * `fwmctl set` changes a setting for this session and nothing else: the file
+ * is the source of truth and a reload is the way back to it. That is the right
+ * default and it is also, on its own, a dead end — everything found by trying
+ * it (a shadow length that suits your wallpaper, a gravity you actually like)
+ * is lost at the next reload unless you go and edit the file by hand.
+ *
+ * So `save` writes it HERE instead: one `name = value` per line, applied over
+ * the config after every load. It is the same contract the wallpaper and the
+ * modes files already carry, for the same reason — this file is fwm's to
+ * rewrite whenever the user asks, and the moment a config parser touches
+ * config.toml somebody's hand-written comments are one bug away from being
+ * reformatted. config.toml is still never written.
+ *
+ * Order: this goes on FIRST and the modes file second, so the two switches the
+ * modes menu owns (mass, sound) still answer to the menu. Saving one of them
+ * here is legal and will be overruled by a later click, which is the honest
+ * outcome — the pill on screen shows what the menu chose, and a saved value
+ * that quietly beat it would make the pill a liar.
+ *
+ * An unknown key is skipped in silence: a file written by a newer fwm must not
+ * stop an older one from starting. A key that exists with a value it will not
+ * accept is a config problem and goes to the tray's ⚠ pill like any other,
+ * because that one IS the user's mistake and silence about it presents as the
+ * setting having been forgotten. */
+
+#define SETTINGS_LINE 256
+
+/* What each option was worth with the config file alone — captured after the
+ * file is parsed and before this overlay goes on. `save --all` is the whole
+ * reason it exists: "everything I have changed" is a question about the file,
+ * and once the overlay has been applied nothing can tell the two apart.
+ *
+ * One string per option, allocated once and reused across reloads. */
+static char (*g_file_value)[64];
+static int   g_file_count;
+
+void server_settings_baseline(FwmServer *server) {
+    int n = 0;
+    const ConfigOption *opts = config_options(&n);
+    if (n <= 0) return;
+    if (g_file_count != n) {
+        free(g_file_value);
+        g_file_value = calloc((size_t)n, sizeof(*g_file_value));
+        g_file_count = g_file_value ? n : 0;
+    }
+    if (!g_file_value) return;
+    for (int i = 0; i < n; i++)
+        config_option_get(&server->config, &opts[i], g_file_value[i], sizeof(g_file_value[i]));
+}
+
+/* What each option was worth the last time anyone was told about it.
+ *
+ * The event has to be emitted from ONE place or it will not be emitted from
+ * all of them: an option changes through the socket, through a keybind, and
+ * through the modes menu, and three call sites is two chances to add a fourth
+ * route and forget. So nobody emits a `setting` by hand — the value is simply
+ * compared against what was last announced, wherever the compositor happens to
+ * settle after a change. */
+static char (*g_live_value)[64];
+static int   g_live_count;
+
+void server_settings_notify(FwmServer *server) {
+    int n = 0;
+    const ConfigOption *opts = config_options(&n);
+    if (n <= 0) return;
+
+    if (g_live_count != n) {
+        free(g_live_value);
+        g_live_value = calloc((size_t)n, sizeof(*g_live_value));
+        g_live_count = g_live_value ? n : 0;
+        if (!g_live_value) return;
+        /* First call of the session: this is what things ARE, not news. */
+        for (int i = 0; i < n; i++)
+            config_option_get(&server->config, &opts[i], g_live_value[i],
+                              sizeof(g_live_value[i]));
+        return;
+    }
+
+    /* Which of them are written down, read once and only when something
+     * actually moved — the answer is part of the event, and a script watching
+     * a slider wants to know whether what it is seeing will outlive a reload. */
+    char names[SETTINGS_MAX][64], values[SETTINGS_MAX][64];
+    int saved_n = -1;
+
+    for (int i = 0; i < n; i++) {
+        char now[64];
+        config_option_get(&server->config, &opts[i], now, sizeof(now));
+        if (strcmp(now, g_live_value[i]) == 0) continue;
+        snprintf(g_live_value[i], sizeof(g_live_value[i]), "%s", now);
+
+        if (saved_n < 0) saved_n = server_settings_read(names, values, SETTINGS_MAX);
+        bool saved = false;
+        for (int k = 0; k < saved_n; k++)
+            if (strcmp(names[k], opts[i].name) == 0) { saved = true; break; }
+
+        ipc_emit_setting(server->ipc, opts[i].name, now, saved);
+    }
+}
+
+int server_settings_file_value(const ConfigOption *opt, char *out, size_t cap) {
+    int n = 0;
+    const ConfigOption *opts = config_options(&n);
+    if (!g_file_value || g_file_count != n) return 0;
+    for (int i = 0; i < n; i++) {
+        if (&opts[i] != opt) continue;
+        snprintf(out, cap, "%s", g_file_value[i]);
+        return 1;
+    }
+    return 0;
+}
+
+void server_settings_finish(void) {
+    free(g_file_value);
+    g_file_value = NULL;
+    g_file_count = 0;
+    free(g_live_value);
+    g_live_value = NULL;
+    g_live_count = 0;
+}
+
+/* Every saved pair, in file order. Returns how many were written to the
+ * arrays; a missing file is simply none of them. */
+int server_settings_read(char (*names)[64], char (*values)[64], int max) {
+    char sp[512];
+    server_state_path(sp, sizeof(sp), "settings");
+    FILE *f = fopen(sp, "r");
+    if (!f) return 0;
+
+    int n = 0;
+    char line[SETTINGS_LINE];
+    while (n < max && fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *key = line, *val = eq + 1;
+        while (*key == ' ' || *key == '\t') key++;
+        for (char *e = key + strlen(key); e > key && (e[-1] == ' ' || e[-1] == '\t'); e--) e[-1] = '\0';
+        while (*val == ' ' || *val == '\t') val++;
+        if (!*key || !*val) continue;
+        snprintf(names[n], sizeof(names[n]), "%s", key);
+        snprintf(values[n], sizeof(values[n]), "%s", val);
+        n++;
+    }
+    fclose(f);
+    return n;
+}
+
+/* Rewrite the file from a list of pairs. Through a temporary and a rename, so
+ * a full disk or a crash mid-write leaves the previous settings rather than
+ * half of them — this file is read at every start, and half a line of it is a
+ * config problem reported at a login the user has no idea why. */
+static int settings_write_all(char (*names)[64], char (*values)[64], int n) {
+    char sp[512], tmp[544];
+    server_state_path(sp, sizeof(sp), "settings");
+    server_state_mkdir_parents(sp);
+    snprintf(tmp, sizeof(tmp), "%s.new", sp);
+
+    FILE *f = fopen(tmp, "w");
+    if (!f) {
+        wlr_log(WLR_ERROR, "cannot save settings to %s", sp);
+        return 0;
+    }
+    for (int i = 0; i < n; i++) fprintf(f, "%s = %s\n", names[i], values[i]);
+    int ok = fflush(f) == 0;
+    fclose(f);
+    if (!ok || rename(tmp, sp) != 0) {
+        wlr_log(WLR_ERROR, "cannot save settings to %s", sp);
+        unlink(tmp);
+        return 0;
+    }
+    return 1;
+}
+
+int server_settings_write(const char *name, const char *value) {
+    char names[SETTINGS_MAX][64], values[SETTINGS_MAX][64];
+    int n = server_settings_read(names, values, SETTINGS_MAX);
+
+    int at = -1;
+    for (int i = 0; i < n; i++)
+        if (strcmp(names[i], name) == 0) { at = i; break; }
+
+    if (!value) {                      /* forget it */
+        if (at < 0) return 1;          /* not saved: already the wanted state */
+        for (int i = at; i + 1 < n; i++) {
+            memcpy(names[i], names[i + 1], sizeof(names[i]));
+            memcpy(values[i], values[i + 1], sizeof(values[i]));
+        }
+        n--;
+    } else if (at >= 0) {
+        snprintf(values[at], sizeof(values[at]), "%s", value);
+    } else {
+        if (n >= SETTINGS_MAX) return 0;
+        snprintf(names[n], sizeof(names[n]), "%s", name);
+        snprintf(values[n], sizeof(values[n]), "%s", value);
+        n++;
+    }
+    return settings_write_all(names, values, n);
+}
+
+int server_settings_save_all(FwmServer *server) {
+    int n = 0;
+    const ConfigOption *opts = config_options(&n);
+    if (!g_file_value || g_file_count != n) return -1;
+
+    char names[SETTINGS_MAX][64], values[SETTINGS_MAX][64];
+    int saved = 0;
+    for (int i = 0; i < n && saved < SETTINGS_MAX; i++) {
+        char now[64];
+        config_option_get(&server->config, &opts[i], now, sizeof(now));
+        if (strcmp(now, g_file_value[i]) == 0) continue;
+        snprintf(names[saved], sizeof(names[saved]), "%s", opts[i].name);
+        snprintf(values[saved], sizeof(values[saved]), "%s", now);
+        saved++;
+    }
+    /* The whole overlay is replaced rather than added to: "save everything
+     * that differs from the file" is a complete statement about the session,
+     * and a leftover line from an earlier save that the session has since put
+     * back to its configured value is not part of it. */
+    if (!settings_write_all(names, values, saved)) return -1;
+    return saved;
+}
+
+void server_state_apply_settings(FwmServer *server) {
+    char names[SETTINGS_MAX][64], values[SETTINGS_MAX][64];
+    int n = server_settings_read(names, values, SETTINGS_MAX);
+
+    for (int i = 0; i < n; i++) {
+        const ConfigOption *opt = config_option_find(names[i]);
+        if (!opt) continue;   /* written by a newer fwm; not our business */
+        char err[192];
+        if (!config_option_set(&server->config, opt, values[i], err, sizeof(err)))
+            config_report_error(&server->config, "saved setting %s", err);
+    }
+}
+
 /* Apply the remembered wallpaper over the configured one. Called after every
  * config load, so a reload keeps the picked image rather than snapping back. */
 void server_state_apply_wallpaper(FwmServer *server) {
@@ -376,6 +614,11 @@ void server_apply_config(FwmServer *server, int rebuild_wallpaper) {
                                     : theme_get()->border_inactive);
     }
 
+    /* The sun: a new [sun] may have turned the shadows on, off, or moved them,
+     * and this is also what gives every window its nodes the first time it is
+     * switched on at runtime. */
+    server_sun_apply(server);
+
     /* Wallpaper layers are baked at load time, so rebuild them wholesale. */
     if (rebuild_wallpaper) {
         FwmOutput *out;
@@ -412,6 +655,10 @@ void server_apply_config(FwmServer *server, int rebuild_wallpaper) {
     }
 
     server_request_tray_redraw(server);
+
+    /* Last: whatever this changed, the subscribers hear about it here and
+     * nowhere else. */
+    server_settings_notify(server);
 }
 
 void server_reload_config(FwmServer *server) {
@@ -436,6 +683,10 @@ void server_reload_config(FwmServer *server) {
     server_config_path(path, sizeof(path));
     config_free(&server->config);
     config_load(&server->config, path);
+    /* Between the file and everything that goes over it: what save --all
+     * later means by "changed". */
+    server_settings_baseline(server);
+    server_state_apply_settings(server);
     server_state_apply_wallpaper(server);
     server_state_apply_modes(server);
 

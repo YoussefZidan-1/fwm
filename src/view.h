@@ -22,6 +22,7 @@
 #include <wlr/xwayland.h>
 #include <stdbool.h>
 
+#include "droplet.h"
 #include "wobble.h"
 
 struct FwmServer;
@@ -52,6 +53,7 @@ typedef struct FwmView {
     struct wl_listener xwl_associate;
     struct wl_listener xwl_dissociate;
     struct wl_listener xwl_request_configure;
+    struct wl_listener xwl_set_override_redirect;
     
     /* Saved geometry (local coordinates in desktop) */
     int x, y;
@@ -88,6 +90,20 @@ typedef struct FwmView {
     /* Focus border: 4 rects (top, bottom, left, right) parented to scene_tree,
      * so they move with the window for free. NULL when borders are disabled. */
     struct wlr_scene_rect *border[4];
+
+    /* The shadow this window casts from wherever the sun is, as nodes at the
+     * bottom of the same tree and for the same reason. NULL when [sun] is off
+     * at map time, or when the nodes could not be created. */
+    struct FwmShadow *shadow;
+
+    /* Unfocused windows fall back a step ([decor] inactive_opacity). `dim` is
+     * what is on screen and `dim_target` what focus says it should be; the
+     * tick walks one to the other so that clicking between windows is a fade
+     * rather than a flick.
+     *
+     * Zero-initialised to 0, which is not a valid opacity — view_map sets both
+     * to the right value once the window knows whether it has the focus. */
+    double dim, dim_target;
 
     /* Open animation.
      *
@@ -186,6 +202,22 @@ typedef struct FwmView {
     double jelly_snap_t;              /* since the last COMPOSITED refresh, s */
     double jelly_px, jelly_py;        /* window position at the last tick */
 
+    /* The drop (droplet.h): a window carried off a tiling layout.
+     *
+     * It is not a third thing that owns the picture — it is a shape the wobble
+     * above is drawn in, which is why it lives among the jelly fields and not
+     * beside them. `drop_round` is eased toward `drop_want` so a window rounds
+     * off into a drop over a few frames instead of popping into one, and both
+     * are 0 for every window that is not being carried out of a tree.
+     *
+     * `drop_fill` replaces the springs entirely for the length of the landing:
+     * once it is armed the lattice comes from droplet_fill_points and the
+     * wobble is not stepped at all. Two shapes, one at a time. */
+    double drop_round;                /* how round the sheet is drawn, 0..1 */
+    double drop_want;                 /* what it is easing toward */
+    int drop_filling;                 /* the landing owns the lattice */
+    DropletFill drop_fill;
+
     /* Free rotation (experimental; see PhysicsBody.spin).
      *
      * Same snapshot trick as the squash, for the same reason and one step
@@ -244,6 +276,11 @@ typedef struct FwmView {
 
 FwmView *view_create(struct wlr_xdg_toplevel *toplevel, struct FwmServer *server);
 FwmView *view_xwl_create(struct wlr_xwayland_surface *xsurface, struct FwmServer *server);
+/* Take on an X11 surface that already has its wlr_surface, and may already be
+ * mapped — the state a window is in when it stops being override-redirect
+ * mid-life and has to change hands. A freshly created view gets there through
+ * the associate and map events instead; this is the same arrival, said late. */
+void view_xwl_adopt(FwmView *view);
 void view_destroy(FwmView *view);
 void view_map(FwmView *view);
 void view_unmap(FwmView *view);
@@ -301,6 +338,27 @@ void view_jelly_tick(FwmView *view, double strength, double dt);
 void view_jelly_release(FwmView *view);
 void view_jelly_stop(FwmView *view);
 
+/* The drop (see the drop_* fields above and droplet.h).
+ *
+ * view_droplet_begin says this window has just been taken out of a tiling
+ * layout and should round off into one; it arms the mesh itself if the wobble
+ * has not already, so the drop does not need [effects] jelly to be on.
+ * view_droplet_fill says it has been put back into one, `lx`/`ly` being where
+ * the cursor let go in the SLOT's frame — the fill spreads out from there and
+ * hands the live window back when the slot is full. view_droplet_clear drops
+ * the shape without ending the wobble, for a window that left the tree and is
+ * not going back into one.
+ *
+ * All three are no-ops at [effects] droplet 0, which leaves the pickup resize
+ * and nothing else — the window simply becomes small in your hand. */
+void view_droplet_begin(FwmView *view, double grab_lx, double grab_ly);
+void view_droplet_fill(FwmView *view, double lx, double ly, double drop_w, double drop_h);
+void view_droplet_clear(FwmView *view);
+/* Is this window a drop right now? Asked at the end of a drag, where it is the
+ * difference between a window that came out of a layout and one that was
+ * carried in from a physics desktop and never was one. */
+bool view_is_droplet(FwmView *view);
+
 /* Free rotation (see the spin_* fields above). view_spin_tick shows the window
  * at `angle` radians, creating the snapshot machinery on the first call and
  * refreshing it as it runs; view_stop_spin puts the live window back. Calling
@@ -313,6 +371,25 @@ bool view_is_spinning(FwmView *view);
 void view_set_border_color(FwmView *view, const float color[4]);
 void view_set_border_enabled(FwmView *view, int enabled);
 
-/* Set opacity (0..1) on every surface buffer of the view (fade-in). */
+/* ── the unfocused dim ────────────────────────────────────────────────────
+ *
+ * view_dim_set says where the dim should end up — focus moved, or the config
+ * was reloaded — and view_dim_tick walks it there, returning true while it is
+ * still on the way so the compositor knows to keep the frames coming. The
+ * apply is separate because a client that adds a subsurface hands us a scene
+ * buffer at full strength that has to be brought down to the rest.
+ *
+ * suspend/restore put the window back to full strength for the length of a
+ * snapshot: what a picture of the window is taken FOR (the spin, expo's cards)
+ * is the window, not the state of the keyboard focus while it was taken. */
+void view_dim_set(FwmView *view, double target, bool immediate);
+bool view_dim_tick(FwmView *view, double dt);
+void view_dim_apply(FwmView *view);
+void view_dim_suspend(FwmView *view);
+void view_dim_restore(FwmView *view);
+
+/* Put the shadow where the light says, at the window's current size. Called on
+ * every geometry change and whenever the sun has moved far enough to matter. */
+void view_shadow_update(FwmView *view);
 
 #endif /* FWM_VIEW_H */

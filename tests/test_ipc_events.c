@@ -60,6 +60,7 @@ int main(void) {
     CASE("single event");
     CHECK_INT(parse_ok("window_open"), FWM_EV_WINDOW_OPEN);
     CHECK_INT(parse_ok("config_reload"), FWM_EV_CONFIG_RELOAD);
+    CHECK_INT(parse_ok("setting"), FWM_EV_SETTING);
 
     CASE("lists, in either separator");
     CHECK_INT(parse_ok("window_open,window_close"),

@@ -23,7 +23,7 @@ BUILD="$REPO/build-asan"
 KEEP=0
 LIST=0
 
-SCENARIOS="bare clients churn tiling groups desktops overlays physics reload ipc outputs xwayland threads kill"
+SCENARIOS="bare clients churn tiling groups desktops overlays physics reload ipc settings outputs xwayland threads kill"
 
 # A scenario whose compositor has to be started differently says so here, in a
 # variable named after it. `outputs` needs a second monitor, and the headless
@@ -93,6 +93,11 @@ mode = "both"
 bars = 24
 TOML
 threads_env="HOME=$CFGHOME FWM_TEST_CAVA=1"
+
+# `settings` WRITES a state file — the overlay `fwmctl save` keeps — so it gets
+# a state directory of its own under the logs. The developer's own
+# ~/.local/state/fwm is never read and never written by the suite.
+settings_env="XDG_STATE_HOME=$LOGDIR/state"
 
 cleanup() {
     # Only ever what this script started, always by recorded pid: a pkill by
@@ -322,6 +327,67 @@ while sent < 60000 and time.time() < deadline:
     except (BrokenPipeError, ConnectionResetError): break   # dropped, as intended
 ' >/dev/null 2>&1 || true
     sleep 0.5
+}
+
+# The settings overlay and the per-window verbs: everything `fwmctl` can change
+# that is not a keybind. The overlay is a FILE the compositor rewrites while it
+# runs and re-reads on every load, so what this is really exercising is a reload
+# standing on a file the session itself wrote a moment earlier.
+sc_settings() {
+    client 6
+
+    # Several at once, then the same command with a bad name in it: the second
+    # must change nothing at all, which is the whole point of checking before
+    # applying.
+    timeout 5 "$FWMCTL" set sun.blur=14 sun.length=40 tiling.gaps_in=12 >/dev/null 2>&1
+    timeout 5 "$FWMCTL" set sun.blur=2 sun.not_a_thing=1 >/dev/null 2>&1
+    timeout 5 "$FWMCTL" set decor.border_width=999 >/dev/null 2>&1   # out of range
+
+    # Written down, then read back through a reload — the file is applied over
+    # the config every time it is loaded.
+    timeout 5 "$FWMCTL" save --all >/dev/null 2>&1
+    timeout 5 "$FWMCTL" saved >/dev/null 2>&1
+    act reload_config 0.5
+    timeout 5 "$FWMCTL" save sun.opacity 0.7 >/dev/null 2>&1
+    timeout 5 "$FWMCTL" save sun.blur >/dev/null 2>&1
+    act reload_config 0.5
+    timeout 5 "$FWMCTL" unsave sun.blur >/dev/null 2>&1
+    timeout 5 "$FWMCTL" unsave --all >/dev/null 2>&1
+    act reload_config 0.5
+
+    # A subscriber watching all of it, and a stream of changes while it does.
+    timeout 12 "$FWMCTL" subscribe setting >/dev/null 2>&1 & KIDS="$KIDS $!"
+    sleep 0.3
+    i=0
+    while [ $i -lt 30 ]; do
+        timeout 5 "$FWMCTL" set "sun.azimuth=$((i * 12))" >/dev/null 2>&1
+        i=$((i + 1))
+    done
+
+    # One window at a time, by id: every verb, including the two that end with
+    # the window somewhere else and the one that may destroy it.
+    ids="$("$FWMCTL" windows 2>/dev/null | grep -o '"id":[0-9]*' | cut -d: -f2)"
+    for id in $ids; do
+        timeout 5 "$FWMCTL" window "$id" pin=toggle nocollide=on >/dev/null 2>&1
+        timeout 5 "$FWMCTL" window "$id" x=300 y=200 >/dev/null 2>&1
+        timeout 5 "$FWMCTL" window "$id" desktop=4 focus=on >/dev/null 2>&1
+        timeout 5 "$FWMCTL" window "$id" pin=off >/dev/null 2>&1
+    done
+    sleep 0.4
+    # Tiling refuses a position; asking anyway must be an error and not a state.
+    act toggle_tiling_all 0.5
+    for id in $ids; do
+        timeout 5 "$FWMCTL" window "$id" x=10 y=10 >/dev/null 2>&1
+    done
+    act toggle_tiling_all 0.5
+
+    # Nonsense, last: an id that is gone, a key that does not exist.
+    timeout 5 "$FWMCTL" window 99999 pin=on >/dev/null 2>&1
+    timeout 5 "$FWMCTL" window abc pin=on >/dev/null 2>&1
+    for id in $ids; do
+        timeout 5 "$FWMCTL" window "$id" close=on >/dev/null 2>&1
+    done
+    sleep 0.6
 }
 
 # Resolution, scale, rotation and position, on two monitors with windows open.

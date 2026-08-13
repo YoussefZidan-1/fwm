@@ -40,6 +40,7 @@
 #include "ram.h"
 #include "group.h"
 #include "expo.h"
+#include "shadow.h"
 #include "snapshot.h"
 #include "server_internal.h"
 
@@ -414,6 +415,7 @@ static int server_is_busy(FwmServer *server) {
     FwmView *v;
     wl_list_for_each(v, &server->views, link) {
         if (v->open_anim || v->tile_anim || v->squash_buf) return 1;
+        if (v->dim != v->dim_target) return 1;         /* focus fading over */
     }
     return 0;
 }
@@ -537,6 +539,58 @@ static double server_now_s(void) {
  * replaced by a constant rather than kept alongside. A middling window, so a
  * desktop switched into this mode does not suddenly weigh ten times what it
  * did — only the hogs do. */
+/* ── the sun ──────────────────────────────────────────────────────────────
+ *
+ * How often the wall clock is worth re-reading in clock mode. The sun crosses
+ * the sky in a working day; a quarter of a second is already four times finer
+ * than anything the eye can follow it at, and it keeps the cost of the whole
+ * feature at four trigonometric functions a second. */
+#define SUN_CLOCK_INTERVAL_S 0.25
+
+void server_sun_apply(FwmServer *server) {
+    const SunConfig *cfg = &server->config.sun;
+    sun_light(cfg, sun_hour_local(time(NULL)), &server->sun_light);
+
+    FwmView *view;
+    wl_list_for_each(view, &server->views, link) {
+        /* A window mapped while [sun] was off has no nodes to put a shadow in;
+         * one mapped while it was on keeps them, hidden, for nothing. Both are
+         * settled here, so turning the sun on and off at runtime works without
+         * anyone having to remap a window. */
+        if (cfg->enabled && !view->shadow && view->scene_tree)
+            view->shadow = shadow_create(view->scene_tree);
+        else if (!cfg->enabled && view->shadow) {
+            shadow_destroy(view->shadow);
+            view->shadow = NULL;
+        }
+        view_shadow_update(view);
+    }
+}
+
+void server_sun_sync(FwmServer *server) {
+    const SunConfig *cfg = &server->config.sun;
+    double now = server_now_s();
+
+    /* Manual mode has no clock to watch: the light only moves when something
+     * moved it, and those paths call server_sun_apply themselves. All that is
+     * left here is noticing `fwmctl set sun.azimuth`, which writes the config
+     * behind everyone's back — cheap enough to check against the light we are
+     * already drawing. */
+    if (cfg->mode != SUN_MODE_CLOCK) {
+        FwmSunLight want;
+        sun_light(cfg, 0.0, &want);
+        if (sun_light_differs(&want, &server->sun_light)) server_sun_apply(server);
+        return;
+    }
+
+    if (now - server->sun_checked_at < SUN_CLOCK_INTERVAL_S) return;
+    server->sun_checked_at = now;
+
+    FwmSunLight want;
+    sun_light(cfg, sun_hour_local(time(NULL)), &want);
+    if (sun_light_differs(&want, &server->sun_light)) server_sun_apply(server);
+}
+
 #define MASS_REF_AREA (1280.0 * 720.0)
 
 /* Reset every body to the weight its area gives it. */
@@ -1330,7 +1384,22 @@ static int physics_tick_cb(void *data) {
          * is no event to hang it off, only the position it ended up at. The
          * call returns immediately unless the answer changed. */
         foreign_view_sync_output(view);
+
+        /* The unfocused dim. Read off the focus every tick rather than hung
+         * off server_focus_view: a window can stop being the focused one
+         * without that function being called about it — mapped onto another
+         * desktop, hidden inside a tab stack, left behind when the keyboard
+         * went to an override-redirect surface — and every one of those has to
+         * end up at the same place as an ordinary click elsewhere. */
+        view_dim_set(view, view == server->focused_view
+                           ? 1.0 : server->config.decor.inactive_opacity, false);
+        view_dim_tick(view, dt);
     }
+
+    /* Where the light is. After the windows have been placed and before the
+     * frame is scheduled, so a shadow never lags the window it belongs to by a
+     * frame. Costs nothing on the ticks where the sun has not moved. */
+    server_sun_sync(server);
 
     /* And which monitor is showing which desktop, for the same reason and by
      * the same rule: only what changed goes out. */

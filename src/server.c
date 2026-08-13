@@ -103,6 +103,12 @@ void server_refocus(FwmServer *server, int desktop, struct FwmView *skip) {
         return;
     }
 
+    /* A fullscreen X11 game is not a view and so is invisible to everything
+     * below — but it is what is on the screen, and arriving on its desktop
+     * with the keys going to some window behind it is exactly the case where
+     * the game sits there black and unplayable. */
+    if (server_xwl_unmanaged_refocus(server, desktop)) return;
+
     /* Nothing under the pointer: take the most recently mapped window on the
      * desktop. Views are inserted at the head, so the first match is the
      * newest — closest to what the user last worked with. */
@@ -139,9 +145,24 @@ FwmView *server_find_view(FwmServer *server, uint32_t id) {
 
 
 
+/* Where the keyboard belongs at this moment. Usually the focused window, but
+ * an override-redirect surface that took the keys outranks it for as long as
+ * it has them — anything handing the keyboard back (the launcher closing) has
+ * to return it to whoever was actually holding it, not to the window behind. */
+struct wlr_surface *server_keyboard_target(FwmServer *server) {
+    if (server->focused_unmanaged) return server->focused_unmanaged->surface;
+    return server->focused_view ? view_surface(server->focused_view) : NULL;
+}
+
 void server_focus_view(FwmServer *server, struct FwmView *view) {
-    if (server->focused_view == view) return;
-    
+    /* Not a plain no-op when an unmanaged surface holds the keyboard: the
+     * window may already be focused_view and still not have the keys, because
+     * an override-redirect surface took them (server_shell.c). Clicking back
+     * on the window has to bring them back, and clicking back on the window is
+     * exactly the call that lands here with view == focused_view. */
+    if (server->focused_view == view && !server->focused_unmanaged) return;
+    server->focused_unmanaged = NULL;
+
     struct FwmView *prev_focus = server->focused_view;
     server->focused_view = view;
 
@@ -166,7 +187,11 @@ void server_focus_view(FwmServer *server, struct FwmView *view) {
     }
     ipc_emit_window(server->ipc, FWM_EV_WINDOW_FOCUS, view);
 
-    if (prev_focus) {
+    /* prev_focus == view when the keyboard is being taken back from an
+     * unmanaged surface: the window never stopped being the focused one, so
+     * deactivating it here would put out the border of the window that just
+     * got the keys. */
+    if (prev_focus && prev_focus != view) {
         view_set_activated(prev_focus, false);
         foreign_view_set_activated(prev_focus, false);
         PhysicsBody *pb = physics_find_body(&server->physics, prev_focus->id);

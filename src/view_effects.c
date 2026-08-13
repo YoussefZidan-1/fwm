@@ -16,6 +16,7 @@
 #include "view_internal.h"
 #include "server.h"
 #include "physics.h"
+#include "shadow.h"
 #include "rotate.h"
 #include "snapshot.h"
 #include "theme.h"
@@ -81,11 +82,23 @@ bool view_snapshot_into(FwmView *view, struct wlr_buffer *buf) {
             wlr_scene_node_set_enabled(&view->border[i]->node, false);
         }
     }
+    /* And the shadow, for a stronger reason than the borders: what the picture
+     * is taken for is a window that is about to be drawn somewhere else — spun,
+     * bent, or shrinking into a ghost — and a shadow baked into it would travel
+     * with the window instead of being cast by it.
+     *
+     * The dim comes off for the same length of time. A picture of a window is
+     * of the window, not of which one had the keyboard when it was taken:
+     * baking it in would leave expo's cards remembering an old focus. */
+    shadow_set_enabled(view->shadow, false);
+    view_dim_suspend(view);
 
     int lx = 0, ly = 0;
     wlr_scene_node_coords(&view->scene_tree->node, &lx, &ly);
     bool ok = snapshot_subtree(server, buf, &view->scene_tree->node, lx, ly, 1.0);
 
+    view_dim_restore(view);
+    view_shadow_update(view);
     for (int i = 0; i < 4; i++) {
         if (view->border[i])
             wlr_scene_node_set_enabled(&view->border[i]->node, border_was_enabled[i]);
@@ -241,8 +254,21 @@ void view_set_content_enabled(FwmView *view, bool enabled) {
         if (view->squash_buf && node == &view->squash_buf->node) ours = true;
         if (view->spin_buf && node == &view->spin_buf->node) ours = true;
         if (view->jelly_buf && node == &view->jelly_buf->node) ours = true;
+        /* The shadow is nine nodes of ours whose state belongs to the sun and
+         * not to this call: half of them are deliberately dark at any moment,
+         * and switching the lot back on would paint the whole image where a
+         * zero-width strip belongs. */
+        if (shadow_owns_node(view->shadow, node)) ours = true;
         if (!ours) wlr_scene_node_set_enabled(node, enabled);
     }
+    /* Every effect passes through here twice — once on the way in, having just
+     * created the node that stands in for the window, and once on the way out,
+     * having just destroyed it. Both are exactly when the shadow has to be
+     * reconsidered: a window being drawn somewhere other than its own box (spun,
+     * bent, dented) casts nothing, and gets its shadow back when it lands. One
+     * call here rather than six at the sites, because a site that forgets is a
+     * shadow left behind at an empty rectangle. */
+    view_shadow_update(view);
 }
 
 void view_stop_squash(FwmView *view) {
@@ -422,6 +448,9 @@ void view_jelly_stop(FwmView *view) {
     int border = view->jelly_border;
     view->jelly = 0;
     view->jelly_settling = 0;
+    /* The drop is a shape this sheet was drawn in; there is no sheet now. */
+    view->drop_round = view->drop_want = 0.0;
+    view->drop_filling = 0;
     view_jelly_free(view);
     view_set_content_enabled(view, true);
     if (border) view_set_border_enabled(view, 1);
@@ -504,10 +533,22 @@ fail:
     return false;
 }
 
+static bool view_jelly_blit(FwmView *view, const float *pts);
+
 /* Draw the lattice as it stands. Returns false if the mesh could not be drawn
  * at all, which is the caller's cue to give the live window back. */
 static bool view_jelly_draw(FwmView *view, double strength) {
     float pts[WOBBLE_POINTS * 2];
+
+    /* A landing owns the lattice outright: the drop is not wobbling its way
+     * into the slot, it is spreading into it, and the two shapes would only
+     * fight. The springs are left where they are and simply not consulted. */
+    if (view->drop_filling) {
+        droplet_fill_points(&view->drop_fill, pts, WOBBLE_GRID,
+                            view->jelly_margin, view->jelly_margin);
+        return view_jelly_blit(view, pts);
+    }
+
     wobble_points(&view->jelly_wob, pts, view->jelly_margin, view->jelly_margin);
 
     if (strength != 1.0) {
@@ -525,6 +566,18 @@ static bool view_jelly_draw(FwmView *view, double strength) {
         }
     }
 
+    /* Round it off last, so what gets bent into a drop is the sheet with all of
+     * its wobble already in it rather than the other way round. */
+    if (view->drop_round > 0.0) {
+        droplet_round(pts, WOBBLE_GRID, view->jelly_w, view->jelly_h, view->drop_round);
+    }
+
+    return view_jelly_blit(view, pts);
+}
+
+/* Draw a finished lattice, whichever of the two shapes above produced it.
+ * Returns false only when the mesh could not be drawn at all. */
+static bool view_jelly_blit(FwmView *view, const float *pts) {
     /* Live path: whatever the client has on screen this instant. It may be a
      * different texture than last frame — that is the whole point — and NULL
      * only if the window stopped being a single surface, which the tick
@@ -589,6 +642,64 @@ void view_jelly_release(FwmView *view) {
     wobble_release(&view->jelly_wob);
 }
 
+/* ── the drop ─────────────────────────────────────────────────────────── */
+
+/* How fast a window rounds off into a drop, and back, 1/s. Fast enough that
+ * the shape is there by the time the hand has moved anywhere, slow enough that
+ * it is a window turning into a drop rather than one being swapped for one. */
+#define DROP_ROUND_RATE 14.0
+
+/* How long the landing takes. Rather longer than the tile glide it replaces:
+ * the glide only had to move a window, this has to read as a liquid finding
+ * the edges of something. */
+#define DROP_FILL_SECONDS 0.42
+
+void view_droplet_begin(FwmView *view, double grab_lx, double grab_ly) {
+    double amount = view->server->config.effects.droplet;
+    if (amount <= 0.0) return;
+
+    /* The mesh may already be up — a drag arms the wobble before it decides the
+     * window is coming out of a tree — and if it is not, this is what arms it.
+     * Passing the drop's own strength rather than the wobble's is what lets the
+     * drop exist with [effects] jelly off: begin refuses at 0, and the sheet
+     * that comes back is then simply a still one. */
+    if (!view->jelly) {
+        double jelly = view->server->config.effects.jelly;
+        view_jelly_begin(view, jelly > 0.0 ? jelly : amount, grab_lx, grab_ly);
+        if (!view->jelly) return;
+    }
+
+    view->drop_want = amount;
+    view->drop_filling = 0;
+}
+
+void view_droplet_clear(FwmView *view) {
+    view->drop_want = 0.0;
+    view->drop_filling = 0;
+}
+
+bool view_is_droplet(FwmView *view) {
+    return view->drop_want > 0.0 || view->drop_round > 0.0 || view->drop_filling;
+}
+
+void view_droplet_fill(FwmView *view, double lx, double ly,
+                       double drop_w, double drop_h) {
+    if (view->server->config.effects.droplet <= 0.0) return;
+    /* Nothing to spread: the drag never got as far as putting a mesh up (a
+     * renderer with no GLES2 path, a window that started spinning). The window
+     * is already in its slot, which is the part that matters. */
+    if (!view->jelly) return;
+    if (view->width <= 0 || view->height <= 0) return;
+
+    droplet_fill_begin(&view->drop_fill, view->width, view->height,
+                       drop_w, drop_h, lx, ly, DROP_FILL_SECONDS);
+    view->drop_filling = 1;
+    /* The hand is off, but this must not ring out like an ordinary release —
+     * the fill decides when the live window comes back, not the springs. */
+    view->jelly_settling = 0;
+    wobble_release(&view->jelly_wob);
+}
+
 /* Retake the frozen picture. The live nodes come back for the length of the
  * pass and the warped one goes away, or each refresh would bake the last bent
  * frame into the next. Nothing is presented in between, so the window never
@@ -603,12 +714,30 @@ static void view_jelly_resnap(FwmView *view) {
 
 void view_jelly_tick(FwmView *view, double strength, double dt) {
     if (!view->jelly) return;
-    if (view->spin_buf || strength <= 0.0) { view_jelly_stop(view); return; }
+
+    /* A drop keeps the sheet up on its own account, so the wobble being off is
+     * no longer reason enough to tear it down: the picture is still bent, just
+     * not by springs. Turning the DROP off in a reload has to reach a window
+     * mid-landing the same way, which is what re-reading it here does. */
+    if (view->server->config.effects.droplet <= 0.0) {
+        view->drop_want = 0.0;
+        view->drop_filling = 0;
+    }
+    bool dropping = view->drop_want > 0.0 || view->drop_round > 0.0 || view->drop_filling;
+
+    if (view->spin_buf || (strength <= 0.0 && !dropping)) { view_jelly_stop(view); return; }
     if (dt <= 0.0) return;
+    if (strength < 0.0) strength = 0.0;
 
     if (!view->jelly_buf || view->jelly_w != view->width || view->jelly_h != view->height) {
         if (!view_jelly_setup(view)) { view_jelly_stop(view); return; }
         wobble_resize(&view->jelly_wob, view->jelly_w, view->jelly_h);
+        /* A client that committed something other than its slot — terminals
+         * round to whole character cells — moved the edges the fill is spreading
+         * toward while it was spreading toward them. */
+        if (view->drop_filling) {
+            droplet_fill_retarget(&view->drop_fill, view->jelly_w, view->jelly_h);
+        }
     }
 
     /* For as long as the picture is on screen, whether the hand is still on the
@@ -639,6 +768,33 @@ void view_jelly_tick(FwmView *view, double strength, double dt) {
         view->jelly_snap_t = 0.0;
         view->server->fx_snaps++;
         view_jelly_resnap(view);
+    }
+
+    /* The landing runs instead of the springs, not alongside them: the window
+     * is already sitting in its slot and nothing is moving it, so there is no
+     * translation to drive a wobble with and nothing for one to say. */
+    if (view->drop_filling) {
+        bool more = droplet_fill_step(&view->drop_fill, dt);
+        view->jelly_px = view->x;
+        view->jelly_py = view->y;
+        view->server->fx_moved++;
+        if (!view_jelly_draw(view, strength) || !more) {
+            view->drop_filling = 0;
+            view->drop_want = view->drop_round = 0.0;
+            view_jelly_stop(view);
+        }
+        return;
+    }
+
+    /* Round off toward whatever the drop wants — up when it is picked out of a
+     * tree, back down if it turns out not to be going anywhere near one. Frame
+     * -rate independent, like every other approach in fwm. */
+    {
+        double k = 1.0 - exp(-DROP_ROUND_RATE * dt);
+        view->drop_round += (view->drop_want - view->drop_round) * k;
+        if (fabs(view->drop_want - view->drop_round) < 0.005) {
+            view->drop_round = view->drop_want;
+        }
     }
 
     /* What the sheet is allowed to stretch to, this tick. The buffer it is drawn
